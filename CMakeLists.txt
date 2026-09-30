@@ -6,9 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # for clangd / IDE tooling
 
 
-add_subdirectory(
-    src/
-)
+add_subdirectory(src)
+add_subdirectory(data_processing)
 
-target_include_directories(Backend PRIVATE include)
 target_compile_options(Backend PRIVATE -Wall -Wextra)
