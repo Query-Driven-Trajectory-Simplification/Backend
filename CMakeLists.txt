@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 
-find_package(Arrow REQUIRED)
-find_package(Parquet REQUIRED)
+find_package(Arrow REQUIRED QUIET)
+find_package(Parquet REQUIRED QUIET)
 
 add_subdirectory(data_processing)

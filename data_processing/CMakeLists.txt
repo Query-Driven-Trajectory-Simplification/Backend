@@ -7,4 +7,4 @@ target_link_libraries(data_processing PUBLIC Arrow::arrow_shared Parquet::parque
 add_executable(convert
     apps/convert.cpp
 )
-target_link_libraries(convert_plt PRIVATE data_processing)
+target_link_libraries(convert PRIVATE data_processing)
