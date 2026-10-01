@@ -1,9 +1,10 @@
 add_library(data_processing
-    src/plt_reader.cpp
+    src/readers/geolife.cpp
 )
 target_include_directories(data_processing PUBLIC include)
+target_link_libraries(data_processing PUBLIC Arrow::arrow_shared Parquet::parquet_shared)
 
-add_executable(convert_plt
-    apps/convert_plt.cpp
+add_executable(convert
+    apps/convert.cpp
 )
 target_link_libraries(convert_plt PRIVATE data_processing)
