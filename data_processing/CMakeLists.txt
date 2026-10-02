@@ -1,5 +1,6 @@
 add_library(data_processing
     src/readers/geolife.cpp
+    src/filters/boundingbox.cpp
     src/filters/filters.cpp
 )
 target_include_directories(data_processing PUBLIC include)
