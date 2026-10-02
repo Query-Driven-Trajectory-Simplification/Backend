@@ -37,7 +37,6 @@ std::optional<Args> parse_args(int argc, char* argv[]){
     return Args{input, output};
 }
 
-// One builder per output column; append points, then finish into a table.
 struct PointTableBuilder {
     arrow::Int32Builder  trajectory_id;
     arrow::Int64Builder  t;
@@ -48,7 +47,6 @@ struct PointTableBuilder {
         ARROW_RETURN_NOT_OK(t.Append(p.t));
         ARROW_RETURN_NOT_OK(lat.Append(p.lat));
         ARROW_RETURN_NOT_OK(lon.Append(p.lon));
-        // unknown altitude is stored as null, not NaN
         return std::isnan(p.alt_m) ? alt_m.AppendNull() : alt_m.Append(p.alt_m);
     }
 
@@ -61,7 +59,7 @@ struct PointTableBuilder {
 
         auto schema = arrow::schema({
             arrow::field("trajectory_id", arrow::int32()),
-            arrow::field("t",             arrow::int64()),  // unix seconds, UTC
+            arrow::field("t",             arrow::int64()),  // UTC
             arrow::field("lat",           arrow::float64()),
             arrow::field("lon",           arrow::float64()),
             arrow::field("alt_m",         arrow::float64()),
