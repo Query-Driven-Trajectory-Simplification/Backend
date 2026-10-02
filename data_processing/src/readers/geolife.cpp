@@ -1,4 +1,5 @@
 #include "backend/data/readers/geolife.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <optional>
@@ -40,6 +41,16 @@ std::optional<Point> parse_plt_line(const std::string& line) {
     return point;
 
     return point;
+}
+
+std::vector<std::filesystem::path> collect_plt_files(const std::filesystem::path& root) {
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".plt")
+            files.push_back(entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    return files;
 }
 
 }
