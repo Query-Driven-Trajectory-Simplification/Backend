@@ -16,6 +16,8 @@ struct Point {
     std::int64_t t;
 };
 
+using Segment = std::vector<Point>;
+
 struct PltFile {
     std::vector<Point> points;
     std::size_t bad_lines = 0;
