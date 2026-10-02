@@ -1,15 +1,120 @@
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
 #include <iostream>
-#include <string>
+#include <memory>
+#include <optional>
+#include <arrow/api.h>
+#include <arrow/io/api.h>
+#include <parquet/arrow/writer.h>
 
 #include "backend/data/readers/geolife.hpp"
 
-using geolife::parse_plt_line;
+namespace fs = std::filesystem;
 
+namespace {
 
-int main() {
-    const std::string good = "39.984702,116.318417,0,492,39744.1201851852,2008-10-23,02:53:04";
+struct Args {
+    fs::path input;
+    fs::path output;
+};
 
-    auto p = parse_plt_line(good);
-    std::cout << p->lat << ' ' << p->lon << ' ' << p->t;
+std::optional<Args> parse_args(int argc, char* argv[]){
+    if (argc != 3) {
+        std::cerr << "usage: " << argv[0] << " <input_dir> <output_file>\n";
+        return std::nullopt;
+    }
+
+    const fs::path input  = argv[1];
+    const fs::path output = argv[2];
+
+    if (!fs::is_directory(input)) {
+        std::cerr << "not a directory: " << input << '\n';
+        return std::nullopt;
+    }
+
+    return Args{input, output};
+}
+
+struct PointTableBuilder {
+    arrow::Int32Builder  trajectory_id;
+    arrow::Int64Builder  t;
+    arrow::DoubleBuilder lat, lon, alt_m;
+
+    arrow::Status append(std::int32_t id, const geolife::Point& p) {
+        ARROW_RETURN_NOT_OK(trajectory_id.Append(id));
+        ARROW_RETURN_NOT_OK(t.Append(p.t));
+        ARROW_RETURN_NOT_OK(lat.Append(p.lat));
+        ARROW_RETURN_NOT_OK(lon.Append(p.lon));
+        return std::isnan(p.alt_m) ? alt_m.AppendNull() : alt_m.Append(p.alt_m);
+    }
+
+    arrow::Result<std::shared_ptr<arrow::Table>> finish() {
+        ARROW_ASSIGN_OR_RAISE(auto trajectory_id_arr, trajectory_id.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto t_arr,     t.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto lat_arr,   lat.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto lon_arr,   lon.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto alt_m_arr, alt_m.Finish());
+
+        auto schema = arrow::schema({
+            arrow::field("trajectory_id", arrow::int32()),
+            arrow::field("t",             arrow::int64()),  // UTC
+            arrow::field("lat",           arrow::float64()),
+            arrow::field("lon",           arrow::float64()),
+            arrow::field("alt_m",         arrow::float64()),
+        });
+        return arrow::Table::Make(
+            schema,
+            {trajectory_id_arr, t_arr, lat_arr, lon_arr, alt_m_arr});
+    }
+};
+
+arrow::Status write_parquet(const arrow::Table& table, const fs::path& output) {
+    if (output.has_parent_path()) {
+        fs::create_directories(output.parent_path());
+    }
+    ARROW_ASSIGN_OR_RAISE(auto outfile, arrow::io::FileOutputStream::Open(output.string()));
+    return parquet::arrow::WriteTable(table, arrow::default_memory_pool(), outfile);
+}
+
+arrow::Status convert(const fs::path& input, const fs::path& output) {
+    const auto files = geolife::collect_plt_files(input);
+    PointTableBuilder builder;
+    std::size_t points = 0, bad = 0;
+
+    for (std::size_t trajectory_id = 0; trajectory_id < files.size(); ++trajectory_id) {
+        if (trajectory_id % 100 == 0) {
+            std::cerr << "processing trajectory: " << trajectory_id << '\n';
+        }
+
+        const auto plt = geolife::read_plt_file(files[trajectory_id]);
+        if (!plt) return arrow::Status::IOError("cannot open ", files[trajectory_id].string());
+
+        for (const auto& p : plt->points) {
+            ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));
+        }
+        points += plt->points.size();
+        bad += plt->bad_lines;
+    }
+
+    std::cout << files.size() << " files, " << points << " points, " << bad << " bad lines\n";
+
+    ARROW_ASSIGN_OR_RAISE(auto table, builder.finish());
+    return write_parquet(*table, output);
+}
+
+}
+
+int main(int argc, char* argv[]) {
+    auto path_arguments = parse_args(argc, argv);
+    if (!path_arguments) {
+        return 1;
+    }
+
+    arrow::Status st = convert(path_arguments->input, path_arguments->output);
+    if (!st.ok()) {
+        std::cerr << st.ToString() << '\n';
+        return 1;
+    }
 }
