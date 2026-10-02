@@ -1,3 +1,4 @@
+#include "backend/data/readers/geolife.hpp"
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -8,8 +9,6 @@
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 #include <parquet/arrow/writer.h>
-
-#include "backend/data/readers/geolife.hpp"
 
 namespace fs = std::filesystem;
 
@@ -89,7 +88,7 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
         }
 
         const auto plt = geolife::read_plt_file(files[trajectory_id]);
-        if (!plt) return arrow::Status::IOError("cannot open ", files[trajectory_id].string());
+        if (!plt) return arrow::Status::IOError(plt.error());
 
         for (const auto& p : plt->points) {
             ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));

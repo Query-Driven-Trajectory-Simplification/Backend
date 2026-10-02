@@ -2,8 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,9 +21,9 @@ struct PltFile {
     std::size_t bad_lines = 0;
 };
 
-std::optional<Point> parse_plt_line(const std::string& line);
+std::expected<Point, std::string> parse_plt_line(const std::string& line);
 
-std::optional<PltFile> read_plt_file(const std::filesystem::path& path);
+std::expected<PltFile, std::string> read_plt_file(const std::filesystem::path& path);
 
 std::vector<std::filesystem::path> collect_plt_files(const std::filesystem::path& root);
 
