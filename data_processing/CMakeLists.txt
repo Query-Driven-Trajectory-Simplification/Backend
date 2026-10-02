@@ -8,3 +8,16 @@ add_executable(convert
     apps/convert.cpp
 )
 target_link_libraries(convert PRIVATE data_processing)
+
+include(FetchContent)
+FetchContent_Declare(googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.zip
+    SYSTEM)
+FetchContent_MakeAvailable(googletest)
+include(GoogleTest)
+
+add_executable(data_processing_tests
+    tests/geolife_test.cpp
+)
+target_link_libraries(data_processing_tests PRIVATE data_processing GTest::gtest_main)
+gtest_discover_tests(data_processing_tests)

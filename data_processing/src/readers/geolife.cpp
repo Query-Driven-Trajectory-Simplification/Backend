@@ -2,7 +2,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <format>
+#include <expected>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <optional>
 
@@ -22,17 +25,18 @@ std::optional<std::int64_t> to_unix_seconds(int y, int mo, int d, int h, int mi,
 
 }
 
-std::optional<Point> parse_plt_line(const std::string& line) {
+std::expected<Point, std::string> parse_plt_line(const std::string& line) {
     Point point{};
 
     int year, month, day;
     int hour, minute, second;
 
     // lat, lon, 0, altitude (feet), days since 1899 (skipped), date, time
-    if (std::sscanf(line.c_str(), "%lf,%lf,0,%lf,%*f,%d-%d-%d,%d:%d:%d",
+    const int fields = std::sscanf(line.c_str(), "%lf,%lf,0,%lf,%*f,%d-%d-%d,%d:%d:%d",
             &point.lat, &point.lon, &point.alt_m,
-            &year, &month, &day, &hour, &minute, &second) != 9) {
-        return std::nullopt;
+            &year, &month, &day, &hour, &minute, &second);
+    if (fields != 9) {
+        return std::unexpected(std::format("expected 9 fields, could only read {}", fields < 0 ? 0 : fields));
     }
 
     // -777 means unknown.
@@ -44,26 +48,34 @@ std::optional<Point> parse_plt_line(const std::string& line) {
 
     // datetime to timestamp converter, UTC
     const auto t = to_unix_seconds(year, month, day, hour, minute, second);
-    if (!t) return std::nullopt;
+    if (!t) {
+        return std::unexpected(std::format("invalid date/time {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second));
+    }
     point.t = *t;
     return point;
 }
 
-std::optional<PltFile> read_plt_file(const std::filesystem::path& path) {
+std::expected<PltFile, std::string> read_plt_file(const std::filesystem::path& path) {
     std::ifstream in(path);
-    if (!in) return std::nullopt;
+    if (!in) return std::unexpected("cannot open " + path.string());
 
     PltFile file;
     std::string line;
 
-    for (int i = 0; i < kHeaderLines && std::getline(in, line); ++i) {}
+    int line_no = 0;
+
+    for (; line_no < kHeaderLines && std::getline(in, line); ++line_no) {}
 
     while (std::getline(in, line)) {
-        if (auto p = parse_plt_line(line)) {
-            file.points.push_back(*p);
-        } else {
+        ++line_no;
+        auto p = parse_plt_line(line);
+        if (!p) {
+            std::cerr << path.string() << ':' << line_no << ": " << p.error() << '\n';
             ++file.bad_lines;
+            continue;
         }
+        file.points.push_back(*p);
     }
     return file;
 }
