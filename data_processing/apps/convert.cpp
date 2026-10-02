@@ -2,10 +2,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
-#include <string>
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 #include <parquet/arrow/writer.h>
@@ -13,6 +12,8 @@
 #include "backend/data/readers/geolife.hpp"
 
 namespace fs = std::filesystem;
+
+namespace {
 
 struct Args {
     fs::path input;
@@ -36,73 +37,75 @@ std::optional<Args> parse_args(int argc, char* argv[]){
     return Args{input, output};
 }
 
-arrow::Status convert(const fs::path& input, const fs::path& output) {
-    arrow::Int32Builder  trajectory_id_b;
-    arrow::Int64Builder  t_b;
-    arrow::DoubleBuilder lat_b, lon_b, alt_b;
+// One builder per output column; append points, then finish into a table.
+struct PointTableBuilder {
+    arrow::Int32Builder  trajectory_id;
+    arrow::Int64Builder  t;
+    arrow::DoubleBuilder lat, lon, alt_m;
 
-    const auto files = geolife::collect_plt_files(input);
-    std::size_t points = 0, bad = 0;
-
-    for (std::size_t trajectory_id = 0; trajectory_id < files.size(); ++trajectory_id) {
-        if (trajectory_id % 100 == 0)
-        {
-            std::cout << "processing trajectory: " << trajectory_id << '\n';
-        }
-        std::ifstream in(files[trajectory_id]);
-        if (!in) return arrow::Status::IOError("cannot open ", files[trajectory_id].string());
-
-        std::string line;
-
-        // skip the 6 header lines
-        for (int i = 0; i < 6 && std::getline(in, line); ++i) {}
-
-        while (std::getline(in, line)) {
-            auto p = geolife::parse_plt_line(line);
-            if (!p) {
-                ++bad;
-                continue;
-            }
-
-            ARROW_RETURN_NOT_OK(trajectory_id_b.Append(static_cast<std::int32_t>(trajectory_id)));
-            ARROW_RETURN_NOT_OK(t_b.Append(p->t));
-            ARROW_RETURN_NOT_OK(lat_b.Append(p->lat));
-            ARROW_RETURN_NOT_OK(lon_b.Append(p->lon));
-            if (std::isnan(p->alt_m)) {
-                ARROW_RETURN_NOT_OK(alt_b.AppendNull());
-            } else {
-                ARROW_RETURN_NOT_OK(alt_b.Append(p->alt_m));
-            }
-            ++points;
-        }
+    arrow::Status append(std::int32_t id, const geolife::Point& p) {
+        ARROW_RETURN_NOT_OK(trajectory_id.Append(id));
+        ARROW_RETURN_NOT_OK(t.Append(p.t));
+        ARROW_RETURN_NOT_OK(lat.Append(p.lat));
+        ARROW_RETURN_NOT_OK(lon.Append(p.lon));
+        // unknown altitude is stored as null, not NaN
+        return std::isnan(p.alt_m) ? alt_m.AppendNull() : alt_m.Append(p.alt_m);
     }
 
-    std::cout << files.size() << " files, " << points << " points, " << bad << " bad lines\n";
+    arrow::Result<std::shared_ptr<arrow::Table>> finish() {
+        ARROW_ASSIGN_OR_RAISE(auto trajectory_id_arr, trajectory_id.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto t_arr,     t.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto lat_arr,   lat.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto lon_arr,   lon.Finish());
+        ARROW_ASSIGN_OR_RAISE(auto alt_m_arr, alt_m.Finish());
 
-    ARROW_ASSIGN_OR_RAISE(auto trajectory_id_arr, trajectory_id_b.Finish());
-    ARROW_ASSIGN_OR_RAISE(auto t_arr,   t_b.Finish());
-    ARROW_ASSIGN_OR_RAISE(auto lat_arr, lat_b.Finish());
-    ARROW_ASSIGN_OR_RAISE(auto lon_arr, lon_b.Finish());
-    ARROW_ASSIGN_OR_RAISE(auto alt_arr, alt_b.Finish());
+        auto schema = arrow::schema({
+            arrow::field("trajectory_id", arrow::int32()),
+            arrow::field("t",             arrow::int64()),  // unix seconds, UTC
+            arrow::field("lat",           arrow::float64()),
+            arrow::field("lon",           arrow::float64()),
+            arrow::field("alt_m",         arrow::float64()),
+        });
+        return arrow::Table::Make(
+            schema,
+            {trajectory_id_arr, t_arr, lat_arr, lon_arr, alt_m_arr});
+    }
+};
 
-    auto schema = arrow::schema({
-        arrow::field("trajectory_id", arrow::int32()),
-        arrow::field("t",             arrow::int64()),
-        arrow::field("lat",           arrow::float64()),
-        arrow::field("lon",           arrow::float64()),
-        arrow::field("alt_m",         arrow::float64()),
-    });
-    auto table = arrow::Table::Make(
-        schema, 
-        {trajectory_id_arr, t_arr, lat_arr, lon_arr, alt_arr});
-
+arrow::Status write_parquet(const arrow::Table& table, const fs::path& output) {
     if (output.has_parent_path()) {
         fs::create_directories(output.parent_path());
     }
     ARROW_ASSIGN_OR_RAISE(auto outfile, arrow::io::FileOutputStream::Open(output.string()));
-    ARROW_RETURN_NOT_OK(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), outfile));
+    return parquet::arrow::WriteTable(table, arrow::default_memory_pool(), outfile);
+}
 
-    return arrow::Status::OK();
+arrow::Status convert(const fs::path& input, const fs::path& output) {
+    const auto files = geolife::collect_plt_files(input);
+    PointTableBuilder builder;
+    std::size_t points = 0, bad = 0;
+
+    for (std::size_t trajectory_id = 0; trajectory_id < files.size(); ++trajectory_id) {
+        if (trajectory_id % 100 == 0) {
+            std::cerr << "processing trajectory: " << trajectory_id << '\n';
+        }
+
+        const auto plt = geolife::read_plt_file(files[trajectory_id]);
+        if (!plt) return arrow::Status::IOError("cannot open ", files[trajectory_id].string());
+
+        for (const auto& p : plt->points) {
+            ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));
+        }
+        points += plt->points.size();
+        bad += plt->bad_lines;
+    }
+
+    std::cout << files.size() << " files, " << points << " points, " << bad << " bad lines\n";
+
+    ARROW_ASSIGN_OR_RAISE(auto table, builder.finish());
+    return write_parquet(*table, output);
+}
+
 }
 
 int main(int argc, char* argv[]) {
