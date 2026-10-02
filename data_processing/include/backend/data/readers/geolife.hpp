@@ -23,11 +23,8 @@ struct PltFile {
 
 std::optional<Point> parse_plt_line(const std::string& line);
 
-// Reads one .plt file: skips the header and parses every line.
-// Returns nullopt if the file cannot be opened.
 std::optional<PltFile> read_plt_file(const std::filesystem::path& path);
 
-// All .plt files under root, sorted so indices are stable across machines.
 std::vector<std::filesystem::path> collect_plt_files(const std::filesystem::path& root);
 
 }
