@@ -14,6 +14,17 @@ add_compile_options($<$<CXX_COMPILER_ID:Clang>:-Wno-c2y-extensions>)
 find_package(Arrow REQUIRED QUIET)
 find_package(Parquet REQUIRED QUIET)
 
+include(FetchContent)
+FetchContent_Declare(googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.zip
+    SYSTEM)
+FetchContent_MakeAvailable(googletest)
+include(GoogleTest)
+
+include(cmake/DuckDB.cmake)
+
+
 enable_testing()
 
 add_subdirectory(data_processing)
+add_subdirectory(db)

@@ -9,12 +9,13 @@ add_executable(convert
 )
 target_link_libraries(convert PRIVATE data_processing)
 
-include(FetchContent)
-FetchContent_Declare(googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.zip
-    SYSTEM)
-FetchContent_MakeAvailable(googletest)
-include(GoogleTest)
+### Now included in the root CMakeLists.txt ###
+# include(FetchContent)
+# FetchContent_Declare(googletest
+#     URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.zip
+#     SYSTEM)
+# FetchContent_MakeAvailable(googletest)
+# include(GoogleTest)
 
 add_executable(data_processing_tests
     tests/geolife_test.cpp
