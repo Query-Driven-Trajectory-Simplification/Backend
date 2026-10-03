@@ -39,14 +39,14 @@ std::optional<Args> parse_args(int argc, char* argv[]){
 struct PointTableBuilder {
     arrow::Int32Builder  trajectory_id;
     arrow::Int64Builder  t;
-    arrow::DoubleBuilder lat, lon, alt_m;
+    arrow::DoubleBuilder lat, lon;
 
     arrow::Status append(std::int32_t id, const geolife::Point& p) {
         ARROW_RETURN_NOT_OK(trajectory_id.Append(id));
         ARROW_RETURN_NOT_OK(t.Append(p.t));
         ARROW_RETURN_NOT_OK(lat.Append(p.lat));
         ARROW_RETURN_NOT_OK(lon.Append(p.lon));
-        return std::isnan(p.alt_m) ? alt_m.AppendNull() : alt_m.Append(p.alt_m);
+        return arrow::Status::OK();
     }
 
     arrow::Result<std::shared_ptr<arrow::Table>> finish() {
@@ -54,18 +54,16 @@ struct PointTableBuilder {
         ARROW_ASSIGN_OR_RAISE(auto t_arr,     t.Finish());
         ARROW_ASSIGN_OR_RAISE(auto lat_arr,   lat.Finish());
         ARROW_ASSIGN_OR_RAISE(auto lon_arr,   lon.Finish());
-        ARROW_ASSIGN_OR_RAISE(auto alt_m_arr, alt_m.Finish());
 
         auto schema = arrow::schema({
             arrow::field("trajectory_id", arrow::int32()),
             arrow::field("t",             arrow::int64()),  // UTC
             arrow::field("lat",           arrow::float64()),
-            arrow::field("lon",           arrow::float64()),
-            arrow::field("alt_m",         arrow::float64()),
+            arrow::field("lon",           arrow::float64())
         });
         return arrow::Table::Make(
             schema,
-            {trajectory_id_arr, t_arr, lat_arr, lon_arr, alt_m_arr});
+            {trajectory_id_arr, t_arr, lat_arr, lon_arr});
     }
 };
 
@@ -87,14 +85,13 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
             std::cerr << "processing trajectory: " << trajectory_id << '\n';
         }
 
-        const auto plt = geolife::read_plt_file(files[trajectory_id]);
-        if (!plt) return arrow::Status::IOError(plt.error());
+        const auto segment = geolife::read_plt_file(files[trajectory_id]);
+        if (!segment) return arrow::Status::IOError(segment.error());
 
-        for (const auto& p : plt->points) {
+        for (const auto& p : *segment) {
             ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));
         }
-        points += plt->points.size();
-        bad += plt->bad_lines;
+        points += segment->size();
     }
 
     std::cout << files.size() << " files, " << points << " points, " << bad << " bad lines\n";
