@@ -84,6 +84,7 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
     PointTableBuilder builder;
     std::size_t points = 0, stored_points = 0, bad = 0;
     std::size_t trajectory_id = 0;
+    filters::FilterStats stats;
 
     for (std::size_t file_idx = 0; file_idx < files.size(); ++file_idx) {
         if (file_idx % 100 == 0) {
@@ -93,7 +94,7 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
         const auto plt = geolife::read_plt_file(files[file_idx]);
         if (!plt) return arrow::Status::IOError("cannot open ", files[file_idx].string());
 
-        const auto segments = filters::apply_filters(plt->points);
+        const auto segments = filters::apply_filters(plt->points, stats);
         for (const auto& segment : segments) {
             for (const auto& p : segment) {
                 ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));
@@ -106,7 +107,8 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
     }
 
     std::cout << files.size() << " files, " << points << " input points, " << bad << " bad lines\n"
-              << stored_points << " points stored in " << trajectory_id << " trajectories\n";
+              << stored_points << " points stored in " << trajectory_id << " trajectories\n\n";
+    filters::print_stats(std::cout, stats);
 
     ARROW_ASSIGN_OR_RAISE(auto table, builder.finish());
     return write_parquet(*table, output);
