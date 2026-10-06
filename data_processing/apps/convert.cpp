@@ -89,10 +89,13 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
             std::cerr << "processing trajectory file: " << file_idx << '\n';
         }
 
-        const auto plt = geolife::read_plt_file(files[file_idx]);
+        auto plt = geolife::read_plt_file(files[file_idx]);
         if (!plt) return arrow::Status::IOError(plt.error());
 
-        const auto segments = filters::apply_filters(plt->points);
+        points += plt->points.size();
+        bad += plt->bad_lines;
+        // moves points to apply_filters, plt->points is now empty afterwards
+        const auto segments = filters::apply_filters(std::move(plt->points));
         for (const auto& segment : segments) {
             for (const auto& p : segment) {
                 ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));
@@ -100,8 +103,6 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
             stored_points += segment.size();
             trajectory_id++;
         }
-        points += plt->points.size();
-        bad += plt->bad_lines;
     }
 
     std::cout << files.size() << " files, " << points << " input points, " << bad << " bad lines\n"
