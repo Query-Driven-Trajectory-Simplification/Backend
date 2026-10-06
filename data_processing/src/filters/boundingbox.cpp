@@ -8,7 +8,7 @@ std::vector<geolife::Segment> split_by_bbox(const std::vector<geolife::Segment>&
         geolife::Segment current;
 
         auto flush = [&] {
-            if (current.size() >= 2) {
+            if (!current.empty()) {
                 bounded_segments.push_back(std::move(current));
             }
             current.clear();
