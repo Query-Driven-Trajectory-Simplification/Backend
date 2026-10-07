@@ -3,12 +3,8 @@
 
 namespace filters {
 
-std::vector<geolife::Segment> apply_filters(geolife::Segment points) {
-    std::vector<geolife::Segment> segments;
-    
-    segments = split_by_bbox(std::move(points), kBeijing);
-
-    return segments;
+std::vector<geolife::Segment> apply_filters(const geolife::Segment& segment) {
+    return split_by_bbox(segment, kBeijing);
 }
 
 }
