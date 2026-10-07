@@ -1,5 +1,14 @@
+# Build output
 build/
-.cache/
-/data/
 
+# Editor and tooling
+.cache/
+.vscode/
+
+# Data
+/data/
+/input/
+/output/
+
+# Secrets
 .env

@@ -1,4 +1,5 @@
 #include "backend/data/readers/geolife.hpp"
+#include "backend/data/filters/filters.hpp"
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -78,23 +79,26 @@ arrow::Status write_parquet(const arrow::Table& table, const fs::path& output) {
 arrow::Status convert(const fs::path& input, const fs::path& output) {
     const auto files = geolife::collect_plt_files(input);
     PointTableBuilder builder;
-    std::size_t points = 0, bad = 0;
+    std::size_t points = 0, stored_points = 0;
+    std::size_t trajectory_id = 0;
 
-    for (std::size_t trajectory_id = 0; trajectory_id < files.size(); ++trajectory_id) {
-        if (trajectory_id % 100 == 0) {
-            std::cerr << "processing trajectory: " << trajectory_id << '\n';
-        }
-
-        const auto segment = geolife::read_plt_file(files[trajectory_id]);
+    for (const auto& file : files) {
+        auto segment = geolife::read_plt_file(file);
         if (!segment) return arrow::Status::IOError(segment.error());
 
-        for (const auto& p : *segment) {
-            ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));
-        }
         points += segment->size();
+        auto filtered_segments = filters::apply_filters(std::move(*segment));
+        for (const auto& filtered_segment: filtered_segments) {
+            for (const auto& p : filtered_segment) {
+                ARROW_RETURN_NOT_OK(builder.append(static_cast<std::int32_t>(trajectory_id), p));
+            }
+            stored_points += filtered_segment.size();
+            trajectory_id++;
+        }
     }
 
-    std::cout << files.size() << " files, " << points << " points, " << bad << " bad lines\n";
+    std::cout << files.size() << " files, " << points << " input points\n"
+              << stored_points << " points stored in " << trajectory_id << " trajectories\n";
 
     ARROW_ASSIGN_OR_RAISE(auto table, builder.finish());
     return write_parquet(*table, output);
