@@ -15,6 +15,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
+constexpr std::size_t kMinFilePoints = 100;
+
 struct Args {
     fs::path input;
     fs::path output;
@@ -85,6 +87,10 @@ arrow::Status convert(const fs::path& input, const fs::path& output) {
     for (const auto& file : files) {
         auto segment = geolife::read_plt_file(file);
         if (!segment) return arrow::Status::IOError(segment.error());
+
+        if (segment->size() < kMinFilePoints) {
+            continue;
+        }
 
         points += segment->size();
         auto filtered_segments = filters::apply_filters(std::move(*segment));
