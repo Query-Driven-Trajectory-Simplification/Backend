@@ -7,6 +7,13 @@
 
 namespace filters {
 
+void create_segment(std::vector<geolife::Segment>& segments, geolife::Segment& current) {
+    if (!current.empty()) {
+        segments.push_back(std::move(current));
+    }
+    current.clear();
+}
+
 namespace {
 // Runs a per-segment split filter on every segment and flattens the results.
 template <typename filter_type, typename... Args>
