@@ -30,6 +30,6 @@ inline constexpr BoundingBox kBeijing = {
 };
 
 // Splits each segment into the runs of consecutive points inside bbox.
-std::vector<geolife::Segment> split_by_bbox(const std::vector<geolife::Segment>& segments, const BoundingBox& bbox);
+std::vector<geolife::Segment> split_by_bbox(const geolife::Segment& segment, const BoundingBox& bbox);
 
 }
