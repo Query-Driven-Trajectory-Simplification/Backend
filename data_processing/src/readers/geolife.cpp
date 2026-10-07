@@ -6,7 +6,6 @@
 #include <expected>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <optional>
 
 namespace geolife {
@@ -31,19 +30,12 @@ std::expected<Point, std::string> parse_plt_line(const std::string& line) {
     int year, month, day;
     int hour, minute, second;
 
-    // lat, lon, 0, altitude (feet), days since 1899 (skipped), date, time
-    const int fields = std::sscanf(line.c_str(), "%lf,%lf,0,%lf,%*f,%d-%d-%d,%d:%d:%d",
-            &point.lat, &point.lon, &point.alt_m,
+    // lat, lon, 0, altitude (skipped), days since 1899 (skipped), date, time
+    const int fields = std::sscanf(line.c_str(), "%lf,%lf,0,%*lf,%*f,%d-%d-%d,%d:%d:%d",
+            &point.lat, &point.lon,
             &year, &month, &day, &hour, &minute, &second);
-    if (fields != 9) {
-        return std::unexpected(std::format("expected 9 fields, could only read {}", fields < 0 ? 0 : fields));
-    }
-
-    // -777 means unknown.
-    if (point.alt_m == -777) {
-        point.alt_m = std::numeric_limits<double>::quiet_NaN();
-    } else {
-        point.alt_m *= 0.3048; // feet to meter conversion
+    if (fields != 8) {
+        return std::unexpected(std::format("expected 8 fields, could only read {}", fields < 0 ? 0 : fields));
     }
 
     // datetime to timestamp converter, UTC
@@ -56,11 +48,11 @@ std::expected<Point, std::string> parse_plt_line(const std::string& line) {
     return point;
 }
 
-std::expected<PltFile, std::string> read_plt_file(const std::filesystem::path& path) {
+std::expected<Segment, std::string> read_plt_file(const std::filesystem::path& path) {
     std::ifstream in(path);
     if (!in) return std::unexpected("cannot open " + path.string());
 
-    PltFile file;
+    Segment segment;
     std::string line;
 
     int line_no = 0;
@@ -72,12 +64,11 @@ std::expected<PltFile, std::string> read_plt_file(const std::filesystem::path& p
         auto p = parse_plt_line(line);
         if (!p) {
             std::cerr << path.string() << ':' << line_no << ": " << p.error() << '\n';
-            ++file.bad_lines;
             continue;
         }
-        file.points.push_back(*p);
+        segment.push_back(*p);
     }
-    return file;
+    return segment;
 }
 
 std::vector<std::filesystem::path> collect_plt_files(const std::filesystem::path& root) {
