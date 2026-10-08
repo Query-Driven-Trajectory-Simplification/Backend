@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include "backend/data/readers/geolife.hpp"
@@ -29,7 +30,10 @@ inline constexpr BoundingBox kBeijing = {
     .max_lon = 117.39994,
 };
 
-// Splits each segment into the runs of consecutive points inside bbox.
+// Longest run of consecutive outside points that is dropped instead of splitting the segment.
+inline constexpr std::size_t kMaxPointsOutside = 5;
+
+// Splits a segment into the runs of points inside bbox, drops short excursions outside bbox.
 std::vector<geolife::Segment> split_by_bbox(const geolife::Segment& segment, const BoundingBox& bbox);
 
 }
