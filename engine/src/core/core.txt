@@ -1,0 +1,3 @@
+Core types like trajectory, point
+split? maybe split in a data folder?
+Maybe io should be some combined io + data split thingy etc

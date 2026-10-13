@@ -17,3 +17,4 @@ find_package(Parquet REQUIRED QUIET)
 enable_testing()
 
 add_subdirectory(data_processing)
+add_subdirectory(engine)
