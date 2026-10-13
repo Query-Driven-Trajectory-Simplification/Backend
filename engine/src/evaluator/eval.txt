@@ -1,0 +1,5 @@
+Knn evaluator
+range query stuff
+where-at-time stuff
+Combined eval logic etc etc
+etc
