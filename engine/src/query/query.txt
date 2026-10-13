@@ -1,0 +1,17 @@
+We need query generators here 
+Knn - This isnt a "generator" probably. -
+- The split in data will give 1000 or something like that in knn queries to calc kendall etc, and use for training and testing
+Range - Currently multiple options (Frutte looked at some)
+- My OSM data distributiom
+- Frutte mentioned RL4 used taxi distribution from derived pick-up points
+- Could just use density of points, prob decent indicator, though i believe the two above are better
+Where-at-time
+- Currently my idea is just taking x random point from the whole set of trajectories non compressed (not start end maybe?)
+We calculate the compressed distance to that point at the time of the uncompressed datapoints time.
+This should probably use time on the line, and not from nearest compressed point
+Query will be true or false, whether we are within given distance like 200m or whatever
+Someone could come up with fancier way of doing it. 
+True false gives easy and transferable metric within the 0-1.0 bound as its just accuracy basically.
+If we could do some distance thingy for where-at-time it could be cool
+For Where-at-time i am having a hard time finding something that gradually becomes better for the models
+currently if i remember, we go from 0.25% gets 0.42, and 1% gets 0.83. So the increase is very large.
