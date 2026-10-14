@@ -1,6 +1,5 @@
 #include <iostream>
 #include <optional>
-#include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/pipeline/config.hpp"
 #include "backend/engine/pipeline/pipeline.hpp"
 
