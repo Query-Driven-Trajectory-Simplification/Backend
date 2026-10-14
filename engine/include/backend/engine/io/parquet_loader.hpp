@@ -4,6 +4,6 @@
 
 namespace io {
 
-void load_trajectories(const std::filesystem::path& path);
+core::TrajectoryDb load_trajectories(const std::filesystem::path& path);
 
 }

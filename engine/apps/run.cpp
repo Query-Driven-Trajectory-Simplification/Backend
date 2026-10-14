@@ -1,3 +1,4 @@
+#include <iostream>
 #include <optional>
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/pipeline/config.hpp"
@@ -15,5 +16,10 @@ int main(int argc, char* argv[]) {
     auto config = parse_args(argc, argv);
     if (!config) return 1;
 
-    pipeline::run(*config);
+    try {
+        pipeline::run(*config);
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << '\n';
+        return 1;
+    }
 }

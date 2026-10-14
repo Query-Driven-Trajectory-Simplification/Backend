@@ -5,7 +5,7 @@
 namespace pipeline {
 
 void run(const Config& config) {
-    io::load_trajectories(config.path);
+    core::TrajectoryDb trajectories = io::load_trajectories(config.path);
 }
 
 }
