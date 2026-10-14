@@ -1,4 +1,5 @@
 add_library(engine
+    src/core/trajectory_db.cpp
     src/io/parquet_loader.cpp
     src/pipeline/pipeline.cpp
 )

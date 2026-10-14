@@ -1,6 +1,7 @@
-#include <arrow/status.h>
+#pragma once
+
 #include <filesystem>
-#include "backend/engine/core/types.hpp"
+#include "backend/engine/core/trajectory_db.hpp"
 
 namespace io {
 
