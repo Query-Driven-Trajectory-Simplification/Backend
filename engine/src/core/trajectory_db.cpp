@@ -14,11 +14,11 @@ TrajectoryDb::TrajectoryDb(
             lat(std::move(lat)),
             lon(std::move(lon)) 
 {
-    if (lat.size() != t.size() || lon.size() != t.size())
+    if (this->lat.size() != this->t.size() || this->lon.size() != this->t.size())
         throw std::invalid_argument("TrajectoryDb: t/lat/lon have different lengths");
-    if (offsets.size() != source_ids.size() + 1
-        || offsets.front() != 0
-        || offsets.back() != t.size())
+    if (this->offsets.size() != this->source_ids.size() + 1
+        || this->offsets.front() != 0
+        || this->offsets.back() != this->t.size())
         throw std::invalid_argument("TrajectoryDb: offsets don't match the points");
 }
 

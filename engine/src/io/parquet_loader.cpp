@@ -10,7 +10,6 @@
 #include <format>
 #include <memory>
 #include <parquet/arrow/reader.h>
-#include <iostream>
 #include <stdexcept>
 #include <vector>
 
