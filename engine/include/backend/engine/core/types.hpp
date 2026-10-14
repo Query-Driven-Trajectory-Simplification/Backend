@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <vector>
 
-struct TrajectoryDatabase {
+namespace core {
+
+struct TrajectoryDb {
     std::vector<double> global_lats;
     std::vector<double> global_lons;
     std::vector<int64_t> global_timestamps;
@@ -11,3 +13,5 @@ struct TrajectoryDatabase {
     std::vector<int64_t> trip_offsets{0};
     std::vector<int64_t> trip_ids;
 };
+
+}
