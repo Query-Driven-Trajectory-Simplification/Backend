@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -28,6 +29,7 @@ public:
     std::size_t num_points() const { return t_.size(); }
 
     TripView trip(std::size_t i) const {
+        assert(i < size());
         const auto start = offsets_[i];
         const auto len   = offsets_[i + 1] - start;
         return TripView{

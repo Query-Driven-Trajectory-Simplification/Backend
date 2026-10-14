@@ -1,5 +1,6 @@
 #include "backend/engine/core/trajectory_db.hpp"
 #include <stdexcept>
+#include <utility>
 namespace core {
 
 TrajectoryDb::TrajectoryDb(

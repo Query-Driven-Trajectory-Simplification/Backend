@@ -67,6 +67,8 @@ core::TrajectoryDb to_trajectory_db(const arrow::Table& table) {
             longitudes.push_back(lon_col->Value(i));
         }
     }
+    if (!status.ok())
+        throw std::runtime_error(status.ToString());
     if (!trajectory_ids.empty()) offsets.push_back(timestamps.size());
 
     return core::TrajectoryDb(std::move(offsets), std::move(trajectory_ids), std::move(timestamps),
