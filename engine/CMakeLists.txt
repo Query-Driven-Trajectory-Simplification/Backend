@@ -2,6 +2,7 @@ add_library(engine
     src/core/trajectory_db.cpp
     src/io/parquet_loader.cpp
     src/pipeline/pipeline.cpp
+    src/allocation/size_proportional.cpp
 )
 
 target_include_directories(engine PUBLIC include)
