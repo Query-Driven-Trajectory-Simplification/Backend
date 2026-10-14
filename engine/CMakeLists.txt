@@ -1,5 +1,6 @@
 add_library(engine
     src/io/parquet_loader.cpp
+    src/pipeline/pipeline.cpp
 )
 
 target_include_directories(engine PUBLIC include)

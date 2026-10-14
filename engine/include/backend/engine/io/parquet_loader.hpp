@@ -1,4 +1,8 @@
 #include <arrow/status.h>
-#include <string>
+#include <filesystem>
 
-arrow::Status read_parquet(const std::string& path);
+namespace io {
+
+arrow::Status read_parquet(const std::filesystem::path& path);
+
+}
