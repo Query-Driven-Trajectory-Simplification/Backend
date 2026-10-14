@@ -9,7 +9,7 @@ namespace pipeline {
 void run(const Config& config) {
     core::TrajectoryDb trajectories = io::load_trajectories(config.path);
     std::cout << trajectories.size() << " trips, " << trajectories.num_points() << " points\n";
-    std::cout << trajectories.trip(3).size();
+    std::cout << trajectories.trajectory(3).size();
 }
 
 }

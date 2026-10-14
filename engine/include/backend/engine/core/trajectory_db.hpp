@@ -7,7 +7,7 @@
 
 namespace core {
 
-struct TripView {
+struct TrajectoryView {
     std::int32_t trajectory_id;
     std::span<const std::int64_t> t;
     std::span<const double> lat;
@@ -28,11 +28,11 @@ public:
     std::size_t size() const { return source_ids_.size(); }
     std::size_t num_points() const { return t_.size(); }
 
-    TripView trip(std::size_t i) const {
+    TrajectoryView trajectory(std::size_t i) const {
         assert(i < size());
         const auto start = offsets_[i];
         const auto len   = offsets_[i + 1] - start;
-        return TripView{
+        return TrajectoryView{
             source_ids_[i],
             {t_.data() + start, len},
             {lat_.data() + start, len},
