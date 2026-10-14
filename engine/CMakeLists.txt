@@ -4,6 +4,7 @@ add_library(engine
     src/pipeline/pipeline.cpp
     src/selection/rdp.cpp
     src/selection/selector.cpp
+    src/allocation/size_proportional.cpp
 )
 
 target_include_directories(engine PUBLIC include)
