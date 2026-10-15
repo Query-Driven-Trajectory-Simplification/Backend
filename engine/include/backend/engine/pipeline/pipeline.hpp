@@ -4,6 +4,6 @@
 
 namespace pipeline {
 
-void run(const Config& config);
+void run(const Config &config);
 
 }

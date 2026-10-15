@@ -17,8 +17,8 @@ namespace io {
 
 namespace {
 
-arrow::Result<core::TrajectoryDb> read_trajectory_db_from_batches(const std::filesystem::path& path) 
-{
+arrow::Result<core::TrajectoryDb>
+read_trajectory_db_from_batches(const std::filesystem::path &path) {
     ARROW_ASSIGN_OR_RAISE(auto in, arrow::io::ReadableFile::Open(path.string()));
 
     parquet::ArrowReaderProperties arrow_props = parquet::default_arrow_reader_properties();
@@ -32,8 +32,7 @@ arrow::Result<core::TrajectoryDb> read_trajectory_db_from_batches(const std::fil
 
     ARROW_ASSIGN_OR_RAISE(auto reader, builder.Build());
 
-    const auto rows = static_cast<std::size_t>(
-        reader->parquet_reader()->metadata()->num_rows());
+    const auto rows = static_cast<std::size_t>(reader->parquet_reader()->metadata()->num_rows());
 
     std::vector<std::int32_t> trajectory_ids;
     std::vector<std::int64_t> timestamps;
@@ -49,29 +48,32 @@ arrow::Result<core::TrajectoryDb> read_trajectory_db_from_batches(const std::fil
 
     while (true) {
         ARROW_RETURN_NOT_OK(batch_reader->ReadNext(&batch));
-        if (batch == nullptr) break;
+        if (batch == nullptr)
+            break;
 
-        const auto id_col  = std::dynamic_pointer_cast<arrow::Int32Array>(
+        const auto id_col = std::dynamic_pointer_cast<arrow::Int32Array>(
             batch->GetColumnByName(std::string("trajectory_id")));
-        const auto t_col   = std::dynamic_pointer_cast<arrow::Int64Array>(
-            batch->GetColumnByName(std::string("t")));
+        const auto t_col =
+            std::dynamic_pointer_cast<arrow::Int64Array>(batch->GetColumnByName(std::string("t")));
         const auto lat_col = std::dynamic_pointer_cast<arrow::DoubleArray>(
             batch->GetColumnByName(std::string("lat")));
         const auto lon_col = std::dynamic_pointer_cast<arrow::DoubleArray>(
             batch->GetColumnByName(std::string("lon")));
 
         if (!id_col || !t_col || !lat_col || !lon_col) {
-            return arrow::Status::Invalid(
-                "Missing column or mismatched datatype for trajectory_id (int32), t (int64), lat (double), or lon (double)");
+            return arrow::Status::Invalid("Missing column or mismatched datatype for trajectory_id "
+                                          "(int32), t (int64), lat (double), or lon (double)");
         }
 
         for (std::int64_t i = 0; i < batch->num_rows(); ++i) {
             const std::int32_t id = id_col->Value(i);
             if (trajectory_ids.empty() || id != trajectory_ids.back()) {
                 if (!trajectory_ids.empty() && id < trajectory_ids.back()) {
-                    return arrow::Status::Invalid("trajectory_id not sorted; rows of a trip are split");
+                    return arrow::Status::Invalid(
+                        "trajectory_id not sorted; rows of a trip are split");
                 }
-                if (!trajectory_ids.empty()) offsets.push_back(timestamps.size());
+                if (!trajectory_ids.empty())
+                    offsets.push_back(timestamps.size());
                 trajectory_ids.push_back(id);
             }
             timestamps.push_back(t_col->Value(i));
@@ -80,19 +82,16 @@ arrow::Result<core::TrajectoryDb> read_trajectory_db_from_batches(const std::fil
         }
     }
 
-    if (!trajectory_ids.empty()) offsets.push_back(timestamps.size());
+    if (!trajectory_ids.empty())
+        offsets.push_back(timestamps.size());
 
-    return core::TrajectoryDb(
-        std::move(offsets),
-        std::move(trajectory_ids),
-        std::move(timestamps),
-        std::move(latitudes),
-        std::move(longitudes));
+    return core::TrajectoryDb(std::move(offsets), std::move(trajectory_ids), std::move(timestamps),
+                              std::move(latitudes), std::move(longitudes));
 }
 
-}
+} // namespace
 
-core::TrajectoryDb load_trajectories(const std::filesystem::path& path) {
+core::TrajectoryDb load_trajectories(const std::filesystem::path &path) {
     auto db = read_trajectory_db_from_batches(path);
     if (!db.ok()) {
         throw std::runtime_error(std::format("{}: {}", path.string(), db.status().ToString()));
@@ -100,4 +99,4 @@ core::TrajectoryDb load_trajectories(const std::filesystem::path& path) {
     return std::move(*db);
 }
 
-}
+} // namespace io

@@ -5,7 +5,7 @@
 namespace pipeline {
 
 struct Config {
-    std::filesystem::path path; 
+    std::filesystem::path path;
 };
 
-}
+} // namespace pipeline
