@@ -10,6 +10,6 @@ namespace filters {
 void create_segment(std::vector<geolife::Segment>& segments, geolife::Segment& current);
 
 // Runs all filters on one trajectory and returns the segments that remain.
-std::vector<geolife::Segment> apply_filters(const geolife::Segment& segment);
+std::vector<geolife::Segment> apply_filters(geolife::Segment segment);
 
 }

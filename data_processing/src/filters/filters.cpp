@@ -1,5 +1,6 @@
 #include "backend/data/filters/filters.hpp"
 #include "backend/data/filters/boundingbox.hpp"
+#include "backend/data/filters/duplicatetime.hpp"
 #include "backend/data/filters/minsize.hpp"
 #include "backend/data/filters/timegap.hpp"
 
@@ -30,8 +31,9 @@ std::vector<geolife::Segment> split_each(const std::vector<geolife::Segment> &se
 
 } // namespace
 
-std::vector<geolife::Segment> apply_filters(const geolife::Segment &segment) {
-    std::vector<geolife::Segment> segments = {segment};
+std::vector<geolife::Segment> apply_filters(geolife::Segment segment) {
+    std::vector<geolife::Segment> segments;
+    segments.push_back(drop_duplicate_times(std::move(segment)));
     segments = split_each(segments, split_by_bbox, kBeijing);
     segments = split_each(segments, split_by_time_gap, kMaxGapSeconds);
     segments = drop_small_segments(std::move(segments), kMinSize);
