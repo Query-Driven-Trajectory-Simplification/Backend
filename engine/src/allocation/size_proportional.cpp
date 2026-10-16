@@ -1,45 +1,45 @@
 #include "backend/engine/allocation/size_proportional.hpp"
-#include "backend/engine/allocation/budget_allocator.hpp"
+#include "backend/engine/allocation/constants.hpp"
 #include <algorithm>
 #include <cstddef>
+#include <format>
 #include <functional>
 #include <queue>
 #include <stdexcept>
 #include <vector>
-#include <format>
 
 namespace allocation {
 namespace {
 
-struct TripRatio {
-    std::size_t trip_index;
+struct TrajectoryRatio {
+    std::size_t trajectory_index;
     std::size_t budget;
     std::size_t size;
 
     // a/b < c/d  <=>  a*d < c*b
     // no need for float on size_t
-    bool operator<(const TripRatio &other) const {
+    bool operator<(const TrajectoryRatio &other) const {
         return budget * other.size < other.budget * size;
     }
-    bool operator>(const TripRatio &other) const {
-        return budget * other.size > other.budget * size;
-    }
+    bool operator>(const TrajectoryRatio &other) const { return other < *this; }
 };
 
 void DistributeLeftovers(const std::vector<std::size_t> &sizes, std::size_t total_budget,
                          std::size_t &allocated, std::vector<std::size_t> &budgets) {
-    std::priority_queue<TripRatio, std::vector<TripRatio>, std::greater<TripRatio>> min_ratio;
+    std::priority_queue<TrajectoryRatio, std::vector<TrajectoryRatio>,
+                        std::greater<TrajectoryRatio>>
+        min_ratio;
 
     for (std::size_t i = 0; i < sizes.size(); ++i) {
-        if (budgets[i] < sizes[i]){
+        if (budgets[i] < sizes[i]) {
             min_ratio.push({i, budgets[i], sizes[i]});
         }
     }
 
     while (allocated < total_budget && !min_ratio.empty()) {
-        TripRatio top_element = min_ratio.top();
+        TrajectoryRatio top_element = min_ratio.top();
         min_ratio.pop();
-        budgets[top_element.trip_index]++;
+        budgets[top_element.trajectory_index]++;
         top_element.budget++;
         allocated++;
         if (top_element.budget < top_element.size) {
@@ -51,20 +51,21 @@ void DistributeLeftovers(const std::vector<std::size_t> &sizes, std::size_t tota
 void TakeBackFromOvershoot(const std::vector<std::size_t> &sizes, std::size_t total_budget,
                            std::size_t &allocated, std::vector<std::size_t> &budgets) {
 
-    std::priority_queue<TripRatio, std::vector<TripRatio>, std::less<TripRatio>> max_ratio;
+    std::priority_queue<TrajectoryRatio, std::vector<TrajectoryRatio>, std::less<TrajectoryRatio>>
+        max_ratio;
     for (std::size_t i = 0; i < sizes.size(); ++i) {
-        if (budgets[i] > kMinPointsPerTrip){
+        if (budgets[i] > kMinPointsPerTrajectory) {
             max_ratio.push({i, budgets[i], sizes[i]});
         }
     }
 
     while (allocated > total_budget && !max_ratio.empty()) {
-        TripRatio top_element = max_ratio.top();
+        TrajectoryRatio top_element = max_ratio.top();
         max_ratio.pop();
-        budgets[top_element.trip_index]--;
+        budgets[top_element.trajectory_index]--;
         top_element.budget--;
         allocated--;
-        if (top_element.budget > kMinPointsPerTrip) {
+        if (top_element.budget > kMinPointsPerTrajectory) {
             max_ratio.push(top_element);
         }
     }
@@ -74,18 +75,21 @@ void TakeBackFromOvershoot(const std::vector<std::size_t> &sizes, std::size_t to
 
 std::vector<std::size_t> proportional_budget(const core::TrajectoryDb &trajectories,
                                              std::size_t total_budget) {
-    const std::size_t num_trips = trajectories.size();
+    const std::size_t num_trajectories = trajectories.size();
     const std::size_t num_points = trajectories.num_points();
 
-    if (total_budget < kMinPointsPerTrip * num_trips) {
-        throw std::invalid_argument("Total budget must be at least 2 points per trip");
+    if (total_budget < kMinPointsPerTrajectory * num_trajectories) {
+        throw std::invalid_argument(std::format(
+            "Total budget must be at least {} points per trajectory", kMinPointsPerTrajectory));
     }
 
-    std::vector<std::size_t> sizes(num_trips);
-    for (std::size_t i = 0; i < num_trips; ++i) {
+    std::vector<std::size_t> sizes(num_trajectories);
+    for (std::size_t i = 0; i < num_trajectories; ++i) {
         sizes[i] = trajectories.trajectory(i).size();
-        if (sizes[i] < kMinPointsPerTrip){
-            throw std::invalid_argument(std::format("Trip {} No trip may be less than 2 points", i));
+        if (sizes[i] < kMinPointsPerTrajectory) {
+            throw std::invalid_argument(std::format(
+                "Trajectory {} has {} points; at least {} required",
+                trajectories.trajectory(i).trajectory_id, sizes[i], kMinPointsPerTrajectory));
         }
     }
 
@@ -93,11 +97,11 @@ std::vector<std::size_t> proportional_budget(const core::TrajectoryDb &trajector
         return sizes;
     }
 
-    std::vector<std::size_t> budgets(num_trips);
+    std::vector<std::size_t> budgets(num_trajectories);
     std::size_t allocated = 0;
-    for (std::size_t i = 0; i < num_trips; ++i) {
+    for (std::size_t i = 0; i < num_trajectories; ++i) {
         const std::size_t share = sizes[i] * total_budget / num_points;
-        budgets[i] = std::clamp(share, kMinPointsPerTrip, sizes[i]);
+        budgets[i] = std::clamp(share, kMinPointsPerTrajectory, sizes[i]);
         allocated += budgets[i];
     }
 
