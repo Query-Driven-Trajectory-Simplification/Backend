@@ -4,11 +4,16 @@
 #include <optional>
 
 std::optional<pipeline::Config> parse_args(int argc, char *argv[]) {
-    if (argc != 2) {
+    if (argc != 2 && argc != 3) {
+        std::cerr << "usage: " << argv[0] << " <points.parquet> [output_dir]\n";
         return std::nullopt;
     }
 
-    return pipeline::Config{.path = argv[1]};
+    pipeline::Config config{.path = argv[1]};
+    if (argc == 3) {
+        config.output_dir = argv[2];
+    }
+    return config;
 }
 
 int main(int argc, char *argv[]) {
