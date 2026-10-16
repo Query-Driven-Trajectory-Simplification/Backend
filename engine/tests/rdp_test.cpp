@@ -23,7 +23,7 @@ struct Trajectory {
 
 using Indices = std::vector<std::int64_t>;
 
-} // namespace
+}
 
 TEST(Rdp, KeepsOnlyEndpointsWithBudgetOfTwo) {
     const Trajectory traj({0, 1, 2, 3, 4}, {0, 5, 0, 5, 0});
@@ -39,7 +39,6 @@ TEST(Rdp, KeepsEverythingWhenBudgetCoversTrajectory) {
 TEST(Rdp, AddsLargestErrorFirst) {
     const Trajectory traj({0, 1, 2, 3, 4, 5, 6}, {0, 0, 10, 0, 3, 0, 0});
     EXPECT_EQ(selection::rdp::simplify(traj.view(), 3), (Indices{0, 2, 6}));
-    // Against the new segment (2,10)-(6,0), point 3 is ~7.4 m off, more than point 4.
     EXPECT_EQ(selection::rdp::simplify(traj.view(), 4), (Indices{0, 2, 3, 6}));
 }
 

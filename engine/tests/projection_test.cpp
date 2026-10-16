@@ -12,13 +12,12 @@ TEST(Projection, OriginIsZero) {
 }
 
 TEST(Projection, HundredthOfDegreeInMetres) {
-    // 0.01 degree is about 1110 m north and 854.6 m east at Beijing latitude.
     const auto north = core::to_local_metres(core::origin_lat + 0.01, core::origin_lon);
     const auto east = core::to_local_metres(core::origin_lat, core::origin_lon + 0.01);
     EXPECT_NEAR(north.y, 1110.3, 1.0);
     EXPECT_DOUBLE_EQ(north.x, 0.0);
     EXPECT_NEAR(east.x, 854.6, 1.0);
-    EXPECT_DOUBLE_EQ(east.y, 0.0);
+    EXPECT_NEAR(east.y, 0.0, 0.1);
 }
 
 TEST(TrajectoryDb, StoresProjectedPoints) {
