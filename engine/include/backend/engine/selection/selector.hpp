@@ -14,9 +14,8 @@ enum class AlgorithmType {
 
 
 std::vector<std::int64_t> simplify_trajectory(
-    const core::TrajectoryView& trajectory, 
-    AlgorithmType algorithm,
-    std::size_t points_to_keep
-);
+    const core::TrajectoryView&, 
+    AlgorithmType,
+    std::size_t);
 
 }
