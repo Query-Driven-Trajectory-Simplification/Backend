@@ -10,7 +10,8 @@ namespace pipeline {
 
 void run(const Config &config) {
     core::TrajectoryDb trajectories = io::load_trajectories(config.path);
-    std::cout << trajectories.size() << " trips, " << trajectories.num_points() << " points\n";
+    std::cout << trajectories.size() << " trajectories, " << trajectories.num_points()
+              << " points\n";
     std::cout << trajectories.trajectory(3).size() << std::endl;
 
     core::TrajectoryView trajectory = trajectories.trajectory(3);
@@ -28,14 +29,11 @@ void run(const Config &config) {
                   << ", y: " << trajectory.y[idx] << ")\n";
     }
 
-    std::int64_t total_budget = trajectories.num_points() / 2;
+    std::size_t total_budget = trajectories.num_points() / 2;
     auto budgets = allocation::create_trajectory_budgets(
-        trajectories, allocation::AlgorithmType::SIZE_PROPORTIONAL, total_budget);
+        trajectories, allocation::AlgorithmType::kSizeProportional, total_budget);
 
-    std::cout << "Budget: " << total_budget << "\n";
-    for (size_t i = 0; i < budgets.size(); ++i) {
-        std::cout << "Trip " << i << ": " << budgets[i] << "\n";
-    }
-}
 
 }
+
+} // namespace pipeline

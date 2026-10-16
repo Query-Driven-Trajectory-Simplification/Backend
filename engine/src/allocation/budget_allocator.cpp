@@ -13,10 +13,9 @@ std::vector<std::size_t> create_trajectory_budgets(const core::TrajectoryDb &tra
                                                    std::size_t total_budget) {
 
     switch (algorithm) {
-    case AlgorithmType::SIZE_PROPORTIONAL:
+    case AlgorithmType::kSizeProportional:
         return allocation::proportional_budget(trajectories, total_budget);
-    default:
-        throw std::invalid_argument("invalid trajectory budget allocator");
     }
+    throw std::invalid_argument("invalid trajectory budget allocator");
 }
 } // namespace allocation

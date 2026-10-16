@@ -4,6 +4,7 @@ add_library(engine
     src/pipeline/pipeline.cpp
     src/selection/rdp.cpp
     src/selection/selector.cpp
+    src/allocation/budget_allocator.cpp
     src/allocation/size_proportional.cpp
 )
 
