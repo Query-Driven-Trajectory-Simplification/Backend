@@ -12,4 +12,4 @@ void run(const Config &config) {
     std::cout << trajectories.trajectory(3).size();
 }
 
-} // namespace pipeline
+}

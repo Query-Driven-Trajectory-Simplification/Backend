@@ -12,6 +12,8 @@ struct TrajectoryView {
     std::span<const std::int64_t> t;
     std::span<const double> lat;
     std::span<const double> lon;
+    std::span<const double> x;
+    std::span<const double> y;
 
     std::size_t size() const { return t.size(); }
 };
@@ -28,10 +30,10 @@ class TrajectoryDb {
         assert(i < size());
         const auto start = m_offsets[i];
         const auto len = m_offsets[i + 1] - start;
-        return TrajectoryView{m_trajectory_ids[i],
-                              {m_t.data() + start, len},
-                              {m_lat.data() + start, len},
-                              {m_lon.data() + start, len}};
+        return TrajectoryView{
+            m_trajectory_ids[i],         {m_t.data() + start, len}, {m_lat.data() + start, len},
+            {m_lon.data() + start, len}, {m_x.data() + start, len}, {m_y.data() + start, len},
+        };
     }
 
   private:
@@ -40,6 +42,8 @@ class TrajectoryDb {
     std::vector<std::int64_t> m_t;
     std::vector<double> m_lat;
     std::vector<double> m_lon;
+    std::vector<double> m_x;
+    std::vector<double> m_y;
 };
 
-} // namespace core
+}
