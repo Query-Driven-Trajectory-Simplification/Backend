@@ -1,6 +1,7 @@
 #include "backend/engine/pipeline/pipeline.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/selection/selector.hpp"
 
 #include <iostream>
 
@@ -10,6 +11,21 @@ void run(const Config &config) {
     core::TrajectoryDb trajectories = io::load_trajectories(config.path);
     std::cout << trajectories.size() << " trips, " << trajectories.num_points() << " points\n";
     std::cout << trajectories.trajectory(3).size();
+
+    core::TrajectoryView trajectory = trajectories.trajectory(3);
+
+    auto kept_indices = selection::simplify_trajectory(
+        trajectory, 
+        selection::AlgorithmType::RDP, 
+        10
+    );
+
+    std::cout << "Simplified down to " << kept_indices.size() << " points. Indices:\n";
+    for (std::int64_t idx : kept_indices) {
+        std::cout << "  index: " << idx 
+                  << " -> (x: " << trajectory.x[idx] 
+                  << ", y: " << trajectory.y[idx] << ")\n";
+    }
 }
 
 }

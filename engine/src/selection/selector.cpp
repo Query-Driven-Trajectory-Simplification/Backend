@@ -9,10 +9,10 @@ std::vector<std::int64_t> simplify_trajectory(const core::TrajectoryView &trajec
                                               AlgorithmType algorithm,
                                               std::size_t points_to_keep) {
     switch (algorithm) {
-    case AlgorithmType::Rdp:
+    case AlgorithmType::RDP:
         return rdp::simplify(trajectory, points_to_keep);
-    case AlgorithmType::Sed:
-        throw std::runtime_error("Sed not implemented yet");
+    case AlgorithmType::SED:
+        throw std::runtime_error("SED not implemented yet");
     }
     throw std::invalid_argument("Unknown algo type");
 }

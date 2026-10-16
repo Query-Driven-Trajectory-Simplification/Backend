@@ -8,8 +8,8 @@
 namespace selection {
 
 enum class AlgorithmType {
-    Rdp,
-    Sed
+    RDP,
+    SED
 };
 
 
