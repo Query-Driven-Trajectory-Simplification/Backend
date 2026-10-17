@@ -1,6 +1,8 @@
 #include "backend/engine/split/split.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
-#include <cmath>
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <vector>
@@ -13,34 +15,45 @@ void validate(double value) {
     }
 }
 
-split::TrajectoryDbSplit time_split(core::TrajectoryDb trajectories, double query_percentage) {
+std::int64_t start_time(const core::TrajectoryDb& db, std::size_t idx) {
+    const auto view = db.trajectory(idx);
+    return view.t.empty() ? std::numeric_limits<std::int64_t>::max() : view.t.front();
+}
+
+split::TrajectoryDbSplit time_split(const core::TrajectoryDb& trajectories, double query_percentage) {
     validate(query_percentage);
 
-    const auto query_count = static_cast<size_t>(std::round(trajectories.size() * query_percentage));
-    const auto split_index = trajectories.size() - query_count;
+    std::vector<std::size_t> indices(trajectories.size());
+    std::iota(indices.begin(), indices.end(), 0);
 
-    std::vector<size_t> train_indices(split_index);
-    std::vector<size_t> query_indices(trajectories.size() - split_index);
+    std::stable_sort(indices.begin(), indices.end(), [&](std::size_t a, std::size_t b) {
+        return start_time(trajectories, a) < start_time(trajectories, b);
+    });
 
-    std::iota(train_indices.begin(), train_indices.end(), 0);
-    std::iota(query_indices.begin(), query_indices.end(), split_index);
+    const auto split_index = static_cast<std::size_t>(trajectories.size() * (1.0 - query_percentage));
 
-    return split::TrajectoryDbSplit{.database = train_indices, .queries = query_indices};
+    std::vector<std::size_t> train_indices(indices.begin(), indices.begin() + split_index);
+    std::vector<std::size_t> query_indices(indices.begin() + split_index, indices.end());
+
+    return split::TrajectoryDbSplit{
+        .database = std::move(train_indices),
+        .queries = std::move(query_indices)
+    };
 }
 
-}
+} // namespace
 
 namespace split {
 
-split::TrajectoryDbSplit split(core::TrajectoryDb trajectories, split::SplitType split_type, double query_percentage) {
+TrajectoryDbSplit split(const core::TrajectoryDb& trajectories, SplitType split_type, double query_percentage) {
     switch (split_type) {
-        case split::Random:
-            throw std::runtime_error("Spltting by time not implemented yet");
-        case split::Time:
+        case SplitType::Random:
+            throw std::runtime_error("Splitting randomly not implemented yet");
+        case SplitType::Time:
             return time_split(trajectories, query_percentage);
     }
 
     throw std::invalid_argument("Unknown algo type");
 }
 
-}
+} // namespace split
