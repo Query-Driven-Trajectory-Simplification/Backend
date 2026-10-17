@@ -87,7 +87,7 @@ TrajectoryDbSplit split(
             return time_split(trajectories, query_percentage);
     }
 
-    throw std::invalid_argument("Unknown algo type");
+    throw std::invalid_argument("Unknown split type");
 }
 
 } // namespace split
