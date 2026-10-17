@@ -1,6 +1,7 @@
 #include "backend/engine/split/split.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <numeric>
@@ -11,9 +12,14 @@
 namespace {
 
 void validate(double value) {
-    if (value < 0.0 || value > 1.0) {
+    if (!(value >= 0.0 && value <= 1.0)) {
         throw std::invalid_argument("Value must be between 0 and 1");
     }
+}
+
+std::size_t compute_split_index(std::size_t n, double query_percentage) {
+    const auto query_count = static_cast<std::size_t>(std::round(static_cast<double>(n) * query_percentage));
+    return n - query_count;
 }
 
 std::int64_t start_time(const core::TrajectoryDb& db, std::size_t idx) {
@@ -31,7 +37,7 @@ split::TrajectoryDbSplit time_split(const core::TrajectoryDb& trajectories, doub
         return start_time(trajectories, a) < start_time(trajectories, b);
     });
 
-    const auto split_index = static_cast<std::size_t>(trajectories.size() * (1.0 - query_percentage));
+    const auto split_index = compute_split_index(trajectories.size(), query_percentage);
 
     return split::TrajectoryDbSplit{
         .database = {indices.begin(), indices.begin() + split_index},
@@ -43,7 +49,7 @@ split::TrajectoryDbSplit random_split(const core::TrajectoryDb& trajectories, do
     validate(query_percentage);
 
     const std::size_t n = trajectories.size();
-    const auto split_index = static_cast<std::size_t>(n * (1.0 - query_percentage));
+    const auto split_index = compute_split_index(n, query_percentage);
     std::size_t queries_needed = n - split_index;
 
     std::vector<std::size_t> train_indices;
