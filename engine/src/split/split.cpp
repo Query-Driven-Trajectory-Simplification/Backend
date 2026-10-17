@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <numeric>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -32,12 +33,40 @@ split::TrajectoryDbSplit time_split(const core::TrajectoryDb& trajectories, doub
 
     const auto split_index = static_cast<std::size_t>(trajectories.size() * (1.0 - query_percentage));
 
-    std::vector<std::size_t> train_indices(indices.begin(), indices.begin() + split_index);
-    std::vector<std::size_t> query_indices(indices.begin() + split_index, indices.end());
+    return split::TrajectoryDbSplit{
+        .database = {indices.begin(), indices.begin() + split_index},
+        .queries  = {indices.begin() + split_index, indices.end()}
+    };
+}
+
+split::TrajectoryDbSplit random_split(const core::TrajectoryDb& trajectories, double query_percentage, std::uint64_t seed) {
+    validate(query_percentage);
+
+    const std::size_t n = trajectories.size();
+    const auto split_index = static_cast<std::size_t>(n * (1.0 - query_percentage));
+    std::size_t queries_needed = n - split_index;
+
+    std::vector<std::size_t> train_indices;
+    std::vector<std::size_t> query_indices;
+    train_indices.reserve(split_index);
+    query_indices.reserve(queries_needed);
+
+    std::mt19937_64 rng(seed);
+
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t remaining = n - i;
+
+        if ((rng() % remaining) < queries_needed) {
+            query_indices.push_back(i);
+            --queries_needed;
+        } else {
+            train_indices.push_back(i);
+        }
+    }
 
     return split::TrajectoryDbSplit{
         .database = std::move(train_indices),
-        .queries = std::move(query_indices)
+        .queries  = std::move(query_indices)
     };
 }
 
@@ -45,10 +74,15 @@ split::TrajectoryDbSplit time_split(const core::TrajectoryDb& trajectories, doub
 
 namespace split {
 
-TrajectoryDbSplit split(const core::TrajectoryDb& trajectories, SplitType split_type, double query_percentage) {
+TrajectoryDbSplit split(
+    const core::TrajectoryDb& trajectories,
+    SplitType split_type,
+    double query_percentage,
+    std::uint64_t seed
+) {
     switch (split_type) {
         case SplitType::Random:
-            throw std::runtime_error("Splitting randomly not implemented yet");
+            return random_split(trajectories, query_percentage, seed);
         case SplitType::Time:
             return time_split(trajectories, query_percentage);
     }
