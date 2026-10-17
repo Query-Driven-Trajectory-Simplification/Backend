@@ -3,8 +3,8 @@
 namespace split {
 
 struct TrajectoryDbSplit {
-    core::TrajectoryDb trainingData;
-    core::TrajectoryDb testData;
+    std::vector<size_t> database;
+    std::vector<size_t> queries;
 };
 
 enum SplitType {
@@ -12,6 +12,6 @@ enum SplitType {
     Time
 };
 
-TrajectoryDbSplit split(core::TrajectoryDb, SplitType);
+TrajectoryDbSplit split(const core::TrajectoryDb& trajectories, SplitType split_type, double query_percentage);
 
 }
