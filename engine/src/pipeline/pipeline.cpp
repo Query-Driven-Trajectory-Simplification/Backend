@@ -21,7 +21,7 @@ void run(const Config &config) {
     );
 
     std::cout << "Simplified down to " << kept_indices.size() << " points. Indices:\n";
-    for (std::int64_t idx : kept_indices) {
+    for (std::size_t idx : kept_indices) {
         std::cout << "  index: " << idx 
                   << " -> (x: " << trajectory.x[idx] 
                   << ", y: " << trajectory.y[idx] << ")\n";

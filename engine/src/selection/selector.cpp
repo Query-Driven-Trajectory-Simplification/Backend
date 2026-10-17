@@ -5,9 +5,9 @@
 
 namespace selection {
 
-std::vector<std::int64_t> simplify_trajectory(const core::TrajectoryView &trajectory,
-                                              AlgorithmType algorithm,
-                                              std::size_t points_to_keep) {
+std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &trajectory,
+                                             AlgorithmType algorithm,
+                                             std::size_t points_to_keep) {
     switch (algorithm) {
     case AlgorithmType::RDP:
         return rdp::simplify(trajectory, points_to_keep);

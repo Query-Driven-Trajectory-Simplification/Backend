@@ -2,7 +2,6 @@
 
 #include "backend/engine/core/trajectory_db.hpp"
 #include <vector>
-#include <cstdint>
 #include <cstddef>
 
 namespace selection {
@@ -13,9 +12,10 @@ enum class AlgorithmType {
 };
 
 
-std::vector<std::int64_t> simplify_trajectory(
+std::vector<std::size_t> simplify_trajectory(
     const core::TrajectoryView&, 
     AlgorithmType,
-    std::size_t);
+    std::size_t
+);
 
 }

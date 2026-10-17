@@ -21,7 +21,7 @@ struct Trajectory {
     core::TrajectoryView view() const { return {0, t, {}, {}, x, y}; }
 };
 
-using Indices = std::vector<std::int64_t>;
+using Indices = std::vector<std::size_t>;
 
 }
 

@@ -4,6 +4,7 @@
 
 namespace core {
 
+// This is hardcoded for the geolife dataset
 inline constexpr double origin_lat = 39.95;
 inline constexpr double origin_lon = 116.35;
 

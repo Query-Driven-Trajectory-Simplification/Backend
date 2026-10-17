@@ -51,16 +51,16 @@ void push_split(std::priority_queue<Split> &heap,
 
 } // namespace
 
-std::vector<std::int64_t> simplify(const core::TrajectoryView &trajectory,
-                                   std::size_t points_to_keep) {
+std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
+                                  std::size_t points_to_keep) {
     const std::size_t n = trajectory.size();
     const auto &x = trajectory.x;
     const auto &y = trajectory.y;
 
     if (points_to_keep >= n) {
-        std::vector<std::int64_t> all_points_kept(n);
+        std::vector<std::size_t> all_points_kept(n);
         for (std::size_t i = 0; i < n; ++i)
-            all_points_kept[i] = static_cast<std::int64_t>(i);
+            all_points_kept[i] = i;
         return all_points_kept;
     }
     std::vector<bool> kept(n, false);
@@ -79,11 +79,11 @@ std::vector<std::int64_t> simplify(const core::TrajectoryView &trajectory,
         push_split(heap, x, y, split.index, split.last);
     }
 
-    std::vector<std::int64_t> indices;
+    std::vector<std::size_t> indices;
     indices.reserve(num_kept);
     for (std::size_t i = 0; i < n; ++i) {
         if (kept[i])
-            indices.push_back(static_cast<std::int64_t>(i));
+            indices.push_back(i);
     }
     return indices;
 }
