@@ -24,7 +24,7 @@ struct TrajectoryRatio {
     bool operator>(const TrajectoryRatio &other) const { return other < *this; }
 };
 
-void DistributeLeftovers(const std::vector<std::size_t> &sizes, std::size_t total_budget,
+void distribute_leftovers(const std::vector<std::size_t> &sizes, std::size_t total_budget,
                          std::size_t &allocated, std::vector<std::size_t> &budgets) {
     std::priority_queue<TrajectoryRatio, std::vector<TrajectoryRatio>,
                         std::greater<TrajectoryRatio>>
@@ -48,7 +48,7 @@ void DistributeLeftovers(const std::vector<std::size_t> &sizes, std::size_t tota
     }
 }
 
-void TakeBackFromOvershoot(const std::vector<std::size_t> &sizes, std::size_t total_budget,
+void take_back_from_overshoot(const std::vector<std::size_t> &sizes, std::size_t total_budget,
                            std::size_t &allocated, std::vector<std::size_t> &budgets) {
 
     std::priority_queue<TrajectoryRatio, std::vector<TrajectoryRatio>, std::less<TrajectoryRatio>>
@@ -106,9 +106,9 @@ std::vector<std::size_t> proportional_budget(const core::TrajectoryDb &trajector
     }
 
     if (allocated > total_budget) {
-        TakeBackFromOvershoot(sizes, total_budget, allocated, budgets);
+        take_back_from_overshoot(sizes, total_budget, allocated, budgets);
     } else if (allocated < total_budget) {
-        DistributeLeftovers(sizes, total_budget, allocated, budgets);
+        distribute_leftovers(sizes, total_budget, allocated, budgets);
     }
     return budgets;
 }
