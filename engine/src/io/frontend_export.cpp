@@ -77,4 +77,29 @@ void export_range_queries(std::span<const SeedQueries> seeds, std::uint32_t min_
     write_file(json, path);
 }
 
+void export_box_queries(std::span<const SeedBoxQueries> seeds, const query::BoxQueryParams &params,
+                        const std::filesystem::path &path) {
+    std::string json = std::format("{{\"box_km\":{},\"window_seconds\":{},\"min_results\":{},"
+                                   "\"full_accept_at\":{},\"queries_per_seed\":{},\"seeds\":[",
+                                   params.box_km, params.window_seconds, params.min_results,
+                                   params.full_accept_at, params.count);
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        std::format_to(std::back_inserter(json), "{}\n{{\"seed\":{},\"queries\":[",
+                       s == 0 ? "" : ",", seeds[s].seed);
+        const auto &queries = seeds[s].queries;
+        for (std::size_t i = 0; i < queries.size(); ++i) {
+            const auto &q = queries[i];
+            std::format_to(std::back_inserter(json),
+                           "{}{{\"trajectory_id\":{},\"lat\":{:.6f},\"lon\":{:.6f},\"t\":{},"
+                           "\"min_lat\":{:.6f},\"max_lat\":{:.6f},\"min_lon\":{:.6f},"
+                           "\"max_lon\":{:.6f},\"t_start\":{},\"t_end\":{},\"results\":{}}}",
+                           i == 0 ? "\n" : ",\n", q.trajectory_id, q.lat, q.lon, q.t, q.min_lat,
+                           q.max_lat, q.min_lon, q.max_lon, q.t_start, q.t_end, q.results);
+        }
+        json += "\n]}";
+    }
+    json += "\n]}\n";
+    write_file(json, path);
+}
+
 } // namespace io

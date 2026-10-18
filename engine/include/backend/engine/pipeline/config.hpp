@@ -1,5 +1,7 @@
 #pragma once
 
+#include "backend/engine/query/box_query.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <vector>
@@ -11,6 +13,7 @@ struct Config {
     std::filesystem::path output_dir = "output";
     // One range query set per seed, so results can be reported as mean and spread over seeds.
     std::vector<std::uint64_t> seeds = {1, 2, 3, 4, 5};
+    query::BoxQueryParams box_queries;
 };
 
 } // namespace pipeline

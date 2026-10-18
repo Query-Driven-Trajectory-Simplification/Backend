@@ -24,6 +24,11 @@ class TrajectoryDb {
     std::size_t size() const { return m_trajectory_ids.size(); }
     std::size_t num_points() const { return m_t.size(); }
 
+    std::span<const std::uint64_t> offsets() const { return m_offsets; }
+    std::span<const std::int64_t> all_t() const { return m_t; }
+    std::span<const double> all_lat() const { return m_lat; }
+    std::span<const double> all_lon() const { return m_lon; }
+
     TrajectoryView trajectory(std::size_t i) const {
         assert(i < size());
         const auto start = m_offsets[i];

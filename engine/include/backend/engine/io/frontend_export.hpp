@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backend/engine/query/box_query.hpp"
 #include "backend/engine/query/range_query.hpp"
 
 #include <cstdint>
@@ -26,5 +27,13 @@ struct SeedQueries {
 // queries in the order they were drawn.
 void export_range_queries(std::span<const SeedQueries> seeds, std::uint32_t min_weight,
                           const std::filesystem::path &path);
+
+struct SeedBoxQueries {
+    std::uint64_t seed;
+    std::vector<query::BoxQuery> queries;
+};
+
+void export_box_queries(std::span<const SeedBoxQueries> seeds, const query::BoxQueryParams &params,
+                        const std::filesystem::path &path);
 
 } // namespace io
