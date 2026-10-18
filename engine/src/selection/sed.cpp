@@ -1,51 +1,66 @@
 #include "backend/engine/selection/sed.hpp"
-#include "backend/engine/core/trajectory_db.hpp"
+
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <cstdlib>
+#include <cstdint>
 #include <queue>
+#include <span>
 #include <vector>
-#include <algorithm>
 
 namespace selection::sed {
+
+namespace {
+
+struct Point {
+    std::size_t prev;
+    std::size_t next;
+};
+
+struct Removal {
+    double cost;
+    std::size_t index;
+    std::size_t version;
+
+    bool operator<(const Removal &other) const { return cost > other.cost; }
+};
 
 double synchronous_factor(double point_time, double start_time, double end_time) {
     return (point_time - start_time) / (end_time - start_time);
 }
 
-double synchronous_distance(const core::TrajectoryView &trajectory, std::size_t first,
-                            std::size_t last, std::size_t point) {
-    if(trajectory.t[first] == trajectory.t[last]){
-        return 0.0;
-    }
-
-    double c = synchronous_factor(static_cast<double>(trajectory.t[point]),
-                                  static_cast<double>(trajectory.t[first]),
-                                  static_cast<double>(trajectory.t[last]));
-
-    double sync_x = trajectory.x[first] + c * (trajectory.x[last] - trajectory.x[first]);
-    double sync_y = trajectory.y[first] + c * (trajectory.y[last] - trajectory.y[first]);
-    double sync_distance = std::hypot(sync_x - trajectory.x[point], sync_y - trajectory.y[point]);
-
-    return sync_distance;
+double span_error(const core::TrajectoryView &trajectory, std::size_t first, std::size_t last) {
+    double error = 0.0;
+    for (std::size_t k = first + 1; k < last; ++k)
+        error = std::max(error, synchronous_distance(trajectory, first, last, k));
+    return error;
 }
 
-struct point_t {
-    std::size_t prev;
-    std::size_t next;
-};
-struct removal_t {
-    double neightbour_sed;
-    std::size_t index;
-    std::size_t version;
+} // namespace
 
-    bool operator<(const removal_t &other) const { return neightbour_sed > other.neightbour_sed; }
-};
+double synchronous_distance(const core::TrajectoryView &trajectory, std::size_t first,
+                            std::size_t last, std::size_t point) {
+
+    const std::span<const std::int64_t> ts = trajectory.t;
+    const std::span<const double> xs = trajectory.x;
+    const std::span<const double> ys = trajectory.y;
+
+    if (ts[first] == ts[last])
+        return 0.0;
+
+    const double c =
+        synchronous_factor(static_cast<double>(ts[point]), static_cast<double>(ts[first]),
+                           static_cast<double>(ts[last]));
+
+    const double sync_x = xs[first] + c * (xs[last] - xs[first]);
+    const double sync_y = ys[first] + c * (ys[last] - ys[first]);
+    return std::hypot(sync_x - xs[point], sync_y - ys[point]);
+}
 
 std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
                                   std::size_t points_to_keep) {
+    const std::size_t n = trajectory.size();
 
-    size_t n = trajectory.size();
     if (points_to_keep >= n || n <= 2) {
         std::vector<std::size_t> all_points_kept(n);
         for (std::size_t i = 0; i < n; ++i)
@@ -53,55 +68,46 @@ std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
         return all_points_kept;
     }
 
-    std::vector<bool> keep_indicies(n, true);
+    std::vector<Point> points(n);
+    for (std::size_t i = 0; i < n; ++i)
+        points[i] = {.prev = i - 1, .next = i + 1};
 
-    std::priority_queue<removal_t> heap;
-    std::vector<point_t> points(n);
-    points[0] = {.prev = 0,.next=1};
-    points[n-1] = {.prev= n-2, .next = n-1};
-    std::vector<std::size_t> versions(n,0);
-  
-    for (std::size_t i = 1; i < n - 1; ++i) {
-        points[i] = {i-1, i+1};
-        heap.push({.neightbour_sed = synchronous_distance(trajectory, i - 1, i + 1, i),
-                   .index = i,
-                   .version = 0});
-    }
+    std::vector<bool> kept_indices(n, true);
+    std::vector<std::size_t> versions(n, 0);
     std::size_t kept_points = n;
 
+    std::priority_queue<Removal> heap;
+    for (std::size_t i = 1; i < n - 1; ++i)
+        heap.push({.cost = span_error(trajectory, i - 1, i + 1), .index = i, .version = 0});
 
     while (kept_points > points_to_keep && !heap.empty()) {
-        const removal_t top = heap.top(); heap.pop();
-        if(!keep_indicies[top.index] || top.version != versions[top.index]){
+        const Removal top = heap.top();
+        heap.pop();
+        if (!kept_indices[top.index] || top.version != versions[top.index])
             continue;
-        }
-        const size_t prev = points[top.index].prev;
-        const size_t next = points[top.index].next;
-        keep_indicies[top.index] = false;
+
+        const std::size_t prev = points[top.index].prev;
+        const std::size_t next = points[top.index].next;
+        kept_indices[top.index] = false;
         points[prev].next = next;
         points[next].prev = prev;
         kept_points--;
 
-        for(size_t curr : {prev,next}){
-            if (curr == 0 || curr == n-1){
+        for (const std::size_t curr : {prev, next}) {
+            if (curr == 0 || curr == n - 1)
                 continue;
-            }
-            double cost = 0.0;
-            const size_t first = points[curr].prev;
-            const size_t last = points[curr].next;
-            for (size_t k = first + 1; k < last; ++k)
-                cost = std::max(cost, synchronous_distance(trajectory, first, last, k));
             versions[curr]++;
-            heap.push({cost,curr,versions[curr]});
+            heap.push({.cost = span_error(trajectory, points[curr].prev, points[curr].next),
+                       .index = curr,
+                       .version = versions[curr]});
         }
-
-        
     }
-    std::vector<size_t> simplified_trajectory;
-    for(size_t i = 0; i < points.size(); ++i){
 
-        if(keep_indicies[i]) simplified_trajectory.push_back(i);
-
+    std::vector<std::size_t> simplified_trajectory;
+    simplified_trajectory.reserve(kept_points);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (kept_indices[i])
+            simplified_trajectory.push_back(i);
     }
     return simplified_trajectory;
 }
