@@ -16,7 +16,7 @@ void run(const Config &config) {
 
     auto kept_indices = selection::simplify_trajectory(
         trajectory, 
-        selection::AlgorithmType::RDP, 
+        selection::AlgorithmType::SED, 
         10
     );
 

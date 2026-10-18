@@ -29,18 +29,8 @@ double synchronous_factor(double point_time, double start_time, double end_time)
     return (point_time - start_time) / (end_time - start_time);
 }
 
-double span_error(const core::TrajectoryView &trajectory, std::size_t first, std::size_t last) {
-    double error = 0.0;
-    for (std::size_t k = first + 1; k < last; ++k)
-        error = std::max(error, synchronous_distance(trajectory, first, last, k));
-    return error;
-}
-
-} // namespace
-
-double synchronous_distance(const core::TrajectoryView &trajectory, std::size_t first,
-                            std::size_t last, std::size_t point) {
-
+double squared_synchronous_distance(const core::TrajectoryView &trajectory, std::size_t first,
+                                    std::size_t last, std::size_t point) {
     const std::span<const std::int64_t> ts = trajectory.t;
     const std::span<const double> xs = trajectory.x;
     const std::span<const double> ys = trajectory.y;
@@ -52,9 +42,41 @@ double synchronous_distance(const core::TrajectoryView &trajectory, std::size_t 
         synchronous_factor(static_cast<double>(ts[point]), static_cast<double>(ts[first]),
                            static_cast<double>(ts[last]));
 
-    const double sync_x = xs[first] + c * (xs[last] - xs[first]);
-    const double sync_y = ys[first] + c * (ys[last] - ys[first]);
-    return std::hypot(sync_x - xs[point], sync_y - ys[point]);
+    const double dx = xs[first] + c * (xs[last] - xs[first]) - xs[point];
+    const double dy = ys[first] + c * (ys[last] - ys[first]) - ys[point];
+    return dx * dx + dy * dy;
+}
+
+double span_error(const core::TrajectoryView &trajectory, std::size_t first, std::size_t last) {
+    const std::span<const std::int64_t> ts = trajectory.t;
+    const std::span<const double> xs = trajectory.x;
+    const std::span<const double> ys = trajectory.y;
+
+    if (ts[first] == ts[last])
+        return 0.0;
+
+    const double t0 = static_cast<double>(ts[first]);
+    const double inv_dt = 1.0 / (static_cast<double>(ts[last]) - t0);
+    const double x0 = xs[first];
+    const double y0 = ys[first];
+    const double seg_dx = xs[last] - x0;
+    const double seg_dy = ys[last] - y0;
+
+    double error = 0.0;
+    for (std::size_t k = first + 1; k < last; ++k) {
+        const double c = (static_cast<double>(ts[k]) - t0) * inv_dt;
+        const double dx = x0 + c * seg_dx - xs[k];
+        const double dy = y0 + c * seg_dy - ys[k];
+        error = std::max(error, dx * dx + dy * dy);
+    }
+    return error;
+}
+
+} // namespace
+
+double synchronous_distance(const core::TrajectoryView &trajectory, std::size_t first,
+                            std::size_t last, std::size_t point) {
+    return std::sqrt(squared_synchronous_distance(trajectory, first, last, point));
 }
 
 std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
