@@ -3,6 +3,7 @@ add_library(engine
     src/io/parquet_loader.cpp
     src/pipeline/pipeline.cpp
     src/selection/rdp.cpp
+    src/selection/sed.cpp
     src/selection/selector.cpp
 )
 
