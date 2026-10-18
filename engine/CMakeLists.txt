@@ -7,6 +7,7 @@ add_library(engine
     src/split/split.cpp
     src/allocation/budget_allocator.cpp
     src/allocation/size_proportional.cpp
+    src/query/where_at_query.cpp
 )
 
 target_include_directories(engine PUBLIC include)
