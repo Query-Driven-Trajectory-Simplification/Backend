@@ -1,5 +1,5 @@
-#include "backend/engine/split/split.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/split/split.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <gtest/gtest.h>
@@ -14,13 +14,8 @@ core::TrajectoryDb make_db(std::vector<std::int64_t> t) {
     const auto n = t.size();
     std::vector<std::uint64_t> offsets(n + 1);
     std::iota(offsets.begin(), offsets.end(), 0);
-    return {
-        std::move(offsets),
-        std::vector<std::int32_t>(n),
-        std::move(t),
-        std::vector<double>(n),
-        std::vector<double>(n)
-    };
+    return {std::move(offsets), std::vector<std::int32_t>(n), std::move(t), std::vector<double>(n),
+            std::vector<double>(n)};
 }
 
 } // namespace
@@ -39,11 +34,8 @@ TEST(RandomSplitTest, ExactSizesAndDisjointIndices) {
 
     // 3. Merging database + queries yields every index 0..9 exactly once
     std::vector<std::size_t> merged;
-    std::merge(
-        result.database.begin(), result.database.end(),
-        result.queries.begin(), result.queries.end(),
-        std::back_inserter(merged)
-    );
+    std::merge(result.database.begin(), result.database.end(), result.queries.begin(),
+               result.queries.end(), std::back_inserter(merged));
     EXPECT_EQ(merged, (std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}));
 }
 

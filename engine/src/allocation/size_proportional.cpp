@@ -25,7 +25,7 @@ struct TrajectoryRatio {
 };
 
 void distribute_leftovers(const std::vector<std::size_t> &sizes, std::size_t total_budget,
-                         std::size_t &allocated, std::vector<std::size_t> &budgets) {
+                          std::size_t &allocated, std::vector<std::size_t> &budgets) {
     std::priority_queue<TrajectoryRatio, std::vector<TrajectoryRatio>,
                         std::greater<TrajectoryRatio>>
         min_ratio;
@@ -49,7 +49,7 @@ void distribute_leftovers(const std::vector<std::size_t> &sizes, std::size_t tot
 }
 
 void take_back_from_overshoot(const std::vector<std::size_t> &sizes, std::size_t total_budget,
-                           std::size_t &allocated, std::vector<std::size_t> &budgets) {
+                              std::size_t &allocated, std::vector<std::size_t> &budgets) {
 
     std::priority_queue<TrajectoryRatio, std::vector<TrajectoryRatio>, std::less<TrajectoryRatio>>
         max_ratio;

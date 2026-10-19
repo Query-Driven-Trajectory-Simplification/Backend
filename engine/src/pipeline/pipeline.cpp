@@ -16,24 +16,18 @@ void run(const Config &config) {
 
     core::TrajectoryView trajectory = trajectories.trajectory(3);
 
-    auto kept_indices = selection::simplify_trajectory(
-        trajectory, 
-        selection::AlgorithmType::SED, 
-        10
-    );
+    auto kept_indices =
+        selection::simplify_trajectory(trajectory, selection::AlgorithmType::SED, 10);
 
     std::cout << "Simplified down to " << kept_indices.size() << " points. Indices:\n";
     for (std::size_t idx : kept_indices) {
-        std::cout << "  index: " << idx 
-                  << " -> (x: " << trajectory.x[idx] 
+        std::cout << "  index: " << idx << " -> (x: " << trajectory.x[idx]
                   << ", y: " << trajectory.y[idx] << ")\n";
     }
 
     std::size_t total_budget = trajectories.num_points() / 2;
     auto budgets = allocation::create_trajectory_budgets(
         trajectories, allocation::AlgorithmType::kSizeProportional, total_budget);
-
-
 }
 
 } // namespace pipeline

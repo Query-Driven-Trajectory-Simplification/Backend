@@ -34,4 +34,4 @@ TrajectoryDb::TrajectoryDb(std::vector<std::uint64_t> offsets,
     }
 }
 
-}
+} // namespace core

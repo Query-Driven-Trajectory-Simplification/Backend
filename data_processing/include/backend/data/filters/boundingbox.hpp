@@ -14,11 +14,8 @@ struct BoundingBox {
     double min_lon;
     double max_lon;
 
-    bool contains(const geolife::Point& p) const {
-        return p.lat >= min_lat &&
-               p.lat <= max_lat &&
-               p.lon >= min_lon &&
-               p.lon <= max_lon;
+    bool contains(const geolife::Point &p) const {
+        return p.lat >= min_lat && p.lat <= max_lat && p.lon >= min_lon && p.lon <= max_lon;
     }
 };
 
@@ -34,6 +31,7 @@ inline constexpr BoundingBox kBeijing = {
 inline constexpr std::size_t kMaxPointsOutside = 5;
 
 // Splits a segment into the runs of points inside bbox, drops short excursions outside bbox.
-std::vector<geolife::Segment> split_by_bbox(const geolife::Segment& segment, const BoundingBox& bbox);
+std::vector<geolife::Segment> split_by_bbox(const geolife::Segment &segment,
+                                            const BoundingBox &bbox);
 
-}
+} // namespace filters
