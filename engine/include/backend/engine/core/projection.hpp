@@ -1,17 +1,13 @@
 #pragma once
 
 #include <numbers>
+#include "backend/engine/core/local_point.hpp"
 
 namespace core {
 
 // This is hardcoded for the geolife dataset
 inline constexpr double origin_lat = 39.95;
 inline constexpr double origin_lon = 116.35;
-
-struct LocalPoint {
-    double x; // distance east of origin. This means we have negative values, origin isnt (0,0)
-    double y; // distance north of origin.
-};
 
 namespace detail {
 
@@ -60,7 +56,7 @@ inline constexpr ProjectionCoeffs coeffs = make_wgs84_coeffs(origin_lat);
 
 } // namespace detail
 
-constexpr LocalPoint to_local_metres(double lat, double lon) noexcept {
+constexpr core::LocalPoint to_local_metres(double lat, double lon) noexcept {
     const double dlat = lat - origin_lat;
     const double dlon = lon - origin_lon;
 
