@@ -10,4 +10,4 @@ geolife::Segment drop_duplicate_times(geolife::Segment segment) {
     return segment;
 }
 
-}
+} // namespace filters

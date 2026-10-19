@@ -3,7 +3,8 @@
 #include "backend/data/readers/geolife.hpp"
 
 TEST(ParsePltLine, ValidLine) {
-    auto p = geolife::parse_plt_line("39.984702,116.318417,0,492,39744.1201851852,2008-10-23,02:53:04");
+    auto p =
+        geolife::parse_plt_line("39.984702,116.318417,0,492,39744.1201851852,2008-10-23,02:53:04");
     ASSERT_TRUE(p) << p.error();
     EXPECT_DOUBLE_EQ(p->lat, 39.984702);
     EXPECT_DOUBLE_EQ(p->lon, 116.318417);
@@ -11,13 +12,15 @@ TEST(ParsePltLine, ValidLine) {
 }
 
 TEST(ParsePltLine, InvalidDate) {
-    auto p = geolife::parse_plt_line("39.984702,116.318417,0,492,39744.1201851852,2008-02-30,02:53:04");
+    auto p =
+        geolife::parse_plt_line("39.984702,116.318417,0,492,39744.1201851852,2008-02-30,02:53:04");
     ASSERT_FALSE(p);
     EXPECT_EQ(p.error(), "invalid date/time 2008-02-30 02:53:04"); // 30th feb doesnt exist
 }
 
 TEST(ParsePltLine, InvalidTime) {
-    auto p = geolife::parse_plt_line("39.984702,116.318417,0,492,39744.1201851852,2008-10-23,25:00:00");
+    auto p =
+        geolife::parse_plt_line("39.984702,116.318417,0,492,39744.1201851852,2008-10-23,25:00:00");
     ASSERT_FALSE(p);
     EXPECT_EQ(p.error(), "invalid date/time 2008-10-23 25:00:00");
 }

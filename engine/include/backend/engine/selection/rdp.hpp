@@ -11,4 +11,4 @@ namespace selection::rdp {
 std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
                                   std::size_t points_to_keep);
 
-}
+} // namespace selection::rdp

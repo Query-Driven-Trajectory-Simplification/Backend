@@ -46,4 +46,4 @@ class TrajectoryDb {
     std::vector<double> m_y;
 };
 
-}
+} // namespace core
