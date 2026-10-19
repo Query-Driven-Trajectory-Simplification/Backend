@@ -1,3 +1,9 @@
+include(FetchContent)
+FetchContent_Declare(nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+    SYSTEM)
+FetchContent_MakeAvailable(nlohmann_json)
+
 add_library(engine
     src/core/trajectory_db.cpp
     src/io/frontend_export.cpp
@@ -14,7 +20,7 @@ add_library(engine
 )
 
 target_include_directories(engine PUBLIC include)
-target_link_libraries(engine PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
+target_link_libraries(engine PRIVATE Arrow::arrow_shared Parquet::parquet_shared nlohmann_json::nlohmann_json)
 
 add_executable(run
     apps/run.cpp
