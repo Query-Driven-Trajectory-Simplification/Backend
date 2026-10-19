@@ -55,21 +55,4 @@ HeatMap heat_map(const core::TrajectoryDb &db, std::size_t &dropped_points);
 
 std::vector<std::pair<Cell, HeatMap::mapped_type>> ranked_cells(const HeatMap &heat);
 
-// Only cells with at least this many trajectories can become a query.
-inline constexpr std::uint32_t kMinQueryWeight = 2;
-inline constexpr std::size_t kQueriesPerSeed = 100;
-
-// A range query is one heat map cell: the box over its lat/lon bounds and its week.
-struct RangeQuery {
-    Cell cell;
-    CellBounds bounds;
-    std::uint32_t weight;
-};
-
-// Draws count cells with replacement, with probability proportional to their weight, from the
-// cells with weight >= min_weight. The same seed gives the same queries on every platform.
-std::vector<RangeQuery> sample_queries(const HeatMap &heat, std::uint64_t seed,
-                                       std::size_t count = kQueriesPerSeed,
-                                       std::uint32_t min_weight = kMinQueryWeight);
-
 } // namespace query

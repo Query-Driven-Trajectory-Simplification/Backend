@@ -40,7 +40,6 @@ void write_file(const std::string &json, const std::filesystem::path &path) {
 } // namespace
 
 void export_heat_map(const query::HeatMap &heat_map, const std::filesystem::path &path) {
-    // Sorted so the same heat map always gives the same file.
     std::vector<std::pair<query::Cell, std::uint32_t>> cells(heat_map.begin(), heat_map.end());
     std::sort(cells.begin(), cells.end(), [](const auto &a, const auto &b) {
         return std::tie(a.first.t, a.first.lat, a.first.lon) <
@@ -53,25 +52,6 @@ void export_heat_map(const query::HeatMap &heat_map, const std::filesystem::path
     for (std::size_t i = 0; i < cells.size(); ++i) {
         json += i == 0 ? "\n" : ",\n";
         append_cell(json, cells[i].first, cells[i].second);
-    }
-    json += "\n]}\n";
-    write_file(json, path);
-}
-
-void export_range_queries(std::span<const SeedQueries> seeds, std::uint32_t min_weight,
-                          const std::filesystem::path &path) {
-    const std::size_t per_seed = seeds.empty() ? 0 : seeds.front().queries.size();
-    std::string json = std::format("{{\"min_weight\":{},\"queries_per_seed\":{},\"seeds\":[",
-                                   min_weight, per_seed);
-    for (std::size_t s = 0; s < seeds.size(); ++s) {
-        std::format_to(std::back_inserter(json), "{}\n{{\"seed\":{},\"queries\":[",
-                       s == 0 ? "" : ",", seeds[s].seed);
-        const auto &queries = seeds[s].queries;
-        for (std::size_t i = 0; i < queries.size(); ++i) {
-            json += i == 0 ? "\n" : ",\n";
-            append_cell(json, queries[i].cell, queries[i].weight);
-        }
-        json += "\n]}";
     }
     json += "\n]}\n";
     write_file(json, path);

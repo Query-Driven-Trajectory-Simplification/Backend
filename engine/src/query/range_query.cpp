@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
-#include <random>
 #include <utility>
 #include <vector>
 
@@ -97,42 +96,6 @@ std::vector<std::pair<Cell, HeatMap::mapped_type>> ranked_cells(const HeatMap &h
         return a.second != b.second ? a.second > b.second : a.first < b.first;
     });
     return ranked;
-}
-
-std::vector<RangeQuery> sample_queries(const HeatMap &heat, std::uint64_t seed, std::size_t count,
-                                       std::uint32_t min_weight) {
-    // Sorted so the draw does not depend on the unordered_map iteration order.
-    std::vector<std::pair<Cell, HeatMap::mapped_type>> candidates;
-    for (const auto &[cell, weight] : heat) {
-        if (weight >= min_weight) {
-            candidates.emplace_back(cell, weight);
-        }
-    }
-    std::sort(candidates.begin(), candidates.end());
-
-    std::vector<std::uint64_t> prefix;
-    prefix.reserve(candidates.size());
-    std::uint64_t total = 0;
-    for (const auto &[cell, weight] : candidates) {
-        total += weight;
-        prefix.push_back(total);
-    }
-
-    std::vector<RangeQuery> queries;
-    if (total == 0) {
-        return queries;
-    }
-    // mt19937_64 output is fixed by the standard, std::discrete_distribution is not.
-    // The modulo bias is negligible since total is far below 2^64.
-    std::mt19937_64 rng(seed);
-    queries.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        const std::uint64_t r = rng() % total;
-        const auto it = std::upper_bound(prefix.begin(), prefix.end(), r);
-        const auto &[cell, weight] = candidates[static_cast<std::size_t>(it - prefix.begin())];
-        queries.push_back({cell, bounds_of(cell), weight});
-    }
-    return queries;
 }
 
 } // namespace query

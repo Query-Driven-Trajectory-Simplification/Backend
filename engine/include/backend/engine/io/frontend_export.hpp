@@ -18,16 +18,6 @@ namespace io {
 // cells sorted by week, then lat, then lon.
 void export_heat_map(const query::HeatMap &heat_map, const std::filesystem::path &path);
 
-struct SeedQueries {
-    std::uint64_t seed;
-    std::vector<query::RangeQuery> queries;
-};
-
-// {"min_weight", "queries_per_seed", "seeds": [{"seed", "queries": [cell, ...]}, ...]},
-// queries in the order they were drawn.
-void export_range_queries(std::span<const SeedQueries> seeds, std::uint32_t min_weight,
-                          const std::filesystem::path &path);
-
 struct SeedBoxQueries {
     std::uint64_t seed;
     std::vector<query::BoxQuery> queries;
