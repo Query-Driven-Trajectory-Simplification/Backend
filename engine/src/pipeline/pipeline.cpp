@@ -1,9 +1,11 @@
 #include "backend/engine/pipeline/pipeline.hpp"
+#include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/io/frontend_export.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/query/box_query.hpp"
 #include "backend/engine/query/range_query.hpp"
+#include "backend/engine/selection/selector.hpp"
 
 #include <iostream>
 #include <set>
@@ -13,7 +15,8 @@ namespace pipeline {
 
 void run(const Config &config) {
     core::TrajectoryDb trajectories = io::load_trajectories(config.path);
-    std::cout << trajectories.size() << " trips, " << trajectories.num_points() << " points\n";
+    std::cout << trajectories.size() << " trajectories, " << trajectories.num_points()
+              << " points\n";
 
     const auto heat = query::heat_map(trajectories);
     const auto heat_path = config.output_dir / "heatmap.json";
@@ -49,6 +52,27 @@ void run(const Config &config) {
     std::cout << box_seeds.size() << " seeds x " << config.box_queries.count << " box queries ("
               << config.box_queries.box_km << " km, " << config.box_queries.window_seconds / 86400.0
               << " days) written to " << boxes_path.string() << '\n';
+
+    std::cout << trajectories.trajectory(3).size() << std::endl;
+
+    core::TrajectoryView trajectory = trajectories.trajectory(3);
+
+    auto kept_indices = selection::simplify_trajectory(
+        trajectory,
+        selection::AlgorithmType::RDP,
+        10
+    );
+
+    std::cout << "Simplified down to " << kept_indices.size() << " points. Indices:\n";
+    for (std::size_t idx : kept_indices) {
+        std::cout << "  index: " << idx
+                  << " -> (x: " << trajectory.x[idx]
+                  << ", y: " << trajectory.y[idx] << ")\n";
+    }
+
+    std::size_t total_budget = trajectories.num_points() / 2;
+    auto budgets = allocation::create_trajectory_budgets(
+        trajectories, allocation::AlgorithmType::kSizeProportional, total_budget);
 }
 
 } // namespace pipeline
