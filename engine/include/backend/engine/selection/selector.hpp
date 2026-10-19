@@ -14,7 +14,8 @@ std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &, Algor
                                              std::size_t);
 
 // Simplifies every trajectory, trajectory i keeping budgets[i] points
-core::Simplification simplify_database(const core::TrajectoryDb &trajectories, AlgorithmType algorithm,
-                                  std::span<const std::size_t> budgets);
+core::Simplification simplify_database(const core::TrajectoryDb &trajectories,
+                                       AlgorithmType algorithm,
+                                       std::span<const std::size_t> budgets);
 
 } // namespace selection

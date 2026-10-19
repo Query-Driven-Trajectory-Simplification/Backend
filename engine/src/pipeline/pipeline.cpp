@@ -21,7 +21,8 @@ namespace {
 constexpr double kQueryPercentage = 0.15;
 constexpr std::uint64_t kSplitSeed = 1;
 
-// Hardcoded here for now. Should probably be some flag you give --compress-all, or --comress-0.25 or whatever
+// Hardcoded here for now. Should probably be some flag you give --compress-all, or --comress-0.25
+// or whatever
 constexpr std::array kBudgetShares{0.0025, 0.005, 0.01, 0.02};
 constexpr std::array kAlgorithms{selection::AlgorithmType::RDP, selection::AlgorithmType::SED};
 

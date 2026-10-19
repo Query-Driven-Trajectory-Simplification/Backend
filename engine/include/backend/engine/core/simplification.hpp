@@ -9,18 +9,17 @@
 #include <vector>
 
 // example
-//core::Simplification s;
+// core::Simplification s;
 // m_offsets = [0]              m_kept = []
 
-//s.add_trajectory({0, 4, 9});
-// m_offsets = [0, 3]           m_kept = [0, 4, 9]
+// s.add_trajectory({0, 4, 9});
+//  m_offsets = [0, 3]           m_kept = [0, 4, 9]
 
-//s.add_trajectory({0, 4});
-// m_offsets = [0, 3, 5]        m_kept = [0, 4, 9, 0, 4]
+// s.add_trajectory({0, 4});
+//  m_offsets = [0, 3, 5]        m_kept = [0, 4, 9, 0, 4]
 
-//s.add_trajectory({0, 2, 5, 7});
-// m_offsets = [0, 3, 5, 9]     m_kept = [0, 4, 9, 0, 4, 0, 2, 5, 7]
-
+// s.add_trajectory({0, 2, 5, 7});
+//  m_offsets = [0, 3, 5, 9]     m_kept = [0, 4, 9, 0, 4, 0, 2, 5, 7]
 
 namespace core {
 

@@ -17,8 +17,9 @@ std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &traject
     throw std::invalid_argument("Unknown algo type");
 }
 
-core::Simplification simplify_database(const core::TrajectoryDb &trajectories, AlgorithmType algorithm,
-                                  std::span<const std::size_t> budgets) {
+core::Simplification simplify_database(const core::TrajectoryDb &trajectories,
+                                       AlgorithmType algorithm,
+                                       std::span<const std::size_t> budgets) {
     if (budgets.size() != trajectories.size())
         throw std::invalid_argument("simplify_database: need one allocation budget per trajectory");
 
