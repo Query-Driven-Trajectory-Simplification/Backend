@@ -10,7 +10,7 @@
 
 namespace io {
 
-// JSON files for the frontend, described in docs/frontend/. Every cell is written as
+// Every cell is written as
 // {"lat_idx", "lon_idx", "t_idx", "min_lat", "max_lat", "min_lon", "max_lon",
 //  "t_start", "t_end", "weight"}, bounds half-open [min, max), times Unix seconds UTC.
 
