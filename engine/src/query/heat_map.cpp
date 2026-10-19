@@ -21,21 +21,7 @@ std::int64_t floor_div(std::int64_t a, std::int64_t b) {
     return q;
 }
 
-std::uint64_t mix(std::uint64_t x) {
-    x += 0x9e3779b97f4a7c15ULL;
-    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
-    return x ^ (x >> 31);
-}
-
 } // namespace
-
-std::size_t CellHash::operator()(const Cell &c) const noexcept {
-    std::uint64_t h = mix(static_cast<std::uint64_t>(c.lat));
-    h = mix(h ^ static_cast<std::uint64_t>(c.lon));
-    h = mix(h ^ static_cast<std::uint64_t>(c.t));
-    return static_cast<std::size_t>(h);
-}
 
 std::optional<Cell> cell_of(double lat, double lon, std::int64_t t) {
     if (!(lat >= kMinLat && lat < kMaxLat && lon >= kMinLon && lon < kMaxLon)) {

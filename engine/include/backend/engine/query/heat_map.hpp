@@ -5,8 +5,8 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -31,10 +31,6 @@ struct Cell {
     auto operator<=>(const Cell &) const = default;
 };
 
-struct CellHash {
-    std::size_t operator()(const Cell &c) const noexcept;
-};
-
 struct CellBounds {
     double min_lat;
     double max_lat;
@@ -48,7 +44,7 @@ std::optional<Cell> cell_of(double lat, double lon, std::int64_t t);
 
 CellBounds bounds_of(const Cell &cell);
 
-using HeatMap = std::unordered_map<Cell, std::uint32_t, CellHash>;
+using HeatMap = std::map<Cell, std::uint32_t>;
 
 HeatMap heat_map(const core::TrajectoryDb &db);
 HeatMap heat_map(const core::TrajectoryDb &db, std::size_t &dropped_points);
