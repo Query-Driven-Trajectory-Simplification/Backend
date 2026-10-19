@@ -3,6 +3,7 @@ add_library(engine
     src/io/parquet_loader.cpp
     src/pipeline/pipeline.cpp
     src/selection/rdp.cpp
+    src/selection/sed.cpp
     src/selection/selector.cpp
     src/split/split.cpp
     src/allocation/budget_allocator.cpp
@@ -20,10 +21,10 @@ target_link_libraries(run PRIVATE engine)
 
 add_executable(engine_tests
     tests/projection_test.cpp
-    tests/selectors/rdp_test.cpp
     tests/split/time_split_test.cpp
     tests/split/random_split_test.cpp
-    tests/rdp_test.cpp
+    tests/selectors/rdp_test.cpp
+    tests/selectors/sed_test.cpp
     tests/size_proportional_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main)
