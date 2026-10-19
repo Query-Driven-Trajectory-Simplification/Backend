@@ -57,8 +57,9 @@ void export_heat_map(const query::HeatMap &heat_map, const std::filesystem::path
     write_file(json, path);
 }
 
-void export_box_queries(std::span<const SeedBoxQueries> seeds, const query::BoxQueryParams &params,
-                        const std::filesystem::path &path) {
+void export_range_queries(std::span<const SeedRangeQueries> seeds,
+                          const query::RangeQueryParams &params,
+                          const std::filesystem::path &path) {
     std::string json = std::format("{{\"box_km\":{},\"window_seconds\":{},\"min_results\":{},"
                                    "\"full_accept_at\":{},\"queries_per_seed\":{},\"seeds\":[",
                                    params.box_km, params.window_seconds, params.min_results,

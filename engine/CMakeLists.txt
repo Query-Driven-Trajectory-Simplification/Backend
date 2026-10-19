@@ -4,7 +4,7 @@ add_library(engine
     src/io/parquet_loader.cpp
     src/pipeline/pipeline.cpp
     src/pipeline/query_generation.cpp
-    src/query/box_query.cpp
+    src/query/heat_map.cpp
     src/query/range_query.cpp
     src/selection/rdp.cpp
     src/selection/selector.cpp

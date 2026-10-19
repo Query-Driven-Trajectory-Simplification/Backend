@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backend/engine/query/box_query.hpp"
+#include "backend/engine/query/heat_map.hpp"
 #include "backend/engine/query/range_query.hpp"
 
 #include <cstdint>
@@ -18,12 +18,12 @@ namespace io {
 // cells sorted by week, then lat, then lon.
 void export_heat_map(const query::HeatMap &heat_map, const std::filesystem::path &path);
 
-struct SeedBoxQueries {
+struct SeedRangeQueries {
     std::uint64_t seed;
-    std::vector<query::BoxQuery> queries;
+    std::vector<query::RangeQuery> queries;
 };
 
-void export_box_queries(std::span<const SeedBoxQueries> seeds, const query::BoxQueryParams &params,
-                        const std::filesystem::path &path);
+void export_range_queries(std::span<const SeedRangeQueries> seeds,
+                          const query::RangeQueryParams &params, const std::filesystem::path &path);
 
 } // namespace io

@@ -2,57 +2,47 @@
 
 #include "backend/engine/core/trajectory_db.hpp"
 
-#include <compare>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace query {
 
-inline constexpr double kMinLat = 39.4;
-inline constexpr double kMaxLat = 41.59471;
-inline constexpr double kMinLon = 115.7001;
-inline constexpr double kMaxLon = 117.39994;
+struct RangeQueryParams {
+    double box_km = 2.0;
+    std::int64_t window_seconds = 7 * 24 * 60 * 60;
+    std::uint32_t min_results = 5;
+    std::uint32_t full_accept_at = 20;
+    std::size_t count = 100;
+};
 
-inline constexpr double kCellLat = 0.02;
-inline constexpr double kCellLon = 0.02;
-inline constexpr std::int64_t kCellSeconds = 7 * 24 * 60 * 60;
-
-inline constexpr std::int64_t kOriginT = 1176341492;
-
-struct Cell {
-    std::int64_t lat;
-    std::int64_t lon;
+struct RangeQuery {
+    std::int32_t trajectory_id;
+    double lat;
+    double lon;
     std::int64_t t;
-
-    auto operator<=>(const Cell &) const = default;
-};
-
-struct CellHash {
-    std::size_t operator()(const Cell &c) const noexcept;
-};
-
-struct CellBounds {
     double min_lat;
     double max_lat;
     double min_lon;
     double max_lon;
     std::int64_t t_start;
     std::int64_t t_end;
+    std::uint32_t results;
 };
 
-std::optional<Cell> cell_of(double lat, double lon, std::int64_t t);
+class RangeQuerySampler {
+  public:
+    explicit RangeQuerySampler(const core::TrajectoryDb &db);
 
-CellBounds bounds_of(const Cell &cell);
+    std::uint32_t count_results(const RangeQuery &box) const;
 
-using HeatMap = std::unordered_map<Cell, std::uint32_t, CellHash>;
+    std::vector<RangeQuery> sample(std::uint64_t seed, const RangeQueryParams &params) const;
 
-HeatMap heat_map(const core::TrajectoryDb &db);
-HeatMap heat_map(const core::TrajectoryDb &db, std::size_t &dropped_points);
-
-std::vector<std::pair<Cell, HeatMap::mapped_type>> ranked_cells(const HeatMap &heat);
+  private:
+    const core::TrajectoryDb &m_db;
+    std::int64_t m_t_min = 0;
+    std::vector<std::uint32_t> m_day_start;
+    std::vector<std::uint32_t> m_by_day;
+};
 
 } // namespace query
