@@ -35,9 +35,6 @@ double squared_synchronous_distance(const core::TrajectoryView &trajectory, std:
     const std::span<const double> xs = trajectory.x;
     const std::span<const double> ys = trajectory.y;
 
-    if (ts[first] == ts[last])
-        return 0.0;
-
     const double c =
         synchronous_factor(static_cast<double>(ts[point]), static_cast<double>(ts[first]),
                            static_cast<double>(ts[last]));
@@ -51,9 +48,6 @@ double span_error(const core::TrajectoryView &trajectory, std::size_t first, std
     const std::span<const std::int64_t> ts = trajectory.t;
     const std::span<const double> xs = trajectory.x;
     const std::span<const double> ys = trajectory.y;
-
-    if (ts[first] == ts[last])
-        return 0.0;
 
     const double t0 = static_cast<double>(ts[first]);
     const double inv_dt = 1.0 / (static_cast<double>(ts[last]) - t0);

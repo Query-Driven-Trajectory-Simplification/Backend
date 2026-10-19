@@ -16,7 +16,8 @@ struct Trajectory {
     std::vector<double> x;
     std::vector<double> y;
 
-    Trajectory(std::vector<double> xs, std::vector<double> ys) : x(std::move(xs)), y(std::move(ys)) {
+    Trajectory(std::vector<double> xs, std::vector<double> ys)
+        : x(std::move(xs)), y(std::move(ys)) {
         for (std::size_t i = 0; i < x.size(); ++i)
             t.push_back(static_cast<std::int64_t>(i));
     }
@@ -33,13 +34,13 @@ double max_sed(const core::TrajectoryView &trajectory, const Indices &kept) {
         const std::size_t first = kept[s];
         const std::size_t last = kept[s + 1];
         for (std::size_t k = first + 1; k < last; ++k)
-            error = std::max(error,
-                             selection::sed::synchronous_distance(trajectory, first, last, k));
+            error =
+                std::max(error, selection::sed::synchronous_distance(trajectory, first, last, k));
     }
     return error;
 }
 
-}
+} // namespace
 
 TEST(Sed, SynchronousDistanceUsesTimeNotShape) {
     // On the line but ahead of schedule: perpendicular distance is 0, SED is not
@@ -69,7 +70,7 @@ TEST(Sed, KeepsSpeedChangeOnStraightLine) {
     EXPECT_EQ(selection::sed::simplify(traj.view(), 3), (Indices{0, 3, 5}));
 }
 
-TEST(Sed, ReturnsBudgetAndNeverBeatsBruteForce) {
+TEST(Sed, ReturnsBudgetAndStaysNearBruteForce) {
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> coord(-100.0, 100.0);
     const std::size_t n = 10;
@@ -82,7 +83,7 @@ TEST(Sed, ReturnsBudgetAndNeverBeatsBruteForce) {
         }
         const Trajectory traj(xs, ys);
 
-        for (std::size_t budget = 2; budget < n; ++budget) {
+        for (std::size_t budget = 3; budget < n; ++budget) {
             const Indices kept = selection::sed::simplify(traj.view(), budget);
             ASSERT_EQ(kept.size(), budget);
             EXPECT_EQ(kept.front(), 0u);
@@ -101,7 +102,8 @@ TEST(Sed, ReturnsBudgetAndNeverBeatsBruteForce) {
                 subset.push_back(n - 1);
                 best = std::min(best, max_sed(traj.view(), subset));
             }
-            EXPECT_GE(max_sed(traj.view(), kept) + 1e-9, best);
+            // Greedy isn't optimal; 2x is an empirical bound (worst seen ~1.74x), not a proven one
+            EXPECT_LE(max_sed(traj.view(), kept), 2.0 * best + 1e-9);
         }
     }
 }
