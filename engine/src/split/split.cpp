@@ -18,16 +18,18 @@ void validate(double value) {
 }
 
 std::size_t compute_split_index(std::size_t n, double query_percentage) {
-    const auto query_count = static_cast<std::size_t>(std::round(static_cast<double>(n) * query_percentage));
+    const auto query_count =
+        static_cast<std::size_t>(std::round(static_cast<double>(n) * query_percentage));
     return n - query_count;
 }
 
-std::int64_t start_time(const core::TrajectoryDb& db, std::size_t idx) {
+std::int64_t start_time(const core::TrajectoryDb &db, std::size_t idx) {
     const auto view = db.trajectory(idx);
     return view.t.empty() ? std::numeric_limits<std::int64_t>::max() : view.t.front();
 }
 
-split::TrajectoryDbSplit time_split(const core::TrajectoryDb& trajectories, double query_percentage) {
+split::TrajectoryDbSplit time_split(const core::TrajectoryDb &trajectories,
+                                    double query_percentage) {
     validate(query_percentage);
 
     std::vector<std::size_t> indices(trajectories.size());
@@ -39,13 +41,12 @@ split::TrajectoryDbSplit time_split(const core::TrajectoryDb& trajectories, doub
 
     const auto split_index = compute_split_index(trajectories.size(), query_percentage);
 
-    return split::TrajectoryDbSplit{
-        .database = {indices.begin(), indices.begin() + split_index},
-        .queries  = {indices.begin() + split_index, indices.end()}
-    };
+    return split::TrajectoryDbSplit{.database = {indices.begin(), indices.begin() + split_index},
+                                    .queries = {indices.begin() + split_index, indices.end()}};
 }
 
-split::TrajectoryDbSplit random_split(const core::TrajectoryDb& trajectories, double query_percentage, std::uint64_t seed) {
+split::TrajectoryDbSplit random_split(const core::TrajectoryDb &trajectories,
+                                      double query_percentage, std::uint64_t seed) {
     validate(query_percentage);
 
     const std::size_t n = trajectories.size();
@@ -70,27 +71,21 @@ split::TrajectoryDbSplit random_split(const core::TrajectoryDb& trajectories, do
         }
     }
 
-    return split::TrajectoryDbSplit{
-        .database = std::move(train_indices),
-        .queries  = std::move(query_indices)
-    };
+    return split::TrajectoryDbSplit{.database = std::move(train_indices),
+                                    .queries = std::move(query_indices)};
 }
 
 } // namespace
 
 namespace split {
 
-TrajectoryDbSplit split(
-    const core::TrajectoryDb& trajectories,
-    SplitType split_type,
-    double query_percentage,
-    std::uint64_t seed
-) {
+TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, SplitType split_type,
+                        double query_percentage, std::uint64_t seed) {
     switch (split_type) {
-        case SplitType::Random:
-            return random_split(trajectories, query_percentage, seed);
-        case SplitType::Time:
-            return time_split(trajectories, query_percentage);
+    case SplitType::Random:
+        return random_split(trajectories, query_percentage, seed);
+    case SplitType::Time:
+        return time_split(trajectories, query_percentage);
     }
 
     throw std::invalid_argument("Unknown split type");
