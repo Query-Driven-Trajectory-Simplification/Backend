@@ -24,7 +24,6 @@
 
 namespace core {
 
-// The points kept from each trajectory of a database, as sorted indices into that trajectory
 class Simplification {
   public:
     void add_trajectory(std::span<const std::size_t> kept_indices) {

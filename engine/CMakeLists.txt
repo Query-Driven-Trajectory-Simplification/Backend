@@ -32,7 +32,7 @@ add_executable(engine_tests
     tests/interpolation_test.cpp
     tests/subset_test.cpp
     tests/simplification_test.cpp
-    tests/selectors/simplify_all_test.cpp
+    tests/selectors/simplify_database_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main)
 gtest_discover_tests(engine_tests)
