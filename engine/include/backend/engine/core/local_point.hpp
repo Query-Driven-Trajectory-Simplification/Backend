@@ -1,7 +1,7 @@
 #include <cmath>
 
-// Please don't use this as "trajectory consists of LocalPoint". LocalPoint has no timestamp, so it wouldnt make sense
-// If needed make a Point struct
+// Please don't use this as "trajectory consists of LocalPoint". LocalPoint has no timestamp, so it
+// wouldnt make sense to use for the direct points of trajectories, if needed make a Point struct
 
 namespace core {
 
