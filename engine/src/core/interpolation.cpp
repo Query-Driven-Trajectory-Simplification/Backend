@@ -9,6 +9,10 @@ LocalPoint position_at(const TrajectoryView &trajectory, double t) {
     const auto timestamps = trajectory.t;
 
     const std::size_t last = timestamps.size() - 1;
+
+    if (t <= static_cast<double>(timestamps[0]))
+        return {trajectory.x[0], trajectory.y[0]};
+
     if (t >= static_cast<double>(timestamps[last]))
         return {trajectory.x[last], trajectory.y[last]};
 

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cmath>
 
 // Please don't use this as "trajectory consists of LocalPoint". LocalPoint has no timestamp, so it
