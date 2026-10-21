@@ -7,21 +7,23 @@
 
 namespace pipeline {
 
-void generate_heat_map(const core::TrajectoryDb &trajectories, const Config &config) {
+void generate_heat_map(const core::TrajectoryDb &trajectories,
+                       const std::filesystem::path &output_dir) {
     const auto heat = query::heat_map(trajectories);
-    const auto heat_path = config.output_dir / "heatmap.json";
+    const auto heat_path = output_dir / "heatmap.json";
     io::export_heat_map(heat, heat_path);
     std::cout << heat.size() << " heat map cells written to " << heat_path.string() << '\n';
 }
 
-void generate_queries(const core::TrajectoryDb &trajectories, const Config &config) {
+void generate_queries(const core::TrajectoryDb &trajectories, const Config &config,
+                      const std::filesystem::path &output_dir) {
     const query::RangeQuerySampler sampler(trajectories);
     const auto boxes = sampler.sample(config.seed, config.range_queries);
     if (boxes.size() < config.range_queries.count) {
         std::cerr << "only " << boxes.size() << " of " << config.range_queries.count
                   << " boxes passed the results rule\n";
     }
-    const auto queries_path = config.output_dir / "range_queries.json";
+    const auto queries_path = output_dir / "range_queries.json";
     io::export_range_queries(boxes, config.seed, config.range_queries, queries_path);
     std::cout << boxes.size() << " range queries ("
               << config.range_queries.box_km << " km, "
