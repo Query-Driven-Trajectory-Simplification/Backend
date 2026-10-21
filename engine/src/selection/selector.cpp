@@ -56,7 +56,6 @@ core::Simplification simplify_database(
     std::vector<std::vector<std::size_t>> results(n);
     std::vector<std::exception_ptr> errors(num_threads);
 
-    // Shared counter: which trajectory should be claimed next?
     std::atomic<std::size_t> next_index{0};
 
     {
