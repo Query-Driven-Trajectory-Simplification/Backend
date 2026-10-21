@@ -2,6 +2,7 @@
 
 #include "backend/engine/query/range_query.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 
@@ -11,7 +12,13 @@ struct Config {
     std::filesystem::path path;
     std::filesystem::path output_dir = "output";
     std::uint64_t seed = 1;
-    // range_queries.count is the number of queries in the single generated set.
+    // Number of range queries (and the heat map) generated for the database (train) and queries
+    // (test) side. 0 skips generating for that side.
+    // TODO: Can be changed or made smarter in the future.
+    std::size_t train_queries = 500;
+    std::size_t test_queries = 500;
+    // Also write the heat maps and range queries to output_dir/{database,queries} as JSON.
+    bool write_json = false;
     query::RangeQueryParams range_queries;
 };
 

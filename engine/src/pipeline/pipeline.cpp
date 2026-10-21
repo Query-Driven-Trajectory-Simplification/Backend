@@ -3,9 +3,7 @@
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
-#ifdef ENGINE_GENERATE_QUERIES
 #include "backend/engine/pipeline/query_generation.hpp"
-#endif
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
@@ -16,7 +14,6 @@
 #include <filesystem>
 #include <iostream>
 #include <string_view>
-#include <utility>
 
 namespace pipeline {
 
@@ -70,14 +67,18 @@ void run(const Config &config) {
     print_size("database", database);
     print_size("queries", queries);
 
-#ifdef ENGINE_GENERATE_QUERIES
-    for (const auto &[name, side] : {std::pair<const char *, const core::TrajectoryDb &>{"database", database},
-                                     std::pair<const char *, const core::TrajectoryDb &>{"queries", queries}}) {
-        const auto dir = config.output_dir / name;
-        generate_heat_map(side, dir);
-        generate_queries(side, config, dir);
+    if (config.train_queries > 0) {
+        const auto train = generate_query_set(database, config, config.train_queries);
+        if (config.write_json) {
+            write_query_set(train, config, config.output_dir / "database");
+        }
     }
-#endif
+    if (config.test_queries > 0) {
+        const auto test = generate_query_set(queries, config, config.test_queries);
+        if (config.write_json) {
+            write_query_set(test, config, config.output_dir / "queries");
+        }
+    }
 
     for (const double share : kBudgetShares) {
         const auto budgets = allocation::create_trajectory_budgets(
