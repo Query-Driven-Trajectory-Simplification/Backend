@@ -22,7 +22,7 @@ std::vector<std::pair<size_t, size_t>> shared_ranks(const std::vector<size_t> &o
 }
 } // namespace
 
-double evaluate_knn(const std::vector<size_t> &original, const std::vector<size_t> &simplified) {
+double kendalls_tau(const std::vector<size_t> &original, const std::vector<size_t> &simplified) {
     std::vector<std::pair<size_t, size_t>> overlap = shared_ranks(original, simplified);
     if (overlap.size() < 2) {
         return std::numeric_limits<double>::quiet_NaN();

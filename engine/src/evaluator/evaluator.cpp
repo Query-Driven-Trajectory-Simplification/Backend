@@ -48,7 +48,7 @@ void Evaluator::knn_score(std::size_t k) {
     std::size_t scored = 0;
     for (std::size_t i = 0; i < queries.size(); ++i) {
         const auto trajectory = queries.trajectory(i);
-        const double tau = knn::evaluate_knn(query::knn(m_original, trajectory, k),
+        const double tau = knn::kendalls_tau(query::knn(m_original, trajectory, k),
                                              query::knn(m_simplified, trajectory, k));
         if (!std::isnan(tau)) {
             sum += tau;

@@ -4,7 +4,7 @@
 #include <vector>
 namespace evaluator::knn {
 
-double evaluate_knn(const std::vector<std::size_t> &original,
+double kendalls_tau(const std::vector<std::size_t> &original,
                     const std::vector<std::size_t> &simplified);
 
 }
