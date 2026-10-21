@@ -4,6 +4,7 @@
 #include <cmath>
 #include <numbers>
 #include <random>
+#include <unordered_set>
 
 namespace query {
 
@@ -87,15 +88,16 @@ std::vector<RangeQuery> RangeQuerySampler::sample(std::uint64_t seed,
     const double half_lat = params.box_km / 2 / kKmPerDegree;
 
     std::mt19937_64 rng(seed);
+    std::unordered_set<std::size_t> used_centres;
     const std::size_t max_attempts = params.count * kAttemptsPerQuery;
     for (std::size_t attempt = 0; attempt < max_attempts && boxes.size() < params.count;
          ++attempt) {
-        const auto trajectory = static_cast<std::size_t>(rng() % m_db.size());
-        const auto length = offsets[trajectory + 1] - offsets[trajectory];
-        if (length == 0) {
+        const auto i = static_cast<std::size_t>(rng() % m_db.num_points());
+        if (used_centres.contains(i)) {
             continue;
         }
-        const auto i = static_cast<std::size_t>(offsets[trajectory] + rng() % length);
+        const auto trajectory = static_cast<std::size_t>(
+            std::upper_bound(offsets.begin(), offsets.end(), i) - offsets.begin() - 1);
 
         const double half_lon = half_lat / std::cos(lat[i] * std::numbers::pi / 180.0);
         RangeQuery box{
@@ -122,6 +124,7 @@ std::vector<RangeQuery> RangeQuerySampler::sample(std::uint64_t seed,
                 continue;
             }
         }
+        used_centres.insert(i);
         boxes.push_back(box);
     }
     return boxes;
