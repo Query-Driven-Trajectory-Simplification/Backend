@@ -33,13 +33,20 @@ double knn_score(const core::TrajectoryDb &original, const core::TrajectoryDb &s
 } // namespace
 
 Scoretable evaluate_simplification(const core::TrajectoryDb &original,
-                                   const core::TrajectoryDb &simplified,
-                                   const core::TrajectoryDb &queries, std::size_t k) {
+                                   const core::TrajectoryDb &simplified) {
     if (original.size() != simplified.size())
         throw std::invalid_argument(
             "evaluate_simplification: original and simplified hold different trajectories");
 
-    return Scoretable{.knn_score = knn_score(original, simplified, queries, k)};
+    Scoretable score;
+    //neighbours
+    int k = 0;
+    const core::TrajectoryDb queries = query::generate_knn_queries(original);
+    score.knn_score = knn_score(original, simplified, queries, k);
+
+
+
+    return score;
 }
 
 } // namespace evaluator
