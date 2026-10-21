@@ -15,3 +15,5 @@ True false gives easy and transferable metric within the 0-1.0 bound as its just
 If we could do some distance thingy for where-at-time it could be cool
 For Where-at-time i am having a hard time finding something that gradually becomes better for the models
 currently if i remember, we go from 0.25% gets 0.42, and 1% gets 0.83. So the increase is very large.
+For better gradual improvements, if i recall, i tested doing multiple where-at distance queries, so both 50m 100m 200m 400m at once, so 20% each of the 20k.
+Think it improved it. Knn will defo be something we try first and then see how we can adapt it. It might suck in the beginning.

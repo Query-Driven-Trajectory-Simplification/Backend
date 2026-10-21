@@ -1,5 +1,5 @@
-#include "backend/engine/split/split.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/split/split.hpp"
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <numeric>
@@ -13,13 +13,8 @@ core::TrajectoryDb make_db(std::vector<std::int64_t> t) {
     const auto n = t.size();
     std::vector<std::uint64_t> offsets(n + 1);
     std::iota(offsets.begin(), offsets.end(), 0);
-    return {
-        std::move(offsets),
-        std::vector<std::int32_t>(n),
-        std::move(t),
-        std::vector<double>(n),
-        std::vector<double>(n)
-    };
+    return {std::move(offsets), std::vector<std::int32_t>(n), std::move(t), std::vector<double>(n),
+            std::vector<double>(n)};
 }
 
 } // namespace

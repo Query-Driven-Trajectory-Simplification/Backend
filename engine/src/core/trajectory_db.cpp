@@ -34,4 +34,33 @@ TrajectoryDb::TrajectoryDb(std::vector<std::uint64_t> offsets,
     }
 }
 
+TrajectoryDb subset(const TrajectoryDb &trajectories, std::span<const std::size_t> indices) {
+    std::size_t num_points = 0;
+    for (const std::size_t i : indices)
+        num_points += trajectories.trajectory(i).size();
+
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> trajectory_ids;
+    std::vector<std::int64_t> t;
+    std::vector<double> lat;
+    std::vector<double> lon;
+    offsets.reserve(indices.size() + 1);
+    trajectory_ids.reserve(indices.size());
+    t.reserve(num_points);
+    lat.reserve(num_points);
+    lon.reserve(num_points);
+
+    for (const std::size_t i : indices) {
+        const TrajectoryView trajectory = trajectories.trajectory(i);
+        trajectory_ids.push_back(trajectory.trajectory_id);
+        t.insert(t.end(), trajectory.t.begin(), trajectory.t.end());
+        lat.insert(lat.end(), trajectory.lat.begin(), trajectory.lat.end());
+        lon.insert(lon.end(), trajectory.lon.begin(), trajectory.lon.end());
+        offsets.push_back(t.size());
+    }
+
+    return TrajectoryDb(std::move(offsets), std::move(trajectory_ids), std::move(t), std::move(lat),
+                        std::move(lon));
 }
+
+} // namespace core

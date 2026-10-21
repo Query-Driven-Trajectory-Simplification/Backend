@@ -3,11 +3,12 @@
 
 namespace filters {
 
-std::vector<geolife::Segment> split_by_time_gap(const geolife::Segment& segment, std::int64_t max_gap_s) {
+std::vector<geolife::Segment> split_by_time_gap(const geolife::Segment &segment,
+                                                std::int64_t max_gap_s) {
     std::vector<geolife::Segment> gap_segments;
     geolife::Segment current;
 
-    for (const auto& point : segment) {
+    for (const auto &point : segment) {
         if (!current.empty() && point.t - current.back().t > max_gap_s) {
             create_segment(gap_segments, current);
         }
@@ -18,4 +19,4 @@ std::vector<geolife::Segment> split_by_time_gap(const geolife::Segment& segment,
     return gap_segments;
 }
 
-}
+} // namespace filters

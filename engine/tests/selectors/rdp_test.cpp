@@ -13,7 +13,8 @@ struct Trajectory {
     std::vector<double> x;
     std::vector<double> y;
 
-    Trajectory(std::vector<double> xs, std::vector<double> ys) : x(std::move(xs)), y(std::move(ys)) {
+    Trajectory(std::vector<double> xs, std::vector<double> ys)
+        : x(std::move(xs)), y(std::move(ys)) {
         for (std::size_t i = 0; i < x.size(); ++i)
             t.push_back(static_cast<std::int64_t>(i));
     }
@@ -23,7 +24,7 @@ struct Trajectory {
 
 using Indices = std::vector<std::size_t>;
 
-}
+} // namespace
 
 TEST(Rdp, KeepsOnlyEndpointsWithBudgetOfTwo) {
     const Trajectory traj({0, 1, 2, 3, 4}, {0, 5, 0, 5, 0});

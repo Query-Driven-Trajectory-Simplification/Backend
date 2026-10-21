@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -51,4 +52,7 @@ class TrajectoryDb {
     std::vector<double> m_y;
 };
 
-}
+// Copies the trajectories at the given indices, in that order, into a new database
+TrajectoryDb subset(const TrajectoryDb &trajectories, std::span<const std::size_t> indices);
+
+} // namespace core

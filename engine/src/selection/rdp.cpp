@@ -11,7 +11,8 @@ namespace {
 
 // https://www.youtube.com/watch?v=SbVXh5VtxKw
 // Great vid for Ramer-Douglas-Peucker
-// The implementation uses max-prio queue with fixed point budget instead of standard epsilon error like in vid.
+// The implementation uses max-prio queue with fixed point budget instead of standard epsilon error
+// like in vid.
 
 double segment_distance(double px, double py, double ax, double ay, double bx, double by) {
     const double dx = bx - ax;
@@ -32,10 +33,8 @@ struct Split {
     bool operator<(const Split &other) const { return error < other.error; }
 };
 
-void push_split(std::priority_queue<Split> &heap,
-                std::span<const double> x,
-                std::span<const double> y,
-                std::size_t first, std::size_t last) {
+void push_split(std::priority_queue<Split> &heap, std::span<const double> x,
+                std::span<const double> y, std::size_t first, std::size_t last) {
     if (last - first < 2)
         return;
     Split split{-1.0, first + 1, first, last};

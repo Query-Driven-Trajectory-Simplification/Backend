@@ -3,12 +3,13 @@
 
 namespace filters {
 
-std::vector<geolife::Segment> split_by_bbox(const geolife::Segment& segment, const BoundingBox& bbox) {
+std::vector<geolife::Segment> split_by_bbox(const geolife::Segment &segment,
+                                            const BoundingBox &bbox) {
     std::vector<geolife::Segment> bounded_segments;
     geolife::Segment current;
     std::size_t points_outside = 0;
 
-    for (const auto& point : segment) {
+    for (const auto &point : segment) {
         if (!bbox.contains(point)) {
             ++points_outside;
             continue;
@@ -25,4 +26,4 @@ std::vector<geolife::Segment> split_by_bbox(const geolife::Segment& segment, con
     return bounded_segments;
 }
 
-}
+} // namespace filters
