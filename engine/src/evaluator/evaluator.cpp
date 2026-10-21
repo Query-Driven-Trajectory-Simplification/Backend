@@ -9,44 +9,60 @@
 
 namespace evaluator {
 
-namespace {
+Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified)
+    : m_original(original), m_simplified(simplified) {
+    if (original.size() != simplified.size())
+        throw std::invalid_argument(
+            "Evaluator: original and simplified hold different trajectories");
+}
 
-// Mean Kendall's tau between the knn results on both databases, over every query.
-// Queries whose results share fewer than two trajectories have no tau and are skipped.
-double knn_score(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
-                 const core::TrajectoryDb &queries, std::size_t k) {
+Scoretable Evaluator::evaluate() {
+    return Scoretable{
+        .knn_score = get_knn_score(),
+        .range_score = get_range_score(),
+        .where_at_score = get_where_at_score(),
+    };
+}
+
+double Evaluator::get_knn_score() {
+    knn_score(m_knn_neighbours);
+    return m_knn_score;
+}
+
+double Evaluator::get_range_score() {
+    range_score();
+    return m_range_score;
+}
+
+double Evaluator::get_where_at_score() {
+    where_at_score();
+    return m_where_at_score;
+}
+
+void Evaluator::set_knn_neighbours(std::size_t k) { m_knn_neighbours = k; }
+
+void Evaluator::knn_score(std::size_t k) {
+    const core::TrajectoryDb queries = query::generate_knn_queries(m_original);
+
     double sum = 0.0;
     std::size_t scored = 0;
     for (std::size_t i = 0; i < queries.size(); ++i) {
         const auto trajectory = queries.trajectory(i);
-        const double tau = knn::evaluate_knn(query::knn(original, trajectory, k),
-                                             query::knn(simplified, trajectory, k));
+        const double tau = knn::evaluate_knn(query::knn(m_original, trajectory, k),
+                                             query::knn(m_simplified, trajectory, k));
         if (!std::isnan(tau)) {
             sum += tau;
             ++scored;
         }
     }
-    return scored == 0 ? std::numeric_limits<double>::quiet_NaN()
-                       : sum / static_cast<double>(scored);
+    m_knn_score = scored == 0 ? std::numeric_limits<double>::quiet_NaN()
+                              : sum / static_cast<double>(scored);
 }
 
-} // namespace
+void Evaluator::range_score() { m_range_score = std::numeric_limits<double>::quiet_NaN(); }
 
-Scoretable evaluate_simplification(const core::TrajectoryDb &original,
-                                   const core::TrajectoryDb &simplified) {
-    if (original.size() != simplified.size())
-        throw std::invalid_argument(
-            "evaluate_simplification: original and simplified hold different trajectories");
-
-    Scoretable score;
-    //neighbours
-    int k = 0;
-    const core::TrajectoryDb queries = query::generate_knn_queries(original);
-    score.knn_score = knn_score(original, simplified, queries, k);
-
-
-
-    return score;
+void Evaluator::where_at_score() {
+    m_where_at_score = std::numeric_limits<double>::quiet_NaN();
 }
 
 } // namespace evaluator
