@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <span>
-#include <vector>
 
 namespace io {
 
@@ -18,12 +17,7 @@ namespace io {
 // cells sorted by week, then lat, then lon.
 void export_heat_map(const query::HeatMap &heat_map, const std::filesystem::path &path);
 
-struct SeedRangeQueries {
-    std::uint64_t seed;
-    std::vector<query::RangeQuery> queries;
-};
-
-void export_range_queries(std::span<const SeedRangeQueries> seeds,
+void export_range_queries(std::span<const query::RangeQuery> queries, std::uint64_t seed,
                           const query::RangeQueryParams &params, const std::filesystem::path &path);
 
 } // namespace io

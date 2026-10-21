@@ -13,7 +13,7 @@ struct RangeQueryParams {
     std::int64_t window_seconds = 7 * 24 * 60 * 60;
     std::uint32_t min_results = 5;
     std::uint32_t full_accept_at = 20;
-    std::size_t count = 100;
+    std::size_t count = 500;
 };
 
 struct RangeQuery {

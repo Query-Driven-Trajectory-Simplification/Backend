@@ -83,7 +83,7 @@ void export_heat_map(const query::HeatMap &heat_map, const std::filesystem::path
     write_file(json, path);
 }
 
-void export_range_queries(std::span<const SeedRangeQueries> seeds,
+void export_range_queries(std::span<const query::RangeQuery> queries, std::uint64_t seed,
                           const query::RangeQueryParams &params,
                           const std::filesystem::path &path) {
     Json json = {
@@ -91,15 +91,11 @@ void export_range_queries(std::span<const SeedRangeQueries> seeds,
         {"window_seconds", params.window_seconds},
         {"min_results", params.min_results},
         {"full_accept_at", params.full_accept_at},
-        {"queries_per_seed", params.count},
-        {"seeds", Json::array()},
+        {"seed", seed},
+        {"queries", Json::array()},
     };
-    for (const auto &[seed, queries] : seeds) {
-        Json seed_json = {{"seed", seed}, {"queries", Json::array()}};
-        for (const auto &q : queries) {
-            seed_json["queries"].push_back(range_query_json(q));
-        }
-        json["seeds"].push_back(std::move(seed_json));
+    for (const auto &q : queries) {
+        json["queries"].push_back(range_query_json(q));
     }
     write_file(json, path);
 }

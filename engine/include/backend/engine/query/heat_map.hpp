@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backend/data/filters/boundingbox.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 
 #include <compare>
@@ -7,20 +8,19 @@
 #include <cstdint>
 #include <map>
 #include <optional>
-#include <utility>
-#include <vector>
 
 namespace query {
 
-inline constexpr double kMinLat = 39.4;
-inline constexpr double kMaxLat = 41.59471;
-inline constexpr double kMinLon = 115.7001;
-inline constexpr double kMaxLon = 117.39994;
+inline constexpr double kMinLat = filters::kBeijing.min_lat;
+inline constexpr double kMaxLat = filters::kBeijing.max_lat;
+inline constexpr double kMinLon = filters::kBeijing.min_lon;
+inline constexpr double kMaxLon = filters::kBeijing.max_lon;
 
 inline constexpr double kCellLat = 0.02;
 inline constexpr double kCellLon = 0.02;
 inline constexpr std::int64_t kCellSeconds = 7 * 24 * 60 * 60;
 
+// Start of cell t = 0, Unix seconds UTC (2007-04-12 01:31:32). Later cells are kCellSeconds apart.
 inline constexpr std::int64_t kOriginT = 1176341492;
 
 struct Cell {
@@ -48,7 +48,5 @@ using HeatMap = std::map<Cell, std::uint32_t>;
 
 HeatMap heat_map(const core::TrajectoryDb &db);
 HeatMap heat_map(const core::TrajectoryDb &db, std::size_t &dropped_points);
-
-std::vector<std::pair<Cell, HeatMap::mapped_type>> ranked_cells(const HeatMap &heat);
 
 } // namespace query

@@ -4,24 +4,11 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
-#include <utility>
 #include <vector>
 
 namespace query {
 
 static_assert(kCellSeconds > 0);
-
-namespace {
-
-std::int64_t floor_div(std::int64_t a, std::int64_t b) {
-    std::int64_t q = a / b;
-    if (a % b != 0 && (a < 0) != (b < 0)) {
-        --q;
-    }
-    return q;
-}
-
-} // namespace
 
 std::optional<Cell> cell_of(double lat, double lon, std::int64_t t) {
     if (!(lat >= kMinLat && lat < kMaxLat && lon >= kMinLon && lon < kMaxLon)) {
@@ -30,7 +17,8 @@ std::optional<Cell> cell_of(double lat, double lon, std::int64_t t) {
     return Cell{
         .lat = static_cast<std::int64_t>(std::floor((lat - kMinLat) / kCellLat)),
         .lon = static_cast<std::int64_t>(std::floor((lon - kMinLon) / kCellLon)),
-        .t = floor_div(t - kOriginT, kCellSeconds),
+        .t = static_cast<std::int64_t>(
+            std::floor(static_cast<double>(t - kOriginT) / static_cast<double>(kCellSeconds))),
     };
 }
 
@@ -54,7 +42,7 @@ HeatMap heat_map(const core::TrajectoryDb &db, std::size_t &dropped_points) {
 
         cells.clear();
         cells.reserve(trajectory.size());
-        for (std::size_t k = 1; k + 1 < trajectory.size(); ++k) {
+        for (std::size_t k = 0; k < trajectory.size(); ++k) {
             if (auto cell = cell_of(trajectory.lat[k], trajectory.lon[k], trajectory.t[k])) {
                 cells.push_back(*cell);
             } else {
@@ -74,14 +62,6 @@ HeatMap heat_map(const core::TrajectoryDb &db, std::size_t &dropped_points) {
 HeatMap heat_map(const core::TrajectoryDb &db) {
     std::size_t dropped_points = 0;
     return heat_map(db, dropped_points);
-}
-
-std::vector<std::pair<Cell, HeatMap::mapped_type>> ranked_cells(const HeatMap &heat) {
-    std::vector<std::pair<Cell, HeatMap::mapped_type>> ranked(heat.begin(), heat.end());
-    std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) {
-        return a.second != b.second ? a.second > b.second : a.first < b.first;
-    });
-    return ranked;
 }
 
 } // namespace query

@@ -2,7 +2,9 @@
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#ifdef ENGINE_GENERATE_QUERIES
 #include "backend/engine/pipeline/query_generation.hpp"
+#endif
 #include "backend/engine/selection/selector.hpp"
 
 #include <iostream>
@@ -13,7 +15,10 @@ void run(const Config &config) {
     core::TrajectoryDb trajectories = io::load_trajectories(config.path);
     std::cout << trajectories.size() << " trajectories, " << trajectories.num_points()
               << " points\n";
+#ifdef ENGINE_GENERATE_QUERIES
+    generate_heat_map(trajectories, config);
     generate_queries(trajectories, config);
+#endif
 
     std::cout << trajectories.trajectory(3).size() << std::endl;
 
