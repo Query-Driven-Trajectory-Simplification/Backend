@@ -2,6 +2,8 @@
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/evaluator/evaluator.hpp"
+#include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
@@ -66,6 +68,10 @@ void run(const Config &config) {
     print_size("database", database);
     print_size("queries", queries);
 
+    const auto where_at = query::generate_where_at_queries(database);
+    std::cout << "where-at: " << where_at.queries.size() << " probes, "
+              << where_at.skipped_trajectories << " trips without eligible time\n";
+
     for (const double share : kBudgetShares) {
         const auto budgets = allocation::create_trajectory_budgets(
             database, allocation::AlgorithmType::kSizeProportional, total_budget(database, share));
@@ -75,6 +81,11 @@ void run(const Config &config) {
             const auto compressed = core::materialize(database, simplification);
             std::cout << share * 100 << "% " << algorithm_name(algorithm) << ": ";
             print_size("compressed", compressed);
+            evaluator::Evaluator evaluator(database, compressed, {.where_at = where_at.queries});
+            const auto scores = evaluator.evaluate();
+            std::cout << "  where-at: within 100m=" << scores.where_at.within_100m
+                      << ", average hit 25-500m=" << scores.where_at.average_hit_25_500m
+                      << '\n';
         }
     }
 }
