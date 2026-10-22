@@ -1,7 +1,9 @@
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/kendalls_tau.hpp"
 #include "backend/engine/query/knn.hpp"
+#include "backend/engine/query/range_query.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -41,6 +43,12 @@ double Evaluator::get_where_at_score() {
 
 void Evaluator::set_knn_neighbours(std::size_t k) { m_knn_neighbours = k; }
 
+void Evaluator::set_range_query_params(query::RangeQueryParams params) {
+    m_range_query_params = params;
+}
+
+void Evaluator::set_range_query_seed(std::uint64_t seed) { m_range_query_seed = seed; }
+
 void Evaluator::knn_score(std::size_t k) {
     const core::TrajectoryDb queries = query::generate_knn_queries(m_original);
 
@@ -59,7 +67,35 @@ void Evaluator::knn_score(std::size_t k) {
                               : sum / static_cast<double>(scored);
 }
 
-void Evaluator::range_score() { m_range_score = std::numeric_limits<double>::quiet_NaN(); }
+void Evaluator::range_score() {
+    const query::RangeQuerySampler sampler(m_original);
+    const auto queries = sampler.sample(m_range_query_seed, m_range_query_params);
+    if (queries.empty()) {
+        m_range_score = std::numeric_limits<double>::quiet_NaN();
+        return;
+    }
+
+    const query::RangeQuerySampler simplified_sampler(m_simplified);
+    double sum = 0.0;
+    std::size_t scored = 0;
+    for (const auto &range_query : queries) {
+        const auto original_results = range_query.results;
+        if (original_results == 0) {
+            continue;
+        }
+
+        const auto simplified_results = simplified_sampler.count_results(range_query);
+        const auto error =
+            std::abs(static_cast<double>(original_results) -
+                     static_cast<double>(simplified_results)) /
+            static_cast<double>(original_results);
+        sum += std::max(0.0, 1.0 - error);
+        ++scored;
+    }
+
+    m_range_score = scored == 0 ? std::numeric_limits<double>::quiet_NaN()
+                                : sum / static_cast<double>(scored);
+}
 
 void Evaluator::where_at_score() {
     m_where_at_score = std::numeric_limits<double>::quiet_NaN();

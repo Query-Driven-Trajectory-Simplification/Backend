@@ -1,8 +1,10 @@
 #pragma once
 
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/query/range_query.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 
 namespace evaluator {
@@ -27,6 +29,8 @@ class Evaluator {
     double get_where_at_score();
 
     void set_knn_neighbours(std::size_t k);
+    void set_range_query_params(query::RangeQueryParams params);
+    void set_range_query_seed(std::uint64_t seed);
 
   private:
 
@@ -38,6 +42,8 @@ class Evaluator {
     const core::TrajectoryDb &m_simplified;
 
     std::size_t m_knn_neighbours = 0;
+    query::RangeQueryParams m_range_query_params;
+    std::uint64_t m_range_query_seed = 1;
 
     double m_knn_score = std::numeric_limits<double>::quiet_NaN();
     double m_range_score = std::numeric_limits<double>::quiet_NaN();
