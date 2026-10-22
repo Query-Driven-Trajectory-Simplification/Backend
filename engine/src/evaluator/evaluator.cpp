@@ -1,9 +1,9 @@
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/kendalls_tau.hpp"
+#include "backend/engine/evaluator/range_score.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -84,11 +84,7 @@ void Evaluator::range_score() {
         }
 
         const auto simplified_results = simplified_sampler.count_results(range_query);
-        const auto error =
-            std::abs(static_cast<double>(original_results) -
-                     static_cast<double>(simplified_results)) /
-            static_cast<double>(original_results);
-        sum += std::max(0.0, 1.0 - error);
+        sum += range::query_score(original_results, simplified_results);
         ++scored;
     }
 

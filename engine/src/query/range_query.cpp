@@ -16,6 +16,11 @@ constexpr std::size_t kAttemptsPerQuery = 1000;
 
 } // namespace
 
+bool in_box(const RangeQuery &box, std::int64_t t, double lat, double lon) {
+    return t >= box.t_start && t <= box.t_end && lat >= box.min_lat && lat <= box.max_lat &&
+           lon >= box.min_lon && lon <= box.max_lon;
+}
+
 RangeQuerySampler::RangeQuerySampler(const core::TrajectoryDb &db) : m_db(db) {
     const auto t = db.all_t();
     if (t.empty()) {
@@ -58,8 +63,7 @@ std::uint32_t RangeQuerySampler::count_results(const RangeQuery &box) const {
         const auto d = static_cast<std::size_t>(day);
         for (auto k = m_day_start[d]; k < m_day_start[d + 1]; ++k) {
             const auto i = m_by_day[k];
-            if (t[i] < box.t_start || t[i] > box.t_end || lat[i] < box.min_lat ||
-                lat[i] > box.max_lat || lon[i] < box.min_lon || lon[i] > box.max_lon) {
+            if (!in_box(box, t[i], lat[i], lon[i])) {
                 continue;
             }
             trajectories.push_back(

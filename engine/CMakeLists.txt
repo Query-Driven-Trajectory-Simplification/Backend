@@ -24,6 +24,7 @@ add_library(engine
     src/core/simplification.cpp
     src/evaluator/evaluator.cpp
     src/evaluator/kendalls_tau.cpp
+    src/evaluator/range_score.cpp
     src/query/knn.cpp
 )
 
@@ -48,6 +49,8 @@ add_executable(engine_tests
     tests/subset_test.cpp
     tests/simplification_test.cpp
     tests/selectors/simplify_database_test.cpp
+    tests/range_score_test.cpp
+    tests/range_query_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main)
 gtest_discover_tests(engine_tests)

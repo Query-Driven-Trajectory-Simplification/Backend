@@ -30,6 +30,8 @@ struct RangeQuery {
     std::uint32_t results;
 };
 
+bool in_box(const RangeQuery &box, std::int64_t t, double lat, double lon);
+
 class RangeQuerySampler {
   public:
     explicit RangeQuerySampler(const core::TrajectoryDb &db);
