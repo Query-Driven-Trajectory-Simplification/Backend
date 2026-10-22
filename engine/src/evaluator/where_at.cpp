@@ -17,6 +17,9 @@ struct TripScore {
 };
 
 double query_error(const core::TrajectoryDb &compressed, const query::WhereAtQuery &probe) {
+    if (probe.trajectory_index >= compressed.size())
+        throw std::invalid_argument("where-at: missing trajectory");
+
     const auto trajectory = compressed.trajectory(probe.trajectory_index);
     if (trajectory.trajectory_id != probe.trajectory_id || trajectory.size() == 0)
         throw std::invalid_argument("where-at: mismatched or empty trajectory");
