@@ -49,13 +49,14 @@ core::Simplification simplify_database(
         return simplification;
     }
 
-    const unsigned int hw = std::thread::hardware_concurrency();
+    const unsigned int available = std::thread::hardware_concurrency();
     const std::size_t num_threads = std::min(
-        n, static_cast<std::size_t>(hw == 0 ? 1 : hw));
+        n, static_cast<std::size_t>(available == 0 ? 1 : available));
 
     std::vector<std::vector<std::size_t>> results(n);
-    std::atomic<std::size_t> next_index{0};
     std::vector<std::exception_ptr> errors(num_threads);
+
+    std::atomic<std::size_t> next_index{0};
 
     {
         std::vector<std::jthread> workers;
@@ -65,6 +66,7 @@ core::Simplification simplify_database(
             workers.emplace_back([&, t] {
                 try {
                     while (true) {
+                        // Atomically claim a unique trajectory index.
                         const std::size_t i =
                             next_index.fetch_add(1, std::memory_order_relaxed);
 
@@ -82,6 +84,7 @@ core::Simplification simplify_database(
                 }
             });
         }
+
     }
 
     for (const auto& error : errors) {

@@ -11,6 +11,9 @@ add_library(engine
     src/query/where_at_query.cpp
     src/core/interpolation.cpp
     src/core/simplification.cpp
+    src/evaluator/evaluator.cpp
+    src/evaluator/kendalls_tau.cpp
+    src/query/knn.cpp
 )
 
 target_include_directories(engine PUBLIC include)

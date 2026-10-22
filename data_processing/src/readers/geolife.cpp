@@ -31,7 +31,7 @@ std::expected<Point, std::string> parse_plt_line(const std::string &line) {
     int hour, minute, second;
 
     // lat, lon, 0, altitude (skipped), days since 1899 (skipped), date, time
-    const int fields = std::sscanf(line.c_str(), "%lf,%lf,0,%*lf,%*f,%d-%d-%d,%d:%d:%d", &point.lat,
+    const int fields = std::sscanf(line.c_str(), "%lf,%lf,0,%*f,%*f,%d-%d-%d,%d:%d:%d", &point.lat,
                                    &point.lon, &year, &month, &day, &hour, &minute, &second);
     if (fields != 8) {
         return std::unexpected(
