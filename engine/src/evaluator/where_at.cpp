@@ -25,8 +25,8 @@ double query_error(const core::TrajectoryDb &compressed, const query::WhereAtQue
         throw std::invalid_argument("where-at: mismatched or empty trajectory");
 
     if (!std::isfinite(probe.t) || probe.t < static_cast<double>(trajectory.t.front()) ||
-        probe.t > static_cast<double>(trajectory.t.back()) ||
-        !std::isfinite(probe.reference.x) || !std::isfinite(probe.reference.y))
+        probe.t > static_cast<double>(trajectory.t.back()) || !std::isfinite(probe.reference.x) ||
+        !std::isfinite(probe.reference.y))
         throw std::invalid_argument("where-at: invalid query position or time");
 
     const auto position = core::position_at(trajectory, probe.t);

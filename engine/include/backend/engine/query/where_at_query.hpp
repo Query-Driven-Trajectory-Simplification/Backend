@@ -39,6 +39,6 @@ struct WhereAtWorkload {
 // Samples query times across the eligible intervals and stores the original
 // interpolated position at each time as the reference answer.
 WhereAtWorkload generate_where_at_queries(const core::TrajectoryDb &original,
-                                         const WhereAtConfig &config = {});
+                                          const WhereAtConfig &config = {});
 
 } // namespace query

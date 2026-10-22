@@ -1,5 +1,5 @@
-#include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/core/simplification.hpp"
+#include "backend/engine/evaluator/evaluator.hpp"
 
 #include <gtest/gtest.h>
 
@@ -10,8 +10,7 @@
 namespace {
 
 core::TrajectoryDb original() {
-    return {{0, 3}, {10}, {0, 10, 20}, {39.95, 39.95, 39.95},
-            {116.35, 116.36, 116.36}};
+    return {{0, 3}, {10}, {0, 10, 20}, {39.95, 39.95, 39.95}, {116.35, 116.36, 116.36}};
 }
 
 core::TrajectoryDb endpoints(const core::TrajectoryDb &db) {
@@ -68,9 +67,7 @@ TEST(Evaluator, NoWorkloadsReturnsUndefinedScores) {
 TEST(Evaluator, RejectsDifferentTrajectoryCountsAndIds) {
     const auto db = original();
     const core::TrajectoryDb empty({0}, {}, {}, {}, {});
-    const core::TrajectoryDb wrong_id({0, 2}, {99}, {0, 20}, {39.95, 39.95},
-                                    {116.35, 116.36});
+    const core::TrajectoryDb wrong_id({0, 2}, {99}, {0, 20}, {39.95, 39.95}, {116.35, 116.36});
     EXPECT_THROW((evaluator::Evaluator(db, empty)), std::invalid_argument);
     EXPECT_THROW((evaluator::Evaluator(db, wrong_id)), std::invalid_argument);
 }
-

@@ -3,8 +3,8 @@
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/evaluator/evaluator.hpp"
-#include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
@@ -84,8 +84,7 @@ void run(const Config &config) {
             evaluator::Evaluator evaluator(database, compressed, {.where_at = where_at.queries});
             const auto scores = evaluator.evaluate();
             std::cout << "  where-at: within 100m=" << scores.where_at.within_100m
-                      << ", average hit 25-500m=" << scores.where_at.average_hit_25_500m
-                      << '\n';
+                      << ", average hit 25-500m=" << scores.where_at.average_hit_25_500m << '\n';
         }
     }
 }

@@ -35,7 +35,6 @@ class Evaluator {
     void set_knn_neighbours(std::size_t k);
 
   private:
-
     void knn_score(std::size_t k);
     void range_score();
 

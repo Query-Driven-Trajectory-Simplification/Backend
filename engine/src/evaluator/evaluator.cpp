@@ -64,8 +64,8 @@ void Evaluator::knn_score(std::size_t k) {
             ++scored;
         }
     }
-    m_knn_score = scored == 0 ? std::numeric_limits<double>::quiet_NaN()
-                              : sum / static_cast<double>(scored);
+    m_knn_score =
+        scored == 0 ? std::numeric_limits<double>::quiet_NaN() : sum / static_cast<double>(scored);
 }
 
 void Evaluator::range_score() { m_range_score = std::numeric_limits<double>::quiet_NaN(); }

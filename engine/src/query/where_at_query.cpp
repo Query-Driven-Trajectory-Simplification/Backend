@@ -23,7 +23,7 @@ void validate_config(const WhereAtConfig &config) {
 }
 
 std::vector<EligibleInterval> eligible_intervals(const core::TrajectoryView &trajectory,
-                                                double max_gap_seconds) {
+                                                 double max_gap_seconds) {
     std::vector<EligibleInterval> intervals;
     double duration = 0;
     for (std::size_t j = 1; j < trajectory.size(); ++j) {
@@ -41,17 +41,17 @@ std::vector<EligibleInterval> eligible_intervals(const core::TrajectoryView &tra
 double sample_time(const std::vector<EligibleInterval> &intervals, std::size_t probe_index,
                    std::size_t probe_count, std::mt19937_64 &rng) {
     const double duration = intervals.back().cumulative_duration;
-    // This is somewhat crazy. std::generate_canonical takes the type of value to generate & a precision value.
-    // The precision indicates the bits of entropy. For a double with a mantissa of 53 bits, that value is 53.
-    // Adding it to probe_index picks a position within that probe's time portion.
+    // This is somewhat crazy. std::generate_canonical takes the type of value to generate & a
+    // precision value. The precision indicates the bits of entropy. For a double with a mantissa of
+    // 53 bits, that value is 53. Adding it to probe_index picks a position within that probe's time
+    // portion.
     const double random = std::generate_canonical<double, 53>(rng);
-    const double fraction = (static_cast<double>(probe_index) + random) /
-                            static_cast<double>(probe_count);
-
+    const double fraction =
+        (static_cast<double>(probe_index) + random) / static_cast<double>(probe_count);
 
     const double elapsed = std::min(duration * fraction, std::nextafter(duration, 0.0));
-    const auto interval = std::ranges::upper_bound(
-        intervals, elapsed, {}, &EligibleInterval::cumulative_duration);
+    const auto interval =
+        std::ranges::upper_bound(intervals, elapsed, {}, &EligibleInterval::cumulative_duration);
     const double previous_duration =
         interval == intervals.begin() ? 0 : (interval - 1)->cumulative_duration;
 
@@ -61,7 +61,7 @@ double sample_time(const std::vector<EligibleInterval> &intervals, std::size_t p
 } // namespace
 
 WhereAtWorkload generate_where_at_queries(const core::TrajectoryDb &uncompressed_database,
-                                         const WhereAtConfig &config) {
+                                          const WhereAtConfig &config) {
     validate_config(config);
 
     WhereAtWorkload result;
@@ -73,7 +73,8 @@ WhereAtWorkload generate_where_at_queries(const core::TrajectoryDb &uncompressed
             result.skipped_trajectories += 1;
             continue;
         }
-        for (std::size_t probe_index = 0; probe_index < config.probes_per_trajectory; probe_index++) {
+        for (std::size_t probe_index = 0; probe_index < config.probes_per_trajectory;
+             probe_index++) {
             const double t = sample_time(intervals, probe_index, config.probes_per_trajectory, rng);
             result.queries.push_back(
                 {i, trajectory.trajectory_id, t, core::position_at(trajectory, t)});

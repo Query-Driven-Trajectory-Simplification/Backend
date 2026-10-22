@@ -1,7 +1,7 @@
-#include "backend/engine/evaluator/where_at.hpp"
-#include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/core/interpolation.hpp"
 #include "backend/engine/core/simplification.hpp"
+#include "backend/engine/evaluator/where_at.hpp"
+#include "backend/engine/query/where_at_query.hpp"
 
 #include <gtest/gtest.h>
 
@@ -99,7 +99,7 @@ TEST(WhereAtQueries, RejectsInvalidConfiguration) {
 
 TEST(WhereAtEvaluation, OriginalDatabaseScoresPerfectly) {
     const core::TrajectoryDb db({0, 3}, {10}, {0, 10, 20}, {39.95, 39.96, 39.955},
-                               {116.35, 116.36, 116.38});
+                                {116.35, 116.36, 116.38});
     const auto workload = query::generate_where_at_queries(db);
     const auto result = evaluator::evaluate_where_at(db, workload.queries);
     EXPECT_DOUBLE_EQ(result.within_100m, 1);
@@ -119,16 +119,15 @@ TEST(WhereAtEvaluation, ComputesBothScoresAtToleranceBoundaries) {
 TEST(WhereAtEvaluation, WeightsTripsEquallyWithUnequalQueryCounts) {
     const auto db = stationary({{0, 10}, {0, 10}});
     const std::vector<query::WhereAtQuery> queries{
-        {0, 10, 1, {0, 0}}, {1, 11, 5, {200, 0}},
-        {0, 10, 2, {0, 0}}, {0, 10, 3, {0, 0}}};
+        {0, 10, 1, {0, 0}}, {1, 11, 5, {200, 0}}, {0, 10, 2, {0, 0}}, {0, 10, 3, {0, 0}}};
     const auto result = evaluator::evaluate_where_at(db, queries);
     EXPECT_DOUBLE_EQ(result.within_100m, .5);
     EXPECT_NEAR(result.average_hit_25_500m, (1 + 300. / 475) / 2, 1e-14);
 }
 
 TEST(WhereAtEvaluation, InterpolatesCompressedTripWithoutFilteringItsLongGaps) {
-    const core::TrajectoryDb original({0, 3}, {10}, {0, 50, 100},
-                                     {39.95, 39.95, 39.95}, {116.35, 116.36, 116.36});
+    const core::TrajectoryDb original({0, 3}, {10}, {0, 50, 100}, {39.95, 39.95, 39.95},
+                                      {116.35, 116.36, 116.36});
     core::Simplification kept;
     const std::vector<std::size_t> endpoints{0, 2};
     kept.add_trajectory(endpoints);
@@ -149,8 +148,10 @@ TEST(WhereAtEvaluation, InterpolatesCompressedTripWithoutFilteringItsLongGaps) {
 TEST(WhereAtEvaluation, RejectsMissingMismatchedAndOutOfSpanQueries) {
     const auto db = stationary({{0, 10}});
     for (const auto &q : std::vector<query::WhereAtQuery>{
-             {1, 10, 5, {0, 0}}, {0, 999, 5, {0, 0}},
-             {0, 10, -1, {0, 0}}, {0, 10, 11, {0, 0}},
+             {1, 10, 5, {0, 0}},
+             {0, 999, 5, {0, 0}},
+             {0, 10, -1, {0, 0}},
+             {0, 10, 11, {0, 0}},
              {0, 10, std::numeric_limits<double>::quiet_NaN(), {0, 0}},
              {0, 10, 5, {std::numeric_limits<double>::infinity(), 0}}}) {
         const std::vector<query::WhereAtQuery> queries{q};
