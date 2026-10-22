@@ -102,11 +102,8 @@ TEST(WhereAtEvaluation, OriginalDatabaseScoresPerfectly) {
                                {116.35, 116.36, 116.38});
     const auto workload = query::generate_where_at_queries(db);
     const auto result = evaluator::evaluate_where_at(db, workload.queries);
-    EXPECT_DOUBLE_EQ(result.scores.within_100m, 1);
-    EXPECT_DOUBLE_EQ(result.scores.average_hit_25_500m, 1);
-    EXPECT_EQ(result.evaluated_trajectories, 1);
-    for (double error : result.errors_metres)
-        EXPECT_DOUBLE_EQ(error, 0);
+    EXPECT_DOUBLE_EQ(result.within_100m, 1);
+    EXPECT_DOUBLE_EQ(result.average_hit_25_500m, 1);
 }
 
 TEST(WhereAtEvaluation, ComputesBothScoresAtToleranceBoundaries) {
@@ -115,9 +112,8 @@ TEST(WhereAtEvaluation, ComputesBothScoresAtToleranceBoundaries) {
     for (double error : {0., 25., 100., 500., 600.})
         queries.push_back({0, 10, 5, {error, 0}});
     const auto result = evaluator::evaluate_where_at(db, queries);
-    EXPECT_DOUBLE_EQ(result.scores.within_100m, 3. / 5);
-    EXPECT_NEAR(result.scores.average_hit_25_500m, (2 + 400. / 475) / 5, 1e-14);
-    EXPECT_EQ(result.errors_metres, (std::vector<double>{0, 25, 100, 500, 600}));
+    EXPECT_DOUBLE_EQ(result.within_100m, 3. / 5);
+    EXPECT_NEAR(result.average_hit_25_500m, (2 + 400. / 475) / 5, 1e-14);
 }
 
 TEST(WhereAtEvaluation, WeightsTripsEquallyWithUnequalQueryCounts) {
@@ -126,9 +122,8 @@ TEST(WhereAtEvaluation, WeightsTripsEquallyWithUnequalQueryCounts) {
         {0, 10, 1, {0, 0}}, {1, 11, 5, {200, 0}},
         {0, 10, 2, {0, 0}}, {0, 10, 3, {0, 0}}};
     const auto result = evaluator::evaluate_where_at(db, queries);
-    EXPECT_EQ(result.evaluated_trajectories, 2);
-    EXPECT_DOUBLE_EQ(result.scores.within_100m, .5);
-    EXPECT_NEAR(result.scores.average_hit_25_500m, (1 + 300. / 475) / 2, 1e-14);
+    EXPECT_DOUBLE_EQ(result.within_100m, .5);
+    EXPECT_NEAR(result.average_hit_25_500m, (1 + 300. / 475) / 2, 1e-14);
 }
 
 TEST(WhereAtEvaluation, InterpolatesCompressedTripWithoutFilteringItsLongGaps) {
@@ -142,10 +137,13 @@ TEST(WhereAtEvaluation, InterpolatesCompressedTripWithoutFilteringItsLongGaps) {
     const std::vector<query::WhereAtQuery> queries{{0, 10, 50, truth}};
     const auto result = evaluator::evaluate_where_at(compressed, queries);
     const auto start = core::position_at(original.trajectory(0), 0);
-    EXPECT_NEAR(result.errors_metres.front(), core::distance(start, truth) / 2, 1e-9);
-    EXPECT_DOUBLE_EQ(result.scores.within_100m, 0);
+    const double expected_error = core::distance(start, truth) / 2;
+    EXPECT_NEAR(result.average_hit_25_500m, (500 - expected_error) / 475, 1e-12);
+    EXPECT_DOUBLE_EQ(result.within_100m, 0);
     const auto workload = query::generate_where_at_queries(original);
-    EXPECT_EQ(evaluator::evaluate_where_at(compressed, workload.queries).errors_metres.size(), 128);
+    const auto scores = evaluator::evaluate_where_at(compressed, workload.queries);
+    EXPECT_TRUE(std::isfinite(scores.within_100m));
+    EXPECT_TRUE(std::isfinite(scores.average_hit_25_500m));
 }
 
 TEST(WhereAtEvaluation, RejectsMissingMismatchedAndOutOfSpanQueries) {
@@ -167,8 +165,6 @@ TEST(WhereAtEvaluation, EmptyWorkloadHasNoScore) {
     const auto db = stationary({});
     EXPECT_TRUE(query::generate_where_at_queries(db).queries.empty());
     const auto result = evaluator::evaluate_where_at(db, {});
-    EXPECT_TRUE(std::isnan(result.scores.within_100m));
-    EXPECT_TRUE(std::isnan(result.scores.average_hit_25_500m));
-    EXPECT_TRUE(result.errors_metres.empty());
-    EXPECT_EQ(result.evaluated_trajectories, 0);
+    EXPECT_TRUE(std::isnan(result.within_100m));
+    EXPECT_TRUE(std::isnan(result.average_hit_25_500m));
 }
