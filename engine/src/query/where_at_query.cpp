@@ -43,6 +43,7 @@ double sample_time(const std::vector<EligibleInterval> &intervals, std::size_t p
     const double duration = intervals.back().cumulative_duration;
     // This is somewhat crazy. std::generate_canonical takes the type of value to generate & a precision value.
     // The precision indicates the bits of entropy. For a double with a mantissa of 53 bits, that value is 53.
+    // Adding it to probe_index picks a position within that probe's time portion.
     const double random = std::generate_canonical<double, 53>(rng);
     const double fraction = (static_cast<double>(probe_index) + random) /
                             static_cast<double>(probe_count);
