@@ -12,6 +12,9 @@ struct Config {
     std::filesystem::path path;
     std::filesystem::path output_dir = "output";
     std::uint64_t seed = 1;
+    // Seed for the range queries the evaluator scores with. Kept apart from seed, so the default
+    // run does not evaluate on the same queries it generates for the database (train) side.
+    std::uint64_t eval_seed = 2;
     // Number of range queries (and the heat map) generated for the database (train) and queries
     // (test) side. 0 skips generating for that side.
     // TODO: Can be changed or made smarter in the future.

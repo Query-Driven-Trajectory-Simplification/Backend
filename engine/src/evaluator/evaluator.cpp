@@ -11,8 +11,9 @@
 
 namespace evaluator {
 
-Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified)
-    : m_original(original), m_simplified(simplified) {
+Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
+                     std::uint64_t seed)
+    : m_original(original), m_simplified(simplified), m_range_query_seed(seed) {
     if (original.size() != simplified.size())
         throw std::invalid_argument(
             "Evaluator: original and simplified hold different trajectories");
@@ -46,8 +47,6 @@ void Evaluator::set_knn_neighbours(std::size_t k) { m_knn_neighbours = k; }
 void Evaluator::set_range_query_params(query::RangeQueryParams params) {
     m_range_query_params = params;
 }
-
-void Evaluator::set_range_query_seed(std::uint64_t seed) { m_range_query_seed = seed; }
 
 void Evaluator::knn_score(std::size_t k) {
     const core::TrajectoryDb queries = query::generate_knn_queries(m_original);

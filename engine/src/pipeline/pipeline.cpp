@@ -2,6 +2,7 @@
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/pipeline/query_generation.hpp"
 #include "backend/engine/selection/selector.hpp"
@@ -89,6 +90,11 @@ void run(const Config &config) {
             const auto compressed = core::materialize(database, simplification);
             std::cout << share * 100 << "% " << algorithm_name(algorithm) << ": ";
             print_size("compressed", compressed);
+
+            // Only the range score for now: knn and where-at are still placeholders.
+            evaluator::Evaluator evaluator(database, compressed, config.eval_seed);
+            evaluator.set_range_query_params(config.range_queries);
+            std::cout << "  range score: " << evaluator.get_range_score() << '\n';
         }
     }
 }

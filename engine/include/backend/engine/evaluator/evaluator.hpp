@@ -18,7 +18,8 @@ struct Scoretable {
 
 class Evaluator {
   public:
-    Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified);
+    Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
+              std::uint64_t seed = 2);
 
     // Runs every evaluation, stores the scores and returns them
     Scoretable evaluate();
@@ -30,7 +31,6 @@ class Evaluator {
 
     void set_knn_neighbours(std::size_t k);
     void set_range_query_params(query::RangeQueryParams params);
-    void set_range_query_seed(std::uint64_t seed);
 
   private:
 
@@ -43,7 +43,7 @@ class Evaluator {
 
     std::size_t m_knn_neighbours = 0;
     query::RangeQueryParams m_range_query_params;
-    std::uint64_t m_range_query_seed = 1;
+    std::uint64_t m_range_query_seed;
 
     double m_knn_score = std::numeric_limits<double>::quiet_NaN();
     double m_range_score = std::numeric_limits<double>::quiet_NaN();
