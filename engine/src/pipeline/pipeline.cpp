@@ -5,6 +5,7 @@
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/query/knn.hpp"
+#include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
@@ -71,6 +72,9 @@ void run(const Config &config) {
     // extract from input config
     query::KnnConfig knn_config;
     const auto knn_workload = query::generate_knn_queries(database, queries, knn_config);
+    const auto where_at = query::generate_where_at_queries(database);
+    std::cout << "where-at: " << where_at.queries.size() << " probes, "
+              << where_at.skipped_trajectories << " trips without eligible time\n";
 
     for (const double share : kBudgetShares) {
         const auto budgets = allocation::create_trajectory_budgets(
@@ -87,6 +91,10 @@ void run(const Config &config) {
             const auto scores = evaluator.evaluate();
             std::cout << "  knn tau: " << scores.knn_kendalls_tau
                       << ", recall@k: " << scores.knn_recall_at_k << '\n';
+            evaluator::Evaluator evaluator(database, compressed, {.where_at = where_at.queries});
+            const auto scores = evaluator.evaluate();
+            std::cout << "  where-at: within radius=" << scores.where_at.within_radius
+                      << ", average hit=" << scores.where_at.average_hit << '\n';
         }
     }
 }
