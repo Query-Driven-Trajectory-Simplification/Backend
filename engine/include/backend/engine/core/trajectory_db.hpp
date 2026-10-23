@@ -38,7 +38,10 @@ class TrajectoryDb {
     }
 
   private:
-    std::vector<std::uint64_t> m_offsets;
+    TrajectoryDb() = default;
+    friend TrajectoryDb subset(const TrajectoryDb &, std::span<const std::size_t>);
+
+    std::vector<std::uint64_t> m_offsets{0};
     std::vector<std::int32_t> m_trajectory_ids;
     std::vector<std::int64_t> m_t;
     std::vector<double> m_lat;
@@ -47,7 +50,8 @@ class TrajectoryDb {
     std::vector<double> m_y;
 };
 
-// Copies the trajectories at the given indices, in that order, into a new database
+// Copies validated trajectories, including projected coordinates, in the given order.
+// Throws std::out_of_range for invalid indices.
 TrajectoryDb subset(const TrajectoryDb &trajectories, std::span<const std::size_t> indices);
 
 } // namespace core

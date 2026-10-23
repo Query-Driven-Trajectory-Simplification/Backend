@@ -45,7 +45,6 @@ class Evaluator {
     void knn_scores();
     void range_recall();
 
-    const core::TrajectoryDb &m_original;
     const core::TrajectoryDb &m_simplified;
     Workloads m_workloads;
     WhereAtScoringConfig m_where_at_config;

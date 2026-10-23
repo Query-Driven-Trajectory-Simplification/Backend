@@ -23,7 +23,6 @@ read_trajectory_db_from_batches(const std::filesystem::path &path) {
 
     parquet::ArrowReaderProperties arrow_props = parquet::default_arrow_reader_properties();
     arrow_props.set_use_threads(true);
-    arrow_props.set_pre_buffer(true);
 
     parquet::arrow::FileReaderBuilder builder;
     ARROW_RETURN_NOT_OK(builder.Open(in));
@@ -65,20 +64,31 @@ read_trajectory_db_from_batches(const std::filesystem::path &path) {
                                           "(int32), t (int64), lat (double), or lon (double)");
         }
 
-        for (std::int64_t i = 0; i < batch->num_rows(); ++i) {
-            const std::int32_t id = id_col->Value(i);
-            if (trajectory_ids.empty() || id != trajectory_ids.back()) {
-                if (!trajectory_ids.empty() && id < trajectory_ids.back()) {
-                    return arrow::Status::Invalid(
-                        "trajectory_id not sorted; rows of a trip are split");
-                }
-                if (!trajectory_ids.empty())
-                    offsets.push_back(timestamps.size());
-                trajectory_ids.push_back(id);
-            }
-            timestamps.push_back(t_col->Value(i));
-            latitudes.push_back(lat_col->Value(i));
-            longitudes.push_back(lon_col->Value(i));
+        if (id_col->null_count() || t_col->null_count() || lat_col->null_count() ||
+            lon_col->null_count())
+            return arrow::Status::Invalid("Trajectory columns must not contain null values");
+        if (batch->num_rows() == 0)
+            continue;
+
+        const auto batch_start = timestamps.size();
+        const auto count = batch->num_rows();
+        timestamps.insert(timestamps.end(), t_col->raw_values(), t_col->raw_values() + count);
+        latitudes.insert(latitudes.end(), lat_col->raw_values(), lat_col->raw_values() + count);
+        longitudes.insert(longitudes.end(), lon_col->raw_values(), lon_col->raw_values() + count);
+
+        const auto *ids = id_col->raw_values();
+        if (trajectory_ids.empty())
+            trajectory_ids.push_back(ids[0]);
+        auto previous_id = trajectory_ids.back();
+        for (std::int64_t i = 0; i < count; ++i) {
+            const auto id = ids[i];
+            if (id == previous_id)
+                continue;
+            if (id < previous_id)
+                return arrow::Status::Invalid("trajectory_id not sorted; rows of a trip are split");
+            offsets.push_back(batch_start + static_cast<std::size_t>(i));
+            trajectory_ids.push_back(id);
+            previous_id = id;
         }
     }
 

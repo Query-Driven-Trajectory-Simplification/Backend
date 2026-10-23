@@ -29,6 +29,7 @@ add_executable(run
 target_link_libraries(run PRIVATE engine)
 
 add_executable(engine_tests
+    tests/parquet_loader_test.cpp
     tests/projection_test.cpp
     tests/split/time_split_test.cpp
     tests/split/random_split_test.cpp
@@ -43,5 +44,5 @@ add_executable(engine_tests
     tests/selectors/simplify_database_test.cpp
     tests/range_test.cpp
 )
-target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main)
+target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
 gtest_discover_tests(engine_tests)

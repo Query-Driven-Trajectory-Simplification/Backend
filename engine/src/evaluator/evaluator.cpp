@@ -13,8 +13,7 @@ namespace evaluator {
 
 Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
                      Workloads workloads, WhereAtScoringConfig where_at_config)
-    : m_original(original), m_simplified(simplified), m_workloads(workloads),
-      m_where_at_config(where_at_config) {
+    : m_simplified(simplified), m_workloads(workloads), m_where_at_config(where_at_config) {
     if (original.size() != simplified.size())
         throw std::invalid_argument(
             "Evaluator: original and simplified hold different trajectories");
