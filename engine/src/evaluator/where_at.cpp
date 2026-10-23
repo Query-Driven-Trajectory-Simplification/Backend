@@ -74,8 +74,7 @@ WhereAtScores evaluate_where_at(const core::TrajectoryDb &compressed,
                                 const WhereAtScoringConfig &config) {
     if (!std::isfinite(config.hit_radius_m) || config.hit_radius_m < 0 ||
         !std::isfinite(config.min_tolerance_m) || config.min_tolerance_m < 0 ||
-        !std::isfinite(config.max_tolerance_m) ||
-        config.max_tolerance_m <= config.min_tolerance_m)
+        !std::isfinite(config.max_tolerance_m) || config.max_tolerance_m <= config.min_tolerance_m)
         throw std::invalid_argument("where-at: invalid scoring distances");
 
     std::vector<TripScore> trips(compressed.size());

@@ -42,8 +42,7 @@ TEST(Evaluator, DelegatesToWhereAtModule) {
     const auto expected = evaluator::evaluate_where_at(compressed, workload.queries, config);
     evaluator::Evaluator evaluator(db, compressed, {.where_at = workload.queries}, config);
     EXPECT_DOUBLE_EQ(evaluator.get_where_at_scores().within_radius, expected.within_radius);
-    EXPECT_DOUBLE_EQ(evaluator.evaluate().where_at.average_hit,
-                     expected.average_hit);
+    EXPECT_DOUBLE_EQ(evaluator.evaluate().where_at.average_hit, expected.average_hit);
 }
 
 TEST(Evaluator, ReusesSameWorkloadAcrossDatabases) {
@@ -76,8 +75,7 @@ TEST(Evaluator, RejectsDifferentTrajectoryCountsAndIds) {
 }
 
 TEST(Evaluator, CollectsKnnAndWhereAtScoresTogether) {
-    const core::TrajectoryDb db(
-        {0, 2, 4}, {10, 20}, {0, 20, 0, 20}, {0, 1, 10, 11}, {0, 0, 0, 0});
+    const core::TrajectoryDb db({0, 2, 4}, {10, 20}, {0, 20, 0, 20}, {0, 1, 10, 11}, {0, 0, 0, 0});
     const auto where_at = query::generate_where_at_queries(db);
     const auto knn = query::generate_knn_queries(db, db, {.k = 2, .query_count = 0});
     evaluator::Evaluator evaluator(db, db, {.where_at = where_at.queries});
