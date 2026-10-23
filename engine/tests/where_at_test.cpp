@@ -182,11 +182,14 @@ TEST(WhereAtEvaluation, UsesConfiguredDistances) {
 
 TEST(WhereAtEvaluation, RejectsInvalidScoringConfigurationEvenWithoutQueries) {
     const auto db = stationary({});
-    for (double invalid : {-1., std::numeric_limits<double>::infinity(),
-                           std::numeric_limits<double>::quiet_NaN()}) {
-        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {invalid, 25, 500}), std::invalid_argument);
-        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, invalid, 500}), std::invalid_argument);
-        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, 25, invalid}), std::invalid_argument);
+    for (double invalid :
+         {-1., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {invalid, 25, 500}),
+                     std::invalid_argument);
+        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, invalid, 500}),
+                     std::invalid_argument);
+        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, 25, invalid}),
+                     std::invalid_argument);
     }
     EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, 25, 25}), std::invalid_argument);
     EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, 500, 25}), std::invalid_argument);
