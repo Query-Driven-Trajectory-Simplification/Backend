@@ -43,14 +43,15 @@ std::vector<std::size_t> point_offsets(const core::TrajectoryDb &trajectories) {
 RangeBox box_around(const core::TrajectoryView &trajectory, std::size_t point,
                     const RangeConfig &config) {
     const double half_size = config.box_size_m / 2;
-    const std::int64_t half_window = config.window_seconds / 2;
+    const std::int64_t before = config.window_seconds / 2;
+    const std::int64_t after = config.window_seconds - before;
     return {
         .x_min = trajectory.x[point] - half_size,
         .x_max = trajectory.x[point] + half_size,
         .y_min = trajectory.y[point] - half_size,
         .y_max = trajectory.y[point] + half_size,
-        .t_min = trajectory.t[point] - half_window,
-        .t_max = trajectory.t[point] + half_window,
+        .t_min = trajectory.t[point] - before,
+        .t_max = trajectory.t[point] + after,
     };
 }
 
@@ -96,7 +97,9 @@ RangeWorkload generate_range_queries(const core::TrajectoryDb &original,
     std::unordered_set<std::size_t> used_centres;
     const std::size_t max_attempts = config.query_count * config.attempts_per_query;
     for (std::size_t attempt = 0;
-         attempt < max_attempts && result.queries.size() < config.query_count; attempt++) {
+         attempt < max_attempts && result.queries.size() < config.query_count &&
+         used_centres.size() < num_points;
+         attempt++) {
         const std::size_t point = random_point(rng);
         if (used_centres.contains(point))
             continue;
@@ -106,6 +109,11 @@ RangeWorkload generate_range_queries(const core::TrajectoryDb &original,
         const auto box = box_around(original.trajectory(trajectory_index),
                                     point - offsets[trajectory_index], config);
         auto reference = range(original, box);
+        // Too few results can never improve for this centre; random rejections can be retried.
+        if (reference.size() < config.min_results) {
+            used_centres.insert(point);
+            continue;
+        }
         if (!accept(reference.size(), config, rng))
             continue;
 

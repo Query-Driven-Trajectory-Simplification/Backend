@@ -92,6 +92,24 @@ TEST(RangeQueries, ReferenceIsTheRangeOfTheOriginal) {
     }
 }
 
+TEST(RangeQueries, PreservesOddWindowDurations) {
+    const auto db = make_db({{{100}}});
+    for (const std::int64_t seconds : {1, 5}) {
+        const auto workload = query::generate_range_queries(db, {1, 1000, seconds, 1, 1, 1});
+        ASSERT_EQ(workload.queries.size(), 1);
+        const auto &box = workload.queries.front().box;
+        EXPECT_EQ(box.t_min, 100 - seconds / 2);
+        EXPECT_EQ(box.t_max - box.t_min, seconds);
+    }
+}
+
+TEST(RangeQueries, RetriesRandomlyRejectedEligibleCentres) {
+    const auto db = make_db({{{100}}});
+    const auto workload = query::generate_range_queries(db, {1, 1000, 3600, 1, 100, 10000});
+    ASSERT_EQ(workload.queries.size(), 1);
+    EXPECT_EQ(workload.queries.front().reference, Indices{0});
+}
+
 TEST(RangeQueries, RejectsBoxesWithTooFewResults) {
     const auto db = make_db({{{0}, {10}}, {{0}, {10}}, {{0}, {10}}});
     EXPECT_TRUE(query::generate_range_queries(db, {10, 1000, 3600, 4, 4, 1}).queries.empty());
