@@ -83,8 +83,8 @@ void run(const Config &config) {
             print_size("compressed", compressed);
             evaluator::Evaluator evaluator(database, compressed, {.where_at = where_at.queries});
             const auto scores = evaluator.evaluate();
-            std::cout << "  where-at: within 100m=" << scores.where_at.within_100m
-                      << ", average hit 25-500m=" << scores.where_at.average_hit_25_500m << '\n';
+            std::cout << "  where-at: within radius=" << scores.where_at.within_radius
+                      << ", average hit=" << scores.where_at.average_hit << '\n';
         }
     }
 }

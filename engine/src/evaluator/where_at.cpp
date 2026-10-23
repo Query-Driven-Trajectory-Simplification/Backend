@@ -11,7 +11,7 @@ namespace evaluator {
 namespace {
 
 struct TripScore {
-    double hits_within_100m = 0;
+    double hits_within_radius = 0;
     double average_hit_sum = 0;
     std::size_t query_count = 0;
 };
@@ -36,15 +36,17 @@ double query_error(const core::TrajectoryDb &compressed, const query::WhereAtQue
     return error;
 }
 
-void add_error(TripScore &trip, double error) {
-    if (error <= 100.0)
-        trip.hits_within_100m += 1;
-    trip.average_hit_sum += std::clamp((500.0 - error) / 475.0, 0.0, 1.0);
+void add_error(TripScore &trip, double error, const WhereAtScoringConfig &config) {
+    if (error <= config.hit_radius_m)
+        trip.hits_within_radius += 1;
+    const double tolerance_range = config.max_tolerance_m - config.min_tolerance_m;
+    trip.average_hit_sum +=
+        std::clamp((config.max_tolerance_m - error) / tolerance_range, 0.0, 1.0);
     trip.query_count += 1;
 }
 
 WhereAtScores average_trip_scores(std::span<const TripScore> trips) {
-    double within_100m_sum = 0;
+    double within_radius_sum = 0;
     double average_hit_sum = 0;
     std::size_t evaluated_trajectories = 0;
 
@@ -53,7 +55,7 @@ WhereAtScores average_trip_scores(std::span<const TripScore> trips) {
             continue;
 
         const double query_count = static_cast<double>(trip.query_count);
-        within_100m_sum += trip.hits_within_100m / query_count;
+        within_radius_sum += trip.hits_within_radius / query_count;
         average_hit_sum += trip.average_hit_sum / query_count;
         evaluated_trajectories += 1;
     }
@@ -62,17 +64,24 @@ WhereAtScores average_trip_scores(std::span<const TripScore> trips) {
         return {};
 
     const double trip_count = static_cast<double>(evaluated_trajectories);
-    return {within_100m_sum / trip_count, average_hit_sum / trip_count};
+    return {within_radius_sum / trip_count, average_hit_sum / trip_count};
 }
 
 } // namespace
 
 WhereAtScores evaluate_where_at(const core::TrajectoryDb &compressed,
-                                std::span<const query::WhereAtQuery> queries) {
+                                std::span<const query::WhereAtQuery> queries,
+                                const WhereAtScoringConfig &config) {
+    if (!std::isfinite(config.hit_radius_m) || config.hit_radius_m < 0 ||
+        !std::isfinite(config.min_tolerance_m) || config.min_tolerance_m < 0 ||
+        !std::isfinite(config.max_tolerance_m) ||
+        config.max_tolerance_m <= config.min_tolerance_m)
+        throw std::invalid_argument("where-at: invalid scoring distances");
+
     std::vector<TripScore> trips(compressed.size());
     for (const auto &probe : queries) {
         const double error = query_error(compressed, probe);
-        add_error(trips[probe.trajectory_index], error);
+        add_error(trips[probe.trajectory_index], error, config);
     }
     return average_trip_scores(trips);
 }
