@@ -37,7 +37,6 @@ class ParquetLoader : public testing::Test {
             arrow::Table::Make(schema, {ids.Finish().ValueOrDie(), times.Finish().ValueOrDie(),
                                         lat.Finish().ValueOrDie(), lon.Finish().ValueOrDie()});
         const auto output = arrow::io::FileOutputStream::Open(path.string()).ValueOrDie();
-        // Two rows per row group makes each trajectory span row groups.
         ASSERT_TRUE(
             parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), output, 2).ok());
         ASSERT_TRUE(output->Close().ok());
