@@ -71,10 +71,10 @@ TEST(Evaluator, AveragesRangeRecallOverQueries) {
     const auto compressed = endpoints(db);
     // The first box only holds the dropped middle point, the second only the kept start point
     const auto middle = db.trajectory(0);
-    const query::RangeBox dropped{middle.x[1] - 1, middle.x[1] + 1, middle.y[1] - 1,
-                                  middle.y[1] + 1, 10, 10};
-    const query::RangeBox kept{middle.x[0] - 1, middle.x[0] + 1, middle.y[0] - 1,
-                               middle.y[0] + 1, 0, 0};
+    const query::RangeBox dropped{
+        middle.x[1] - 1, middle.x[1] + 1, middle.y[1] - 1, middle.y[1] + 1, 10, 10};
+    const query::RangeBox kept{
+        middle.x[0] - 1, middle.x[0] + 1, middle.y[0] - 1, middle.y[0] + 1, 0, 0};
     const std::vector<query::RangeQuery> queries{{dropped, {0}}, {kept, {0}}};
     evaluator::Evaluator baseline(db, db, {.range = queries});
     evaluator::Evaluator simplified(db, compressed, {.range = queries});
