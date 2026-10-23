@@ -31,7 +31,7 @@ TEST(Evaluator, CollectsBothWhereAtScoresWithoutUnconfiguredQueries) {
     EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
     EXPECT_TRUE(std::isnan(scores.knn_kendalls_tau));
     EXPECT_TRUE(std::isnan(scores.knn_recall_at_k));
-    EXPECT_TRUE(std::isnan(scores.range_score));
+    EXPECT_TRUE(std::isnan(scores.range_recall));
 }
 
 TEST(Evaluator, DelegatesToWhereAtModule) {
@@ -61,9 +61,26 @@ TEST(Evaluator, NoWorkloadsReturnsUndefinedScores) {
     const auto scores = evaluator.evaluate();
     EXPECT_TRUE(std::isnan(scores.knn_kendalls_tau));
     EXPECT_TRUE(std::isnan(scores.knn_recall_at_k));
-    EXPECT_TRUE(std::isnan(scores.range_score));
+    EXPECT_TRUE(std::isnan(scores.range_recall));
     EXPECT_TRUE(std::isnan(scores.where_at.within_radius));
     EXPECT_TRUE(std::isnan(scores.where_at.average_hit));
+}
+
+TEST(Evaluator, AveragesRangeRecallOverQueries) {
+    const auto db = original();
+    const auto compressed = endpoints(db);
+    // The first box only holds the dropped middle point, the second only the kept start point
+    const auto middle = db.trajectory(0);
+    const query::RangeBox dropped{middle.x[1] - 1, middle.x[1] + 1, middle.y[1] - 1,
+                                  middle.y[1] + 1, 10, 10};
+    const query::RangeBox kept{middle.x[0] - 1, middle.x[0] + 1, middle.y[0] - 1,
+                               middle.y[0] + 1, 0, 0};
+    const std::vector<query::RangeQuery> queries{{dropped, {0}}, {kept, {0}}};
+    evaluator::Evaluator baseline(db, db, {.range = queries});
+    evaluator::Evaluator simplified(db, compressed, {.range = queries});
+    EXPECT_DOUBLE_EQ(baseline.get_range_recall(), 1);
+    EXPECT_DOUBLE_EQ(simplified.get_range_recall(), 0.5);
+    EXPECT_DOUBLE_EQ(simplified.evaluate().range_recall, 0.5);
 }
 
 TEST(Evaluator, RejectsDifferentTrajectoryCountsAndIds) {
