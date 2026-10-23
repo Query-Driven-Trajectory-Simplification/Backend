@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 #include "backend/engine/core/trajectory_db.hpp"
@@ -76,4 +77,23 @@ TEST(Subset, SplitPartsTogetherHoldEveryTrajectoryOnce) {
         expect_same_trajectory(database.trajectory(i), db.trajectory(parts.database[i]));
     for (std::size_t i = 0; i < queries.size(); ++i)
         expect_same_trajectory(queries.trajectory(i), db.trajectory(parts.queries[i]));
+}
+
+TEST(Subset, SupportsRepeatedIndicesAndOwnsCopiedData) {
+    const auto result = [] {
+        const auto source = make_db({{0, 1}, {5, 6, 7}});
+        const std::vector<std::size_t> indices{1, 1, 0};
+        return core::subset(source, indices);
+    }();
+    const auto expected = make_db({{0, 1}, {5, 6, 7}});
+    ASSERT_EQ(result.size(), 3u);
+    expect_same_trajectory(result.trajectory(0), expected.trajectory(1));
+    expect_same_trajectory(result.trajectory(1), expected.trajectory(1));
+    expect_same_trajectory(result.trajectory(2), expected.trajectory(0));
+}
+
+TEST(Subset, RejectsOutOfRangeIndices) {
+    const auto db = make_db({{0, 1}});
+    const std::vector<std::size_t> indices{1};
+    EXPECT_THROW(core::subset(db, indices), std::out_of_range);
 }
