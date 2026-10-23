@@ -14,6 +14,7 @@ add_library(engine
     src/evaluator/evaluator.cpp
     src/evaluator/kendalls_tau.cpp
     src/query/knn.cpp
+    src/evaluator/where_at.cpp
 )
 
 target_include_directories(engine PUBLIC include)
@@ -33,6 +34,8 @@ add_executable(engine_tests
     tests/selectors/sed_test.cpp
     tests/size_proportional_test.cpp
     tests/interpolation_test.cpp
+    tests/where_at_test.cpp
+    tests/evaluator_test.cpp
     tests/subset_test.cpp
     tests/simplification_test.cpp
     tests/selectors/simplify_database_test.cpp
