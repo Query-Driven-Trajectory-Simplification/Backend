@@ -12,7 +12,7 @@ add_library(engine
     src/core/interpolation.cpp
     src/core/simplification.cpp
     src/evaluator/evaluator.cpp
-    src/evaluator/kendalls_tau.cpp
+    src/evaluator/knn_evaluation.cpp
     src/query/knn.cpp
 )
 

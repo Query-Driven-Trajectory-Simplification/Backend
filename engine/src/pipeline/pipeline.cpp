@@ -2,7 +2,9 @@
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/query/knn.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
@@ -66,6 +68,10 @@ void run(const Config &config) {
     print_size("database", database);
     print_size("queries", queries);
 
+    // extract from input config
+    query::KnnConfig knn_config;
+    const auto knn_workload = query::generate_knn_queries(database, queries, knn_config);
+
     for (const double share : kBudgetShares) {
         const auto budgets = allocation::create_trajectory_budgets(
             database, allocation::AlgorithmType::kSizeProportional, total_budget(database, share));
@@ -75,6 +81,12 @@ void run(const Config &config) {
             const auto compressed = core::materialize(database, simplification);
             std::cout << share * 100 << "% " << algorithm_name(algorithm) << ": ";
             print_size("compressed", compressed);
+
+            evaluator::Evaluator evaluator(database, compressed);
+            evaluator.set_knn_workload(knn_workload);
+            const auto scores = evaluator.evaluate();
+            std::cout << "  knn tau: " << scores.knn_kendalls_tau
+                      << ", recall@k: " << scores.knn_recall_at_k << '\n';
         }
     }
 }

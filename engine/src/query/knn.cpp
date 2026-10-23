@@ -4,7 +4,9 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numeric>
 #include <queue>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -12,9 +14,8 @@ namespace query {
 
 namespace {
 
-double point_dist(double a_x, double a_y, double b_x, double b_y){
-    return std::hypot((a_x-b_x), (a_y-b_y));
-
+double point_dist(double a_x, double a_y, double b_x, double b_y) {
+    return std::hypot((a_x - b_x), (a_y - b_y));
 }
 // Discrete Fréchet distance between query and reference. Returns early with a value >= max_dist
 // as soon as the distance is known to be at least max_dist. Infinite if either is empty.
@@ -31,8 +32,7 @@ double get_frechet_distance(const core::TrajectoryView &query,
     for (std::size_t i = 0; i < n; ++i) {
         double row_min = std::numeric_limits<double>::infinity();
         for (std::size_t j = 0; j < m; ++j) {
-            const double d =
-                point_dist(query.x[i], query.y[i], reference.x[j], reference.y[j]);
+            const double d = point_dist(query.x[i], query.y[i], reference.x[j], reference.y[j]);
             if (i == 0 && j == 0) {
                 curr[j] = d;
             } else if (i == 0) {
@@ -94,9 +94,28 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
     }
     return neighbor_ids;
 }
+KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
+                                 const core::TrajectoryDb &query_pool, const KnnConfig &config) {
 
-core::TrajectoryDb generate_knn_queries(const core::TrajectoryDb & /*trajectories*/) {
-    throw std::logic_error("query::generate_knn_queries: query generation not implemented yet");
+    if (config.k == 0) {
+        throw std::invalid_argument("knn: k = 0, no neighbors");
+    }
+
+    std::vector<std::size_t> picked(query_pool.size());
+    std::ranges::iota(picked.begin(), picked.end(), 0);
+    if (config.query_count != 0 && config.query_count < picked.size()) {
+        std::mt19937_64 rng(config.seed);
+        std::ranges::shuffle(picked, rng);
+        picked.resize(config.query_count);
+    }
+
+    KnnWorkload results{core::subset(query_pool, picked), {}, config.k};
+    results.entries.resize(results.queries.size());
+
+    for (std::size_t i = 0; i < results.queries.size(); ++i) {
+        results.entries[i] = {i, knn(original, results.queries.trajectory(i), config.k)};
+    }
+    return results;
 }
 
 } // namespace query
