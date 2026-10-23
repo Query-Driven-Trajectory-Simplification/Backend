@@ -1,7 +1,6 @@
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <numeric>
@@ -14,25 +13,30 @@ namespace query {
 
 namespace {
 
-double point_dist(double a_x, double a_y, double b_x, double b_y) {
-    return std::hypot((a_x - b_x), (a_y - b_y));
+// Squared instead of std::hypot, which is slow. Fréchet only takes max and min of distances,
+// and squaring keeps their order, so the whole computation can stay squared.
+double squared_point_dist(double a_x, double a_y, double b_x, double b_y) {
+    const double dx = a_x - b_x;
+    const double dy = a_y - b_y;
+    return dx * dx + dy * dy;
 }
-// Discrete Fréchet distance between query and reference. Returns early with a value >= max_dist
-// as soon as the distance is known to be at least max_dist. Infinite if either is empty.
-double get_frechet_distance(const core::TrajectoryView &query,
-                            const core::TrajectoryView &reference, double max_dist) {
+
+double get_squared_frechet_distance(const core::TrajectoryView &query,
+                                    const core::TrajectoryView &reference, double max_squared_dist,
+                                    std::vector<double> &prev, std::vector<double> &curr) {
     const std::size_t n = query.size();
     const std::size_t m = reference.size();
     if (n == 0 || m == 0) {
         return std::numeric_limits<double>::infinity();
     }
 
-    std::vector<double> prev(m);
-    std::vector<double> curr(m);
+    prev.resize(m);
+    curr.resize(m);
     for (std::size_t i = 0; i < n; ++i) {
         double row_min = std::numeric_limits<double>::infinity();
         for (std::size_t j = 0; j < m; ++j) {
-            const double d = point_dist(query.x[i], query.y[i], reference.x[j], reference.y[j]);
+            const double d =
+                squared_point_dist(query.x[i], query.y[i], reference.x[j], reference.y[j]);
             if (i == 0 && j == 0) {
                 curr[j] = d;
             } else if (i == 0) {
@@ -45,7 +49,7 @@ double get_frechet_distance(const core::TrajectoryView &query,
             row_min = std::min(row_min, curr[j]);
         }
         // Every path to the end passes through this row, so the result is at least row_min.
-        if (row_min >= max_dist) {
+        if (row_min >= max_squared_dist) {
             return row_min;
         }
         std::swap(prev, curr);
@@ -56,10 +60,10 @@ double get_frechet_distance(const core::TrajectoryView &query,
 
 struct neighbor {
     std::size_t idx;
-    double frechet_distance;
+    double squared_frechet_distance;
 
     bool operator<(const neighbor &other) const {
-        return frechet_distance < other.frechet_distance;
+        return squared_frechet_distance < other.squared_frechet_distance;
     }
 };
 
@@ -67,6 +71,8 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
                              const core::TrajectoryView &query_trajectory, std::size_t k) {
 
     std::priority_queue<neighbor> curr_neighbors;
+    std::vector<double> prev;
+    std::vector<double> curr;
     for (std::size_t i = 0; i < trajectory_db.size(); ++i) {
 
         core::TrajectoryView reference_trajectory = trajectory_db.trajectory(i);
@@ -74,16 +80,16 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
         // Until the heap is full any distance qualifies, so there is no bound to stop early at.
         const double curr_max_dist = curr_neighbors.size() < k
                                          ? std::numeric_limits<double>::infinity()
-                                         : curr_neighbors.top().frechet_distance;
-        double curr_dist =
-            get_frechet_distance(query_trajectory, reference_trajectory, curr_max_dist);
+                                         : curr_neighbors.top().squared_frechet_distance;
+        double curr_dist = get_squared_frechet_distance(query_trajectory, reference_trajectory,
+                                                        curr_max_dist, prev, curr);
         if (curr_neighbors.size() < k) {
-            curr_neighbors.push({.idx = i, .frechet_distance = curr_dist});
+            curr_neighbors.push({.idx = i, .squared_frechet_distance = curr_dist});
             continue;
         }
         if (curr_dist < curr_max_dist) {
             curr_neighbors.pop();
-            curr_neighbors.push({.idx = i, .frechet_distance = curr_dist});
+            curr_neighbors.push({.idx = i, .squared_frechet_distance = curr_dist});
         }
     }
 
