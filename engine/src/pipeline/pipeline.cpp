@@ -86,13 +86,11 @@ void run(const Config &config) {
             std::cout << share * 100 << "% " << algorithm_name(algorithm) << ": ";
             print_size("compressed", compressed);
 
-            evaluator::Evaluator evaluator(database, compressed);
+            evaluator::Evaluator evaluator(database, compressed, {.where_at = where_at.queries});
             evaluator.set_knn_workload(knn_workload);
             const auto scores = evaluator.evaluate();
             std::cout << "  knn tau: " << scores.knn_kendalls_tau
                       << ", recall@k: " << scores.knn_recall_at_k << '\n';
-            evaluator::Evaluator evaluator(database, compressed, {.where_at = where_at.queries});
-            const auto scores = evaluator.evaluate();
             std::cout << "  where-at: within radius=" << scores.where_at.within_radius
                       << ", average hit=" << scores.where_at.average_hit << '\n';
         }

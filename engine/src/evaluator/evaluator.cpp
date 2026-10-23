@@ -23,9 +23,10 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
 }
 
 Scoretable Evaluator::evaluate() {
+    knn_scores();
     return Scoretable{
-        .knn_kendalls_tau = get_knn_kendalls_tau(),
-        .knn_recall_at_k = get_knn_recall_at_k(),
+        .knn_kendalls_tau = m_knn_kendalls_tau,
+        .knn_recall_at_k = m_knn_recall_at_k,
         .range_score = get_range_score(),
         .where_at = get_where_at_scores(),
     };
@@ -39,13 +40,6 @@ double Evaluator::get_knn_kendalls_tau() {
 double Evaluator::get_knn_recall_at_k() {
     knn_scores();
     return m_knn_recall_at_k;
-double Evaluator::get_knn_score() {
-    if (m_knn_neighbours == 0) {
-        m_knn_score = std::numeric_limits<double>::quiet_NaN();
-        return m_knn_score;
-    }
-    knn_score(m_knn_neighbours);
-    return m_knn_score;
 }
 
 double Evaluator::get_range_score() {
@@ -91,12 +85,8 @@ void Evaluator::knn_scores() {
         m_knn_kendalls_tau = tau_sum / static_cast<double>(tau_scored);
     if (recall_scored != 0)
         m_knn_recall_at_k = recall_sum / static_cast<double>(recall_scored);
-    m_knn_score =
-        scored == 0 ? std::numeric_limits<double>::quiet_NaN() : sum / static_cast<double>(scored);
 }
 
 void Evaluator::range_score() { m_range_score = std::numeric_limits<double>::quiet_NaN(); }
-
-void Evaluator::where_at_score() { m_where_at_score = std::numeric_limits<double>::quiet_NaN(); }
 
 } // namespace evaluator

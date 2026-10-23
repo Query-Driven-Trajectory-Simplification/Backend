@@ -4,7 +4,6 @@
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/evaluator/where_at.hpp"
 
-#include <cstddef>
 #include <limits>
 #include <span>
 
@@ -42,7 +41,6 @@ class Evaluator {
   private:
     // Computes Kendall's tau and recall@k together, as both need the same knn results
     void knn_scores();
-    void knn_score(std::size_t k);
     void range_score();
 
     const core::TrajectoryDb &m_original;
