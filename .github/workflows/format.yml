@@ -1,0 +1,26 @@
+name: Format
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned to the version used locally, as different versions can format the same code
+      # differently. Bump both together.
+      - name: Install clang-format
+        run: pip install clang-format==23.1.1
+
+      - name: Check formatting
+        run: |
+          git ls-files '*.cpp' '*.hpp' '*.h' '*.cc' \
+            | xargs clang-format --dry-run --Werror
