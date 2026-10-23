@@ -27,8 +27,8 @@ TEST(Evaluator, CollectsBothWhereAtScoresWithoutUnconfiguredQueries) {
     const auto workload = query::generate_where_at_queries(db);
     evaluator::Evaluator evaluator(db, db, {.where_at = workload.queries});
     const auto scores = evaluator.evaluate();
-    EXPECT_DOUBLE_EQ(scores.where_at.within_100m, 1);
-    EXPECT_DOUBLE_EQ(scores.where_at.average_hit_25_500m, 1);
+    EXPECT_DOUBLE_EQ(scores.where_at.within_radius, 1);
+    EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
     EXPECT_TRUE(std::isnan(scores.knn_score));
     EXPECT_TRUE(std::isnan(scores.range_score));
 }
@@ -37,11 +37,12 @@ TEST(Evaluator, DelegatesToWhereAtModule) {
     const auto db = original();
     const auto compressed = endpoints(db);
     const auto workload = query::generate_where_at_queries(db);
-    const auto expected = evaluator::evaluate_where_at(compressed, workload.queries);
-    evaluator::Evaluator evaluator(db, compressed, {.where_at = workload.queries});
-    EXPECT_DOUBLE_EQ(evaluator.get_where_at_scores().within_100m, expected.within_100m);
-    EXPECT_DOUBLE_EQ(evaluator.evaluate().where_at.average_hit_25_500m,
-                     expected.average_hit_25_500m);
+    const evaluator::WhereAtScoringConfig config{200, 50, 250};
+    const auto expected = evaluator::evaluate_where_at(compressed, workload.queries, config);
+    evaluator::Evaluator evaluator(db, compressed, {.where_at = workload.queries}, config);
+    EXPECT_DOUBLE_EQ(evaluator.get_where_at_scores().within_radius, expected.within_radius);
+    EXPECT_DOUBLE_EQ(evaluator.evaluate().where_at.average_hit,
+                     expected.average_hit);
 }
 
 TEST(Evaluator, ReusesSameWorkloadAcrossDatabases) {
@@ -50,8 +51,8 @@ TEST(Evaluator, ReusesSameWorkloadAcrossDatabases) {
     const auto workload = query::generate_where_at_queries(db);
     evaluator::Evaluator baseline(db, db, {.where_at = workload.queries});
     evaluator::Evaluator simplified(db, compressed, {.where_at = workload.queries});
-    EXPECT_DOUBLE_EQ(baseline.get_where_at_scores().within_100m, 1);
-    EXPECT_LT(simplified.get_where_at_scores().within_100m, 1);
+    EXPECT_DOUBLE_EQ(baseline.get_where_at_scores().within_radius, 1);
+    EXPECT_LT(simplified.get_where_at_scores().within_radius, 1);
 }
 
 TEST(Evaluator, NoWorkloadsReturnsUndefinedScores) {
@@ -60,8 +61,8 @@ TEST(Evaluator, NoWorkloadsReturnsUndefinedScores) {
     const auto scores = evaluator.evaluate();
     EXPECT_TRUE(std::isnan(scores.knn_score));
     EXPECT_TRUE(std::isnan(scores.range_score));
-    EXPECT_TRUE(std::isnan(scores.where_at.within_100m));
-    EXPECT_TRUE(std::isnan(scores.where_at.average_hit_25_500m));
+    EXPECT_TRUE(std::isnan(scores.where_at.within_radius));
+    EXPECT_TRUE(std::isnan(scores.where_at.average_hit));
 }
 
 TEST(Evaluator, RejectsDifferentTrajectoryCountsAndIds) {

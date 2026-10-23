@@ -22,7 +22,7 @@ struct Scoretable {
 class Evaluator {
   public:
     Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
-              Workloads workloads = {});
+              Workloads workloads = {}, WhereAtScoringConfig where_at_config = {});
 
     // Runs every evaluation, stores the scores and returns them
     Scoretable evaluate();
@@ -41,6 +41,7 @@ class Evaluator {
     const core::TrajectoryDb &m_original;
     const core::TrajectoryDb &m_simplified;
     Workloads m_workloads;
+    WhereAtScoringConfig m_where_at_config;
 
     std::size_t m_knn_neighbours = 0;
 

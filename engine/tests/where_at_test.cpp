@@ -102,8 +102,8 @@ TEST(WhereAtEvaluation, OriginalDatabaseScoresPerfectly) {
                                 {116.35, 116.36, 116.38});
     const auto workload = query::generate_where_at_queries(db);
     const auto result = evaluator::evaluate_where_at(db, workload.queries);
-    EXPECT_DOUBLE_EQ(result.within_100m, 1);
-    EXPECT_DOUBLE_EQ(result.average_hit_25_500m, 1);
+    EXPECT_DOUBLE_EQ(result.within_radius, 1);
+    EXPECT_DOUBLE_EQ(result.average_hit, 1);
 }
 
 TEST(WhereAtEvaluation, ComputesBothScoresAtToleranceBoundaries) {
@@ -112,8 +112,8 @@ TEST(WhereAtEvaluation, ComputesBothScoresAtToleranceBoundaries) {
     for (double error : {0., 25., 100., 500., 600.})
         queries.push_back({0, 10, 5, {error, 0}});
     const auto result = evaluator::evaluate_where_at(db, queries);
-    EXPECT_DOUBLE_EQ(result.within_100m, 3. / 5);
-    EXPECT_NEAR(result.average_hit_25_500m, (2 + 400. / 475) / 5, 1e-14);
+    EXPECT_DOUBLE_EQ(result.within_radius, 3. / 5);
+    EXPECT_NEAR(result.average_hit, (2 + 400. / 475) / 5, 1e-14);
 }
 
 TEST(WhereAtEvaluation, WeightsTripsEquallyWithUnequalQueryCounts) {
@@ -121,8 +121,8 @@ TEST(WhereAtEvaluation, WeightsTripsEquallyWithUnequalQueryCounts) {
     const std::vector<query::WhereAtQuery> queries{
         {0, 10, 1, {0, 0}}, {1, 11, 5, {200, 0}}, {0, 10, 2, {0, 0}}, {0, 10, 3, {0, 0}}};
     const auto result = evaluator::evaluate_where_at(db, queries);
-    EXPECT_DOUBLE_EQ(result.within_100m, .5);
-    EXPECT_NEAR(result.average_hit_25_500m, (1 + 300. / 475) / 2, 1e-14);
+    EXPECT_DOUBLE_EQ(result.within_radius, .5);
+    EXPECT_NEAR(result.average_hit, (1 + 300. / 475) / 2, 1e-14);
 }
 
 TEST(WhereAtEvaluation, InterpolatesCompressedTripWithoutFilteringItsLongGaps) {
@@ -137,12 +137,12 @@ TEST(WhereAtEvaluation, InterpolatesCompressedTripWithoutFilteringItsLongGaps) {
     const auto result = evaluator::evaluate_where_at(compressed, queries);
     const auto start = core::position_at(original.trajectory(0), 0);
     const double expected_error = core::distance(start, truth) / 2;
-    EXPECT_NEAR(result.average_hit_25_500m, (500 - expected_error) / 475, 1e-12);
-    EXPECT_DOUBLE_EQ(result.within_100m, 0);
+    EXPECT_NEAR(result.average_hit, (500 - expected_error) / 475, 1e-12);
+    EXPECT_DOUBLE_EQ(result.within_radius, 0);
     const auto workload = query::generate_where_at_queries(original);
     const auto scores = evaluator::evaluate_where_at(compressed, workload.queries);
-    EXPECT_TRUE(std::isfinite(scores.within_100m));
-    EXPECT_TRUE(std::isfinite(scores.average_hit_25_500m));
+    EXPECT_TRUE(std::isfinite(scores.within_radius));
+    EXPECT_TRUE(std::isfinite(scores.average_hit));
 }
 
 TEST(WhereAtEvaluation, RejectsMissingMismatchedAndOutOfSpanQueries) {
@@ -166,6 +166,29 @@ TEST(WhereAtEvaluation, EmptyWorkloadHasNoScore) {
     const auto db = stationary({});
     EXPECT_TRUE(query::generate_where_at_queries(db).queries.empty());
     const auto result = evaluator::evaluate_where_at(db, {});
-    EXPECT_TRUE(std::isnan(result.within_100m));
-    EXPECT_TRUE(std::isnan(result.average_hit_25_500m));
+    EXPECT_TRUE(std::isnan(result.within_radius));
+    EXPECT_TRUE(std::isnan(result.average_hit));
+}
+
+TEST(WhereAtEvaluation, UsesConfiguredDistances) {
+    const auto db = stationary({{0, 10}});
+    std::vector<query::WhereAtQuery> queries;
+    for (double error : {0., 50., 200., 250., 300.})
+        queries.push_back({0, 10, 5, {error, 0}});
+    const auto result = evaluator::evaluate_where_at(db, queries, {200, 50, 250});
+    EXPECT_DOUBLE_EQ(result.within_radius, 3. / 5);
+    EXPECT_DOUBLE_EQ(result.average_hit, (2 + .25) / 5);
+}
+
+TEST(WhereAtEvaluation, RejectsInvalidScoringConfigurationEvenWithoutQueries) {
+    const auto db = stationary({});
+    for (double invalid : {-1., std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {invalid, 25, 500}), std::invalid_argument);
+        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, invalid, 500}), std::invalid_argument);
+        EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, 25, invalid}), std::invalid_argument);
+    }
+    EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, 25, 25}), std::invalid_argument);
+    EXPECT_THROW(evaluator::evaluate_where_at(db, {}, {100, 500, 25}), std::invalid_argument);
+    EXPECT_NO_THROW(evaluator::evaluate_where_at(db, {}, {0, 0, 1}));
 }

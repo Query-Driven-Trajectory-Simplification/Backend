@@ -8,15 +8,22 @@
 
 namespace evaluator {
 
+struct WhereAtScoringConfig {
+    double hit_radius_m = 100.0;
+    double min_tolerance_m = 25.0;
+    double max_tolerance_m = 500.0;
+};
+
 struct WhereAtScores {
-    double within_100m = std::numeric_limits<double>::quiet_NaN();
-    double average_hit_25_500m = std::numeric_limits<double>::quiet_NaN();
+    double within_radius = std::numeric_limits<double>::quiet_NaN();
+    double average_hit = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Scores are in [0,1], averaged within trips first, then equally across trips.
-// average_hit_25_500m averages success over a UNIFORM tolerance in [25,500]m:
-// each error e contributes clamp((500-e)/475, 0, 1).
+// average_hit averages success over a uniform tolerance in the configured range.
+// Distances must be finite and nonnegative, with min_tolerance_m < max_tolerance_m.
 WhereAtScores evaluate_where_at(const core::TrajectoryDb &compressed,
-                                std::span<const query::WhereAtQuery> queries);
+                                std::span<const query::WhereAtQuery> queries,
+                                const WhereAtScoringConfig &config = {});
 
 } // namespace evaluator
