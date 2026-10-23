@@ -1,4 +1,4 @@
-#include "backend/engine/evaluator/kendalls_tau.hpp"
+#include "backend/engine/evaluator/knn_evaluation.hpp"
 #include <cstddef>
 #include <limits>
 #include <utility>
@@ -40,6 +40,13 @@ double kendalls_tau(const std::vector<size_t> &original, const std::vector<size_
     }
     double tau = (double(concordant) - double(discordant)) / double(concordant + discordant);
     return tau;
+}
+
+double recall_at_k(const std::vector<size_t> &original, const std::vector<size_t> &simplified) {
+    if (original.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return double(shared_ranks(original, simplified).size()) / double(original.size());
 }
 
 } // namespace evaluator::knn

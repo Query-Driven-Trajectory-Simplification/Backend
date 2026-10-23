@@ -1,5 +1,5 @@
 #include "backend/engine/evaluator/evaluator.hpp"
-#include "backend/engine/evaluator/kendalls_tau.hpp"
+#include "backend/engine/evaluator/knn_evaluation.hpp"
 #include "backend/engine/query/knn.hpp"
 
 #include <cmath>
@@ -23,20 +23,23 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
 }
 
 Scoretable Evaluator::evaluate() {
+    knn_scores();
     return Scoretable{
-        .knn_score = get_knn_score(),
+        .knn_kendalls_tau = m_knn_kendalls_tau,
+        .knn_recall_at_k = m_knn_recall_at_k,
         .range_score = get_range_score(),
         .where_at = get_where_at_scores(),
     };
 }
 
-double Evaluator::get_knn_score() {
-    if (m_knn_neighbours == 0) {
-        m_knn_score = std::numeric_limits<double>::quiet_NaN();
-        return m_knn_score;
-    }
-    knn_score(m_knn_neighbours);
-    return m_knn_score;
+double Evaluator::get_knn_kendalls_tau() {
+    knn_scores();
+    return m_knn_kendalls_tau;
+}
+
+double Evaluator::get_knn_recall_at_k() {
+    knn_scores();
+    return m_knn_recall_at_k;
 }
 
 double Evaluator::get_range_score() {
@@ -49,24 +52,39 @@ WhereAtScores Evaluator::get_where_at_scores() {
     return m_where_at_scores;
 }
 
-void Evaluator::set_knn_neighbours(std::size_t k) { m_knn_neighbours = k; }
+void Evaluator::set_knn_workload(const query::KnnWorkload &workload) { m_knn_workload = &workload; }
 
-void Evaluator::knn_score(std::size_t k) {
-    const core::TrajectoryDb queries = query::generate_knn_queries(m_original);
+void Evaluator::knn_scores() {
+    m_knn_kendalls_tau = std::numeric_limits<double>::quiet_NaN();
+    m_knn_recall_at_k = std::numeric_limits<double>::quiet_NaN();
+    if (m_knn_workload == nullptr) {
+        return;
+    }
+    const auto &workload = *m_knn_workload;
 
-    double sum = 0.0;
-    std::size_t scored = 0;
-    for (std::size_t i = 0; i < queries.size(); ++i) {
-        const auto trajectory = queries.trajectory(i);
-        const double tau = knn::kendalls_tau(query::knn(m_original, trajectory, k),
-                                             query::knn(m_simplified, trajectory, k));
+    double tau_sum = 0.0;
+    std::size_t tau_scored = 0;
+    double recall_sum = 0.0;
+    std::size_t recall_scored = 0;
+    for (const auto &query : workload.entries) {
+        const auto trajectory = workload.queries.trajectory(query.query_index);
+        const auto simplified = query::knn(m_simplified, trajectory, workload.k);
+
+        const double tau = knn::kendalls_tau(query.reference, simplified);
         if (!std::isnan(tau)) {
-            sum += tau;
-            ++scored;
+            tau_sum += tau;
+            ++tau_scored;
+        }
+        const double recall = knn::recall_at_k(query.reference, simplified);
+        if (!std::isnan(recall)) {
+            recall_sum += recall;
+            ++recall_scored;
         }
     }
-    m_knn_score =
-        scored == 0 ? std::numeric_limits<double>::quiet_NaN() : sum / static_cast<double>(scored);
+    if (tau_scored != 0)
+        m_knn_kendalls_tau = tau_sum / static_cast<double>(tau_scored);
+    if (recall_scored != 0)
+        m_knn_recall_at_k = recall_sum / static_cast<double>(recall_scored);
 }
 
 void Evaluator::range_score() { m_range_score = std::numeric_limits<double>::quiet_NaN(); }
