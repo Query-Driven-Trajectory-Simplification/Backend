@@ -56,6 +56,18 @@ double get_squared_frechet_distance(const core::TrajectoryView &query,
     }
     return prev[m - 1];
 }
+
+double squared_endpoint_lower_bound(const core::TrajectoryView &query,
+                                    const core::TrajectoryView &reference) {
+    if (query.size() == 0 || reference.size() == 0) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const std::size_t q_last = query.size() - 1;
+    const std::size_t r_last = reference.size() - 1;
+    return std::max(squared_point_dist(query.x[0], query.y[0], reference.x[0], reference.y[0]),
+                    squared_point_dist(query.x[q_last], query.y[q_last], reference.x[r_last],
+                                       reference.y[r_last]));
+}
 } // namespace
 
 struct neighbor {
@@ -81,6 +93,12 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
         const double curr_max_dist = curr_neighbors.size() < k
                                          ? std::numeric_limits<double>::infinity()
                                          : curr_neighbors.top().squared_frechet_distance;
+        // Even the best case for this trajectory cannot beat the current k-th neighbour.
+        // shortest leash can never be shorter than first or last point
+        if (curr_neighbors.size() == k &&
+            squared_endpoint_lower_bound(query_trajectory, reference_trajectory) >= curr_max_dist) {
+            continue;
+        }
         double curr_dist = get_squared_frechet_distance(query_trajectory, reference_trajectory,
                                                         curr_max_dist, prev, curr);
         if (curr_neighbors.size() < k) {
