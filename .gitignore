@@ -12,3 +12,6 @@ build/
 
 # Secrets
 .env
+
+# Mac specific files
+.DS_Store

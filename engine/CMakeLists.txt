@@ -15,6 +15,8 @@ add_library(engine
     src/evaluator/knn_evaluation.cpp
     src/query/knn.cpp
     src/evaluator/where_at.cpp
+    src/query/range_query.cpp
+    src/evaluator/range.cpp
 )
 
 target_include_directories(engine PUBLIC include)
@@ -39,6 +41,7 @@ add_executable(engine_tests
     tests/subset_test.cpp
     tests/simplification_test.cpp
     tests/selectors/simplify_database_test.cpp
+    tests/range_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main)
 gtest_discover_tests(engine_tests)

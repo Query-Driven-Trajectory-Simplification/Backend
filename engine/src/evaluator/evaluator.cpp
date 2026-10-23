@@ -1,6 +1,8 @@
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/knn_evaluation.hpp"
+#include "backend/engine/evaluator/range.hpp"
 #include "backend/engine/query/knn.hpp"
+#include "backend/engine/query/range_query.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -27,7 +29,7 @@ Scoretable Evaluator::evaluate() {
     return Scoretable{
         .knn_kendalls_tau = m_knn_kendalls_tau,
         .knn_recall_at_k = m_knn_recall_at_k,
-        .range_score = get_range_score(),
+        .range_recall = get_range_recall(),
         .where_at = get_where_at_scores(),
     };
 }
@@ -42,9 +44,9 @@ double Evaluator::get_knn_recall_at_k() {
     return m_knn_recall_at_k;
 }
 
-double Evaluator::get_range_score() {
-    range_score();
-    return m_range_score;
+double Evaluator::get_range_recall() {
+    range_recall();
+    return m_range_recall;
 }
 
 WhereAtScores Evaluator::get_where_at_scores() {
@@ -87,6 +89,21 @@ void Evaluator::knn_scores() {
         m_knn_recall_at_k = recall_sum / static_cast<double>(recall_scored);
 }
 
-void Evaluator::range_score() { m_range_score = std::numeric_limits<double>::quiet_NaN(); }
+void Evaluator::range_recall() {
+    m_range_recall = std::numeric_limits<double>::quiet_NaN();
+
+    double sum = 0.0;
+    std::size_t scored = 0;
+    for (const auto &range_query : m_workloads.range) {
+        const auto simplified = query::range(m_simplified, range_query.box);
+        const double recall = range::recall(range_query.reference, simplified);
+        if (!std::isnan(recall)) {
+            sum += recall;
+            ++scored;
+        }
+    }
+    if (scored != 0)
+        m_range_recall = sum / static_cast<double>(scored);
+}
 
 } // namespace evaluator
