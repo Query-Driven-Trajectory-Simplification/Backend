@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -120,6 +121,19 @@ TEST(RangeQueries, UsesEachPointAsCentreAtMostOnce) {
     const auto db = make_db(trajectories);
     const auto workload = query::generate_range_queries(db, {100, 1000, 3600, 5, 5, 1});
     EXPECT_EQ(workload.queries.size(), 10);
+}
+
+TEST(RangeQueries, UsesEachPointOnceAcrossManyBatches) {
+    std::vector<std::vector<Point>> trajectories;
+    for (std::int64_t i = 0; i < 1000; ++i)
+        trajectories.push_back({{10 * i}, {10 * i + 1}, {10 * i + 2}});
+    const auto db = make_db(trajectories);
+    const auto workload = query::generate_range_queries(db, {5000, 1000, 3600, 1, 1, 10});
+    ASSERT_EQ(workload.queries.size(), 3000);
+    std::set<std::int64_t> centre_times;
+    for (const auto &query : workload.queries)
+        centre_times.insert(query.box.t_min);
+    EXPECT_EQ(centre_times.size(), 3000);
 }
 
 TEST(RangeQueries, Reproducible) {
