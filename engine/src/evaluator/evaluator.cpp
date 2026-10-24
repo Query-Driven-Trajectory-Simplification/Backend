@@ -1,4 +1,5 @@
 #include "backend/engine/evaluator/evaluator.hpp"
+#include "backend/engine/core/parallel.hpp"
 #include "backend/engine/evaluator/knn_evaluation.hpp"
 #include "backend/engine/evaluator/range.hpp"
 #include "backend/engine/query/knn.hpp"
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace evaluator {
 
@@ -63,20 +65,27 @@ void Evaluator::knn_scores() {
     }
     const auto &workload = *m_knn_workload;
 
+    std::vector<double> taus(workload.entries.size());
+    std::vector<double> recalls(workload.entries.size());
+    core::parallel_for(workload.entries.size(), [&](std::size_t i) {
+        const auto &query = workload.entries[i];
+        const auto trajectory = workload.queries.trajectory(query.query_index);
+        const auto simplified = query::knn(m_simplified, trajectory, workload.k);
+        taus[i] = knn::kendalls_tau(query.reference, simplified);
+        recalls[i] = knn::recall_at_k(query.reference, simplified);
+    });
+
     double tau_sum = 0.0;
     std::size_t tau_scored = 0;
     double recall_sum = 0.0;
     std::size_t recall_scored = 0;
-    for (const auto &query : workload.entries) {
-        const auto trajectory = workload.queries.trajectory(query.query_index);
-        const auto simplified = query::knn(m_simplified, trajectory, workload.k);
-
-        const double tau = knn::kendalls_tau(query.reference, simplified);
+    for (std::size_t i = 0; i < workload.entries.size(); ++i) {
+        const double tau = taus[i];
         if (!std::isnan(tau)) {
             tau_sum += tau;
             ++tau_scored;
         }
-        const double recall = knn::recall_at_k(query.reference, simplified);
+        const double recall = recalls[i];
         if (!std::isnan(recall)) {
             recall_sum += recall;
             ++recall_scored;
