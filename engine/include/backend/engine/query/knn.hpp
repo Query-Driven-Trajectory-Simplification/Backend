@@ -14,8 +14,8 @@ struct KnnQuery {
 };
 
 struct KnnConfig {
-    std::size_t k = 5;
-    std::size_t query_count = 10; // 0 = use every trajectory in the query pool
+    std::size_t k = 10;
+    std::size_t query_count = 0; // 0 = use every trajectory in the query pool
     std::uint64_t seed = 42;
 };
 

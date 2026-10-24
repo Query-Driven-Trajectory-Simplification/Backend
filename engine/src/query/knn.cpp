@@ -8,6 +8,7 @@
 #include <queue>
 #include <random>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 namespace query {
@@ -69,6 +70,46 @@ double squared_endpoint_lower_bound(const core::TrajectoryView &query,
                     squared_point_dist(query.x[q_last], query.y[q_last], reference.x[r_last],
                                        reference.y[r_last]));
 }
+
+// Point distance to bounding rectangle of a given trajectory bounding box
+double squared_dist_to_box(double x, double y, const core::BoundingBox &box) {
+    const double dx = std::max({box.x_min - x, 0.0, x - box.x_max});
+    const double dy = std::max({box.y_min - y, 0.0, y - box.y_max});
+    return dx * dx + dy * dy;
+}
+
+double squared_box_gap_lower_bound(const core::TrajectoryView &query,
+                                   const core::TrajectoryView &reference) {
+    if (query.size() == 0 || reference.size() == 0) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const core::BoundingBox &a = query.bbox;
+    const core::BoundingBox &b = reference.bbox;
+    const double dx = std::max({a.x_min - b.x_max, 0.0, b.x_min - a.x_max});
+    const double dy = std::max({a.y_min - b.y_max, 0.0, b.y_min - a.y_max});
+    return dx * dx + dy * dy;
+}
+
+double squared_points_to_box_lower_bound(const core::TrajectoryView &query,
+                                         const core::TrajectoryView &reference) {
+    if (query.size() == 0 || reference.size() == 0) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double bound = 0.0;
+    for (std::size_t i = 0; i < query.size(); ++i) {
+        bound = std::max(bound, squared_dist_to_box(query.x[i], query.y[i], reference.bbox));
+    }
+    for (std::size_t j = 0; j < reference.size(); ++j) {
+        bound = std::max(bound, squared_dist_to_box(reference.x[j], reference.y[j], query.bbox));
+    }
+    return bound;
+}
+
+struct Candidate {
+    double squared_lower_bound;
+    std::size_t idx;
+};
+
 } // namespace
 
 struct neighbor {
@@ -82,22 +123,37 @@ struct neighbor {
 
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
                              const core::TrajectoryView &query_trajectory, std::size_t k) {
+    // Lower bound on the Fréchet distance from the query to each trajectory, sorted ascending.
+    // Once a bound reaches the current k-th best distance, every remaining candidate is out too.
+    std::vector<Candidate> candidates(trajectory_db.size());
+    for (std::size_t i = 0; i < trajectory_db.size(); ++i) {
+        const core::TrajectoryView reference = trajectory_db.trajectory(i);
+        candidates[i] = {std::max(squared_endpoint_lower_bound(query_trajectory, reference),
+                                  squared_box_gap_lower_bound(query_trajectory, reference)),
+                         i};
+    }
+    std::ranges::sort(candidates, [](const Candidate &a, const Candidate &b) {
+        return std::tie(a.squared_lower_bound, a.idx) < std::tie(b.squared_lower_bound, b.idx);
+    });
 
     std::priority_queue<neighbor> curr_neighbors;
     std::vector<double> prev;
     std::vector<double> curr;
-    for (std::size_t i = 0; i < trajectory_db.size(); ++i) {
-
-        core::TrajectoryView reference_trajectory = trajectory_db.trajectory(i);
+    for (const Candidate &candidate : candidates) {
+        const std::size_t i = candidate.idx;
 
         // Until the heap is full any distance qualifies, so there is no bound to stop early at.
         const double curr_max_dist = curr_neighbors.size() < k
                                          ? std::numeric_limits<double>::infinity()
                                          : curr_neighbors.top().squared_frechet_distance;
-        // Even the best case for this trajectory cannot beat the current k-th neighbour.
-        // shortest leash can never be shorter than first or last point
+        if (candidate.squared_lower_bound >= curr_max_dist) {
+            break;
+        }
+
+        core::TrajectoryView reference_trajectory = trajectory_db.trajectory(i);
         if (curr_neighbors.size() == k &&
-            squared_endpoint_lower_bound(query_trajectory, reference_trajectory) >= curr_max_dist) {
+            squared_points_to_box_lower_bound(query_trajectory, reference_trajectory) >=
+                curr_max_dist) {
             continue;
         }
         double curr_dist = get_squared_frechet_distance(query_trajectory, reference_trajectory,
