@@ -124,7 +124,6 @@ TEST(RangeQueries, UsesEachPointAsCentreAtMostOnce) {
 }
 
 TEST(RangeQueries, UsesEachPointOnceAcrossManyBatches) {
-    // 3000 always-accepted centres take far more than one batch of draws to use up
     std::vector<std::vector<Point>> trajectories;
     for (std::int64_t i = 0; i < 1000; ++i)
         trajectories.push_back({{10 * i}, {10 * i + 1}, {10 * i + 2}});

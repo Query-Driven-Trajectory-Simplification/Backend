@@ -82,6 +82,9 @@ struct neighbor {
 
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
                              const core::TrajectoryView &query_trajectory, std::size_t k) {
+    if (k == 0) {
+        throw std::invalid_argument("knn: k = 0, no neighbors");
+    }
 
     std::priority_queue<neighbor> curr_neighbors;
     std::vector<double> prev;
