@@ -100,11 +100,16 @@ void Evaluator::knn_scores() {
 void Evaluator::range_recall() {
     m_range_recall = std::numeric_limits<double>::quiet_NaN();
 
+    std::vector<double> recalls(m_workloads.range.size());
+    core::parallel_for(m_workloads.range.size(), [&](std::size_t i) {
+        const auto &range_query = m_workloads.range[i];
+        const auto simplified = query::range(m_simplified, range_query.box);
+        recalls[i] = range::recall(range_query.reference, simplified);
+    });
+
     double sum = 0.0;
     std::size_t scored = 0;
-    for (const auto &range_query : m_workloads.range) {
-        const auto simplified = query::range(m_simplified, range_query.box);
-        const double recall = range::recall(range_query.reference, simplified);
+    for (const double recall : recalls) {
         if (!std::isnan(recall)) {
             sum += recall;
             ++scored;
