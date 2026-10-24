@@ -123,6 +123,10 @@ struct neighbor {
 
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
                              const core::TrajectoryView &query_trajectory, std::size_t k) {
+    if (k == 0) {
+        return {};
+    }
+
     // Lower bound on the Fréchet distance from the query to each trajectory, sorted ascending.
     // Once a bound reaches the current k-th best distance, every remaining candidate is out too.
     std::vector<Candidate> candidates(trajectory_db.size());
