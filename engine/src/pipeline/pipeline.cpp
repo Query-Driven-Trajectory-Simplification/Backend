@@ -44,6 +44,14 @@ std::size_t total_budget(const core::TrajectoryDb &trajectories, double share) {
     return endpoints + static_cast<std::size_t>(std::llround(extra));
 }
 
+void print_scores(const evaluator::Scoretable &scores) {
+    std::cout << "  knn tau: " << scores.knn.kendalls_tau
+              << ", recall@k: " << scores.knn.recall_at_k << '\n';
+    std::cout << "  where-at: within radius=" << scores.where_at.within_radius
+              << ", average hit=" << scores.where_at.average_hit << '\n';
+    std::cout << "  range recall: " << scores.range_recall << '\n';
+}
+
 } // namespace
 
 void run(const Config &config) {
@@ -68,17 +76,12 @@ void run(const Config &config) {
             std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm) << ": ";
             print_size("compressed", compressed);
 
-            evaluator::Evaluator evaluator(database, compressed,
-                                           {.knn = &knn_workload,
-                                            .where_at = where_at.queries,
-                                            .range = range.queries},
-                                           config.where_at_scoring);
-            const auto scores = evaluator.evaluate();
-            std::cout << "  knn tau: " << scores.knn.kendalls_tau
-                      << ", recall@k: " << scores.knn.recall_at_k << '\n';
-            std::cout << "  where-at: within radius=" << scores.where_at.within_radius
-                      << ", average hit=" << scores.where_at.average_hit << '\n';
-            std::cout << "  range recall: " << scores.range_recall << '\n';
+            const evaluator::Evaluator evaluator(database, compressed,
+                                                 {.knn = &knn_workload,
+                                                  .where_at = where_at.queries,
+                                                  .range = range.queries},
+                                                 config.where_at_scoring);
+            print_scores(evaluator.evaluate());
         }
     }
 }
