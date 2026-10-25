@@ -23,8 +23,9 @@ TEST(Config, MissingKeysKeepDefaults) {
         pipeline::load_config(write_config("defaults.json", R"({"data_path": "data.parquet"})"));
     const pipeline::Config defaults;
     EXPECT_EQ(config.data_path, "data.parquet");
-    EXPECT_DOUBLE_EQ(config.query_percentage, defaults.query_percentage);
-    EXPECT_EQ(config.split_seed, defaults.split_seed);
+    EXPECT_EQ(config.split.type, defaults.split.type);
+    EXPECT_DOUBLE_EQ(config.split.query_percentage, defaults.split.query_percentage);
+    EXPECT_EQ(config.split.seed, defaults.split.seed);
     EXPECT_EQ(config.budget_shares, defaults.budget_shares);
     EXPECT_EQ(config.algorithms, defaults.algorithms);
     EXPECT_EQ(config.knn.k, defaults.knn.k);
@@ -36,8 +37,7 @@ TEST(Config, MissingKeysKeepDefaults) {
 TEST(Config, ReadsTopLevelAndNestedKeys) {
     const auto config = pipeline::load_config(write_config("overrides.json", R"({
         "data_path": "data.parquet",
-        "query_percentage": 0.3,
-        "split_seed": 7,
+        "split": {"type": "Time", "query_percentage": 0.3},
         "budget_shares": [0.5],
         "algorithms": ["SED"],
         "knn": {"k": 3, "query_count": 0},
@@ -45,8 +45,9 @@ TEST(Config, ReadsTopLevelAndNestedKeys) {
         "where_at": {"probes_per_trajectory": 16, "max_gap_seconds": 30},
         "where_at_scoring": {"hit_radius_m": 50, "max_tolerance_m": 300}
     })"));
-    EXPECT_DOUBLE_EQ(config.query_percentage, 0.3);
-    EXPECT_EQ(config.split_seed, 7);
+    EXPECT_EQ(config.split.type, split::SplitType::Time);
+    EXPECT_DOUBLE_EQ(config.split.query_percentage, 0.3);
+    EXPECT_EQ(config.split.seed, split::SplitConfig{}.seed);
     EXPECT_EQ(config.budget_shares, std::vector<double>{0.5});
     EXPECT_EQ(config.algorithms, std::vector{selection::AlgorithmType::SED});
     EXPECT_EQ(config.knn.k, 3);
@@ -67,8 +68,8 @@ TEST(Config, ReadsTopLevelAndNestedKeys) {
 
 TEST(Config, RejectsMissingDataPathAndWrongTypes) {
     EXPECT_THROW(pipeline::load_config(write_config("no_path.json", "{}")), std::invalid_argument);
-    EXPECT_THROW(pipeline::load_config(
-                     write_config("bad_type.json", R"({"data_path": "d", "split_seed": "one"})")),
+    EXPECT_THROW(pipeline::load_config(write_config(
+                     "bad_type.json", R"({"data_path": "d", "budget_shares": "one"})")),
                  std::invalid_argument);
     EXPECT_THROW(pipeline::load_config(write_config(
                      "bad_nested_type.json", R"({"data_path": "d", "knn": {"k": "five"}})")),
@@ -76,5 +77,17 @@ TEST(Config, RejectsMissingDataPathAndWrongTypes) {
     EXPECT_THROW(pipeline::load_config(write_config(
                      "bad_algorithm.json", R"({"data_path": "d", "algorithms": ["DP"]})")),
                  std::invalid_argument);
+    EXPECT_THROW(pipeline::load_config(write_config(
+                     "bad_split.json", R"({"data_path": "d", "split": {"type": "Space"}})")),
+                 std::invalid_argument);
     EXPECT_THROW(pipeline::load_config("missing.json"), std::invalid_argument);
+}
+
+TEST(Config, AllowsComments) {
+    const auto config = pipeline::load_config(write_config("comments.json", R"({
+        // the dataset
+        "data_path": "data.parquet",
+        "knn": {"k": 3} /* fewer neighbours */
+    })"));
+    EXPECT_EQ(config.knn.k, 3);
 }

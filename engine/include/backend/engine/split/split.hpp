@@ -12,9 +12,14 @@ struct TrajectoryDbSplit {
     std::vector<std::size_t> queries;
 };
 
-enum SplitType { Random, Time };
+enum class SplitType { Random, Time };
 
-TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, SplitType split_type,
-                        double query_percentage, std::uint64_t seed = 42);
+struct SplitConfig {
+    SplitType type = SplitType::Random;
+    double query_percentage = 0.15;
+    std::uint64_t seed = 1; // only used by the random split
+};
+
+TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, const SplitConfig &config);
 
 } // namespace split

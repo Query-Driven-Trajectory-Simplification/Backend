@@ -10,6 +10,8 @@
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
+#include <magic_enum/magic_enum.hpp>
+
 #include <cmath>
 #include <cstddef>
 #include <iostream>
@@ -26,8 +28,7 @@ struct Databases {
 
 Databases load_split(const Config &config) {
     const core::TrajectoryDb all = io::load_trajectories(config.data_path);
-    const auto parts =
-        split::split(all, split::SplitType::Random, config.query_percentage, config.split_seed);
+    const auto parts = split::split(all, config.split);
     return {.database = core::subset(all, parts.database),
             .queries = core::subset(all, parts.queries)};
 }
@@ -41,16 +42,6 @@ std::size_t total_budget(const core::TrajectoryDb &trajectories, double share) {
     const std::size_t endpoints = 2 * trajectories.size();
     const double extra = share * static_cast<double>(trajectories.num_points() - endpoints);
     return endpoints + static_cast<std::size_t>(std::llround(extra));
-}
-
-std::string_view algorithm_name(selection::AlgorithmType algorithm) {
-    switch (algorithm) {
-    case selection::AlgorithmType::RDP:
-        return "RDP";
-    case selection::AlgorithmType::SED:
-        return "SED";
-    }
-    return "unknown";
 }
 
 } // namespace
@@ -74,7 +65,7 @@ void run(const Config &config) {
         for (const auto algorithm : config.algorithms) {
             const auto simplification = selection::simplify_database(database, algorithm, budgets);
             const auto compressed = core::materialize(database, simplification);
-            std::cout << share * 100 << "% " << algorithm_name(algorithm) << ": ";
+            std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm) << ": ";
             print_size("compressed", compressed);
 
             evaluator::Evaluator evaluator(database, compressed,

@@ -1,3 +1,9 @@
+include(FetchContent)
+FetchContent_Declare(magic_enum
+    URL https://github.com/Neargye/magic_enum/archive/refs/tags/v0.9.7.tar.gz
+    SYSTEM)
+FetchContent_MakeAvailable(magic_enum)
+
 add_library(engine
     src/core/trajectory_db.cpp
     src/io/parquet_loader.cpp
@@ -22,7 +28,7 @@ add_library(engine
 
 target_include_directories(engine PUBLIC include)
 target_link_libraries(engine PRIVATE Arrow::arrow_shared Parquet::parquet_shared
-    nlohmann_json::nlohmann_json)
+    nlohmann_json::nlohmann_json magic_enum::magic_enum)
 
 add_executable(run
     apps/run.cpp

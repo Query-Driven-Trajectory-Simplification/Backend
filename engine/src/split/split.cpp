@@ -9,11 +9,13 @@
 #include <stdexcept>
 #include <vector>
 
+namespace split {
+
 namespace {
 
 void validate(double value) {
     if (!(value >= 0.0 && value <= 1.0)) {
-        throw std::invalid_argument("Value must be between 0 and 1");
+        throw std::invalid_argument("split: query_percentage must be between 0 and 1");
     }
 }
 
@@ -28,7 +30,7 @@ std::int64_t start_time(const core::TrajectoryDb &db, std::size_t idx) {
     return view.t.empty() ? std::numeric_limits<std::int64_t>::max() : view.t.front();
 }
 
-split::TrajectoryDbSplit time_split(const core::TrajectoryDb &trajectories,
+TrajectoryDbSplit time_split(const core::TrajectoryDb &trajectories,
                                     double query_percentage) {
     validate(query_percentage);
 
@@ -41,11 +43,11 @@ split::TrajectoryDbSplit time_split(const core::TrajectoryDb &trajectories,
 
     const auto split_index = compute_split_index(trajectories.size(), query_percentage);
 
-    return split::TrajectoryDbSplit{.database = {indices.begin(), indices.begin() + split_index},
+    return TrajectoryDbSplit{.database = {indices.begin(), indices.begin() + split_index},
                                     .queries = {indices.begin() + split_index, indices.end()}};
 }
 
-split::TrajectoryDbSplit random_split(const core::TrajectoryDb &trajectories,
+TrajectoryDbSplit random_split(const core::TrajectoryDb &trajectories,
                                       double query_percentage, std::uint64_t seed) {
     validate(query_percentage);
 
@@ -71,24 +73,21 @@ split::TrajectoryDbSplit random_split(const core::TrajectoryDb &trajectories,
         }
     }
 
-    return split::TrajectoryDbSplit{.database = std::move(train_indices),
+    return TrajectoryDbSplit{.database = std::move(train_indices),
                                     .queries = std::move(query_indices)};
 }
 
 } // namespace
 
-namespace split {
-
-TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, SplitType split_type,
-                        double query_percentage, std::uint64_t seed) {
-    switch (split_type) {
+TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, const SplitConfig &config) {
+    switch (config.type) {
     case SplitType::Random:
-        return random_split(trajectories, query_percentage, seed);
+        return random_split(trajectories, config.query_percentage, config.seed);
     case SplitType::Time:
-        return time_split(trajectories, query_percentage);
+        return time_split(trajectories, config.query_percentage);
     }
 
-    throw std::invalid_argument("Unknown split type");
+    throw std::invalid_argument("split: unknown split type");
 }
 
 } // namespace split

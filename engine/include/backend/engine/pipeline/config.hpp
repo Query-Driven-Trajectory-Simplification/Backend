@@ -5,8 +5,8 @@
 #include "backend/engine/query/range_query.hpp"
 #include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/selection/selector.hpp"
+#include "backend/engine/split/split.hpp"
 
-#include <cstdint>
 #include <filesystem>
 #include <vector>
 
@@ -14,8 +14,7 @@ namespace pipeline {
 
 struct Config {
     std::filesystem::path data_path;
-    double query_percentage = 0.15;
-    std::uint64_t split_seed = 1;
+    split::SplitConfig split;
     std::vector<double> budget_shares{0.0025, 0.005, 0.01, 0.02};
     std::vector<selection::AlgorithmType> algorithms{selection::AlgorithmType::RDP,
                                                      selection::AlgorithmType::SED};
