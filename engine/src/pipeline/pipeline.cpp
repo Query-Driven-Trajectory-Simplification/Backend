@@ -10,11 +10,8 @@
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
-#include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
-#include <filesystem>
 #include <iostream>
 #include <string_view>
 
@@ -22,22 +19,15 @@ namespace pipeline {
 
 namespace {
 
-constexpr double kQueryPercentage = 0.15;
-constexpr std::uint64_t kSplitSeed = 1;
-
-// Hardcoded here for now. Should probably be some flag you give --compress-all, or --comress-0.25
-// or whatever
-constexpr std::array kBudgetShares{0.0025, 0.005, 0.01, 0.02};
-constexpr std::array kAlgorithms{selection::AlgorithmType::RDP, selection::AlgorithmType::SED};
-
 struct Databases {
     core::TrajectoryDb database;
     core::TrajectoryDb queries;
 };
 
-Databases load_split(const std::filesystem::path &path) {
-    const core::TrajectoryDb all = io::load_trajectories(path);
-    const auto parts = split::split(all, split::SplitType::Random, kQueryPercentage, kSplitSeed);
+Databases load_split(const Config &config) {
+    const core::TrajectoryDb all = io::load_trajectories(config.data_path);
+    const auto parts =
+        split::split(all, split::SplitType::Random, config.query_percentage, config.split_seed);
     return {.database = core::subset(all, parts.database),
             .queries = core::subset(all, parts.queries)};
 }
@@ -66,24 +56,22 @@ std::string_view algorithm_name(selection::AlgorithmType algorithm) {
 } // namespace
 
 void run(const Config &config) {
-    const auto [database, queries] = load_split(config.path);
+    const auto [database, queries] = load_split(config);
     print_size("database", database);
     print_size("queries", queries);
 
-    // extract from input config
-    query::KnnConfig knn_config;
-    const auto knn_workload = query::generate_knn_queries(database, queries, knn_config);
-    const auto where_at = query::generate_where_at_queries(database);
+    const auto knn_workload = query::generate_knn_queries(database, queries, config.knn);
+    const auto where_at = query::generate_where_at_queries(database, config.where_at);
     std::cout << "where-at: " << where_at.queries.size() << " probes, "
               << where_at.skipped_trajectories << " trips without eligible time\n";
-    const auto range = query::generate_range_queries(database);
+    const auto range = query::generate_range_queries(database, config.range);
     std::cout << "range: " << range.queries.size() << " queries\n";
 
-    for (const double share : kBudgetShares) {
+    for (const double share : config.budget_shares) {
         const auto budgets = allocation::create_trajectory_budgets(
             database, allocation::AlgorithmType::kSizeProportional, total_budget(database, share));
 
-        for (const auto algorithm : kAlgorithms) {
+        for (const auto algorithm : config.algorithms) {
             const auto simplification = selection::simplify_database(database, algorithm, budgets);
             const auto compressed = core::materialize(database, simplification);
             std::cout << share * 100 << "% " << algorithm_name(algorithm) << ": ";
@@ -92,7 +80,8 @@ void run(const Config &config) {
             evaluator::Evaluator evaluator(database, compressed,
                                            {.knn = &knn_workload,
                                             .where_at = where_at.queries,
-                                            .range = range.queries});
+                                            .range = range.queries},
+                                           config.where_at_scoring);
             const auto scores = evaluator.evaluate();
             std::cout << "  knn tau: " << scores.knn.kendalls_tau
                       << ", recall@k: " << scores.knn.recall_at_k << '\n';

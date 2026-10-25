@@ -1,0 +1,31 @@
+{
+    "data_path": "output/geolife.parquet",
+    "query_percentage": 0.15,
+    "split_seed": 1,
+    "budget_shares": [0.0025, 0.005, 0.01, 0.02],
+    "algorithms": ["RDP", "SED"],
+    "knn": {
+        "k": 5,
+        "query_count": 10,
+        "seed": 42
+    },
+    "range": {
+        "query_count": 500,
+        "box_size_m": 2000.0,
+        "window_seconds": 604800,
+        "min_results": 5,
+        "full_accept_at": 20,
+        "attempts_per_query": 1000,
+        "seed": 42
+    },
+    "where_at": {
+        "probes_per_trajectory": 128,
+        "seed": 1,
+        "max_gap_seconds": 60.0
+    },
+    "where_at_scoring": {
+        "hit_radius_m": 100.0,
+        "min_tolerance_m": 25.0,
+        "max_tolerance_m": 500.0
+    }
+}
