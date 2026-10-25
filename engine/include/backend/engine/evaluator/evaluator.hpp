@@ -1,12 +1,11 @@
 #pragma once
 
 #include "backend/engine/core/trajectory_db.hpp"
-#include "backend/engine/evaluator/knn_evaluation.hpp"
+#include "backend/engine/evaluator/knn.hpp"
 #include "backend/engine/evaluator/where_at.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 
-#include <limits>
 #include <span>
 
 namespace evaluator {
@@ -30,22 +29,18 @@ class Evaluator {
     Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
               Workloads workloads = {}, WhereAtScoringConfig where_at_config = {});
 
-    // Runs every evaluation, stores the scores and returns them
-    Scoretable evaluate();
+    // Runs every evaluation
+    Scoretable evaluate() const;
 
-    // Each runs only its own evaluation, stores the score and returns it
-    KnnScores get_knn_scores();
-    double get_range_recall();
-    WhereAtScores get_where_at_scores();
+    // Each runs only its own evaluation
+    KnnScores get_knn_scores() const;
+    double get_range_recall() const;
+    WhereAtScores get_where_at_scores() const;
 
   private:
     const core::TrajectoryDb &m_simplified;
     Workloads m_workloads;
     WhereAtScoringConfig m_where_at_config;
-
-    KnnScores m_knn_scores;
-    double m_range_recall = std::numeric_limits<double>::quiet_NaN();
-    WhereAtScores m_where_at_scores;
 };
 
 } // namespace evaluator

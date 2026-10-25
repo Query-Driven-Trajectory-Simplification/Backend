@@ -13,7 +13,7 @@ add_library(engine
     src/core/interpolation.cpp
     src/core/simplification.cpp
     src/evaluator/evaluator.cpp
-    src/evaluator/knn_evaluation.cpp
+    src/evaluator/knn.cpp
     src/query/knn.cpp
     src/evaluator/where_at.cpp
     src/query/range_query.cpp

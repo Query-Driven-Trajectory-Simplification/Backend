@@ -1,5 +1,5 @@
 #include "backend/engine/evaluator/evaluator.hpp"
-#include "backend/engine/evaluator/knn_evaluation.hpp"
+#include "backend/engine/evaluator/knn.hpp"
 #include "backend/engine/evaluator/range.hpp"
 
 #include <cstddef>
@@ -19,7 +19,7 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
     }
 }
 
-Scoretable Evaluator::evaluate() {
+Scoretable Evaluator::evaluate() const {
     return Scoretable{
         .knn = get_knn_scores(),
         .range_recall = get_range_recall(),
@@ -27,19 +27,16 @@ Scoretable Evaluator::evaluate() {
     };
 }
 
-double Evaluator::get_range_recall() {
-    m_range_recall = evaluate_range(m_simplified, m_workloads.range);
-    return m_range_recall;
+KnnScores Evaluator::get_knn_scores() const {
+    return m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnScores{};
 }
 
-WhereAtScores Evaluator::get_where_at_scores() {
-    m_where_at_scores = evaluate_where_at(m_simplified, m_workloads.where_at, m_where_at_config);
-    return m_where_at_scores;
+double Evaluator::get_range_recall() const {
+    return evaluate_range(m_simplified, m_workloads.range);
 }
 
-KnnScores Evaluator::get_knn_scores() {
-    m_knn_scores = m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnScores{};
-    return m_knn_scores;
+WhereAtScores Evaluator::get_where_at_scores() const {
+    return evaluate_where_at(m_simplified, m_workloads.where_at, m_where_at_config);
 }
 
 } // namespace evaluator
