@@ -90,11 +90,12 @@ void run(const Config &config) {
             print_size("compressed", compressed);
 
             evaluator::Evaluator evaluator(database, compressed,
-                                           {.where_at = where_at.queries, .range = range.queries});
-            evaluator.set_knn_workload(knn_workload);
+                                           {.knn = &knn_workload,
+                                            .where_at = where_at.queries,
+                                            .range = range.queries});
             const auto scores = evaluator.evaluate();
-            std::cout << "  knn tau: " << scores.knn_kendalls_tau
-                      << ", recall@k: " << scores.knn_recall_at_k << '\n';
+            std::cout << "  knn tau: " << scores.knn.kendalls_tau
+                      << ", recall@k: " << scores.knn.recall_at_k << '\n';
             std::cout << "  where-at: within radius=" << scores.where_at.within_radius
                       << ", average hit=" << scores.where_at.average_hit << '\n';
             std::cout << "  range recall: " << scores.range_recall << '\n';

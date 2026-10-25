@@ -1,14 +1,15 @@
 #include "backend/engine/evaluator/knn_evaluation.hpp"
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <utility>
 #include <vector>
 namespace evaluator::knn {
 namespace {
-std::vector<std::pair<size_t, size_t>> shared_ranks(const std::vector<size_t> &original,
-                                                    const std::vector<size_t> &simplified) {
+std::vector<std::pair<std::size_t, std::size_t>>
+shared_ranks(const std::vector<std::size_t> &original, const std::vector<std::size_t> &simplified) {
 
-    std::vector<std::pair<size_t, size_t>> shared;
+    std::vector<std::pair<std::size_t, std::size_t>> shared;
 
     for (std::size_t i = 0; i < original.size(); i++) {
         for (std::size_t j = 0; j < simplified.size(); j++) {
@@ -22,8 +23,9 @@ std::vector<std::pair<size_t, size_t>> shared_ranks(const std::vector<size_t> &o
 }
 } // namespace
 
-double kendalls_tau(const std::vector<size_t> &original, const std::vector<size_t> &simplified) {
-    std::vector<std::pair<size_t, size_t>> overlap = shared_ranks(original, simplified);
+double kendalls_tau(const std::vector<std::size_t> &original,
+                    const std::vector<std::size_t> &simplified) {
+    std::vector<std::pair<std::size_t, std::size_t>> overlap = shared_ranks(original, simplified);
     if (overlap.size() < 2) {
         return std::numeric_limits<double>::quiet_NaN();
     }
@@ -42,7 +44,8 @@ double kendalls_tau(const std::vector<size_t> &original, const std::vector<size_
     return tau;
 }
 
-double recall_at_k(const std::vector<size_t> &original, const std::vector<size_t> &simplified) {
+double recall_at_k(const std::vector<std::size_t> &original,
+                   const std::vector<std::size_t> &simplified) {
     if (original.empty()) {
         return std::numeric_limits<double>::quiet_NaN();
     }
@@ -50,3 +53,36 @@ double recall_at_k(const std::vector<size_t> &original, const std::vector<size_t
 }
 
 } // namespace evaluator::knn
+
+namespace evaluator {
+
+KnnScores evaluate_knn(const core::TrajectoryDb &compressed, const query::KnnWorkload &workload) {
+    double tau_sum = 0.0;
+    std::size_t tau_scored = 0;
+    double recall_sum = 0.0;
+    std::size_t recall_scored = 0;
+    for (const auto &query : workload.entries) {
+        const auto trajectory = workload.queries.trajectory(query.query_index);
+        const auto simplified = query::knn(compressed, trajectory, workload.k);
+
+        const double tau = knn::kendalls_tau(query.reference, simplified);
+        if (!std::isnan(tau)) {
+            tau_sum += tau;
+            ++tau_scored;
+        }
+        const double recall = knn::recall_at_k(query.reference, simplified);
+        if (!std::isnan(recall)) {
+            recall_sum += recall;
+            ++recall_scored;
+        }
+    }
+
+    KnnScores scores;
+    if (tau_scored != 0)
+        scores.kendalls_tau = tau_sum / static_cast<double>(tau_scored);
+    if (recall_scored != 0)
+        scores.recall_at_k = recall_sum / static_cast<double>(recall_scored);
+    return scores;
+}
+
+} // namespace evaluator
