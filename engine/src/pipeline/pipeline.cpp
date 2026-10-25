@@ -69,7 +69,7 @@ void run(const Config &config) {
 
     for (const double share : config.budget_shares) {
         const auto budgets = allocation::create_trajectory_budgets(
-            database, allocation::AlgorithmType::kSizeProportional, total_budget(database, share));
+            database, allocation::AllocatorType::SizeProportional, total_budget(database, share));
 
         for (const auto algorithm : config.algorithms) {
             const auto simplification = selection::simplify_database(database, algorithm, budgets);
