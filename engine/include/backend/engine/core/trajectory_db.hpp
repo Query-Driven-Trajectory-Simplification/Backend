@@ -9,7 +9,7 @@
 
 namespace core {
 
-// Smallest axis-aligned box around a trajectory's x/y. 
+// Smallest axis-aligned box around a trajectory's x/y.
 struct BoundingBox {
     double x_min = -std::numeric_limits<double>::infinity();
     double x_max = std::numeric_limits<double>::infinity();
