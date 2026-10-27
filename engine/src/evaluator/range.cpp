@@ -1,9 +1,31 @@
 #include "backend/engine/evaluator/range.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <vector>
+
+namespace evaluator {
+
+double evaluate_range(const core::TrajectoryDb &compressed,
+                      std::span<const query::RangeQuery> queries) {
+    double sum = 0.0;
+    std::size_t scored = 0;
+    for (const auto &range_query : queries) {
+        const auto simplified = query::range(compressed, range_query.box);
+        const double recall = range::recall(range_query.reference, simplified);
+        if (!std::isnan(recall)) {
+            sum += recall;
+            ++scored;
+        }
+    }
+    if (scored == 0)
+        return std::numeric_limits<double>::quiet_NaN();
+    return sum / static_cast<double>(scored);
+}
+
+} // namespace evaluator
 
 namespace evaluator::range {
 

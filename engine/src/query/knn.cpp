@@ -119,7 +119,8 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
     return neighbor_ids;
 }
 KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
-                                 const core::TrajectoryDb &query_pool, const KnnConfig &config) {
+                                 const core::TrajectoryDb &query_pool, const KnnConfig &config,
+                                 std::uint64_t seed) {
 
     if (config.k == 0) {
         throw std::invalid_argument("knn: k = 0, no neighbors");
@@ -128,7 +129,7 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
     std::vector<std::size_t> picked(query_pool.size());
     std::ranges::iota(picked.begin(), picked.end(), 0);
     if (config.query_count != 0 && config.query_count < picked.size()) {
-        std::mt19937_64 rng(config.seed);
+        std::mt19937_64 rng(seed);
         std::ranges::shuffle(picked, rng);
         picked.resize(config.query_count);
     }

@@ -83,8 +83,8 @@ std::vector<std::size_t> range(const core::TrajectoryDb &trajectories, const Ran
     return matches;
 }
 
-RangeWorkload generate_range_queries(const core::TrajectoryDb &original,
-                                     const RangeConfig &config) {
+RangeWorkload generate_range_queries(const core::TrajectoryDb &original, const RangeConfig &config,
+                                     std::uint64_t seed) {
     validate_config(config);
 
     RangeWorkload result;
@@ -93,7 +93,7 @@ RangeWorkload generate_range_queries(const core::TrajectoryDb &original,
     if (num_points == 0)
         return result;
 
-    std::mt19937_64 rng(config.seed);
+    std::mt19937_64 rng(seed);
     std::uniform_int_distribution<std::size_t> random_point(0, num_points - 1);
     std::unordered_set<std::size_t> used_centres;
     const std::size_t max_attempts = config.query_count * config.attempts_per_query;

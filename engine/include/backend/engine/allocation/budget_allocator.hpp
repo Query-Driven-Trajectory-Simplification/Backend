@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <vector>
 namespace allocation {
-enum class AlgorithmType { kSizeProportional };
+enum class AllocatorType { SizeProportional };
 
 std::vector<std::size_t> create_trajectory_budgets(const core::TrajectoryDb &trajectories,
-                                                   AlgorithmType algorithm,
+                                                   AllocatorType allocator,
                                                    std::size_t total_budget);
 } // namespace allocation
