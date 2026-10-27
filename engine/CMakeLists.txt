@@ -1,7 +1,14 @@
+set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+
 include(FetchContent)
-FetchContent_Declare(magic_enum
+
+FetchContent_Declare(
+    magic_enum
     URL https://github.com/Neargye/magic_enum/archive/refs/tags/v0.9.7.tar.gz
-    SYSTEM)
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SYSTEM
+)
 FetchContent_MakeAvailable(magic_enum)
 
 add_library(engine

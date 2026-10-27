@@ -29,7 +29,8 @@ core::TrajectoryDb stationary(const std::vector<std::vector<std::int64_t>> &time
 
 TEST(WhereAtQueries, StratifiesTimeAndWeightsIntervalsByDuration) {
     const auto db = stationary({{0, 1, 6}, {0, 30}});
-    const auto workload = query::generate_where_at_queries(db, {1000, 7, 60});
+    const auto workload = query::generate_where_at_queries(
+        db, {.probes_per_trajectory = 1000, .max_gap_seconds = 60}, 7);
     ASSERT_EQ(workload.queries.size(), 2000);
     EXPECT_EQ(workload.skipped_trajectories, 0);
     std::size_t first_second = 0;
@@ -58,7 +59,8 @@ TEST(WhereAtQueries, RecordingDensityDoesNotChangeSampledTimes) {
 
 TEST(WhereAtQueries, ExcludesLongOriginalGapsButIncludesBoundaryLength) {
     const auto db = stationary({{0, 60, 121, 181}});
-    const auto workload = query::generate_where_at_queries(db, {1000, 3, 60});
+    const auto workload = query::generate_where_at_queries(
+        db, {.probes_per_trajectory = 1000, .max_gap_seconds = 60}, 3);
     ASSERT_EQ(workload.queries.size(), 1000);
     std::size_t early = 0;
     for (const auto &q : workload.queries) {
@@ -70,7 +72,8 @@ TEST(WhereAtQueries, ExcludesLongOriginalGapsButIncludesBoundaryLength) {
 
 TEST(WhereAtQueries, SkipsTripsWithoutEligibleTime) {
     const auto db = stationary({{}, {5}, {0, 100}, {0, 10}});
-    const auto workload = query::generate_where_at_queries(db, {16, 1, 60});
+    const auto workload = query::generate_where_at_queries(
+        db, {.probes_per_trajectory = 16, .max_gap_seconds = 60}, 1);
     EXPECT_EQ(workload.skipped_trajectories, 3);
     ASSERT_EQ(workload.queries.size(), 16);
     EXPECT_EQ(workload.queries.front().trajectory_index, 3);
@@ -78,9 +81,12 @@ TEST(WhereAtQueries, SkipsTripsWithoutEligibleTime) {
 
 TEST(WhereAtQueries, ReproducibleAndCanGenerateIndependentWorkloads) {
     const auto db = stationary({{0, 10}});
-    const auto a = query::generate_where_at_queries(db, {16, 1, 60});
-    const auto b = query::generate_where_at_queries(db, {16, 1, 60});
-    const auto c = query::generate_where_at_queries(db, {16, 2, 60});
+    const auto a = query::generate_where_at_queries(
+        db, {.probes_per_trajectory = 16, .max_gap_seconds = 60}, 1);
+    const auto b = query::generate_where_at_queries(
+        db, {.probes_per_trajectory = 16, .max_gap_seconds = 60}, 1);
+    const auto c = query::generate_where_at_queries(
+        db, {.probes_per_trajectory = 16, .max_gap_seconds = 60}, 2);
     bool differs = false;
     for (std::size_t i = 0; i < a.queries.size(); ++i) {
         EXPECT_DOUBLE_EQ(a.queries[i].t, b.queries[i].t);
@@ -91,10 +97,14 @@ TEST(WhereAtQueries, ReproducibleAndCanGenerateIndependentWorkloads) {
 
 TEST(WhereAtQueries, RejectsInvalidConfiguration) {
     const auto db = stationary({{0, 10}});
-    EXPECT_THROW(query::generate_where_at_queries(db, {0, 1, 60}), std::invalid_argument);
+    EXPECT_THROW(query::generate_where_at_queries(
+                     db, {.probes_per_trajectory = 0, .max_gap_seconds = 60}, 1),
+                 std::invalid_argument);
     for (double gap : {0., -1., std::numeric_limits<double>::infinity(),
                        std::numeric_limits<double>::quiet_NaN()})
-        EXPECT_THROW(query::generate_where_at_queries(db, {16, 1, gap}), std::invalid_argument);
+        EXPECT_THROW(query::generate_where_at_queries(
+                         db, {.probes_per_trajectory = 16, .max_gap_seconds = gap}, 1),
+                     std::invalid_argument);
 }
 
 TEST(WhereAtEvaluation, OriginalDatabaseScoresPerfectly) {

@@ -7,6 +7,7 @@
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <vector>
 
@@ -14,6 +15,7 @@ namespace pipeline {
 
 struct Config {
     std::filesystem::path data_path;
+    std::uint64_t seed = 42;
     split::SplitConfig split;
     std::vector<double> budget_shares{0.0025, 0.005, 0.01, 0.02};
     std::vector<selection::AlgorithmType> algorithms{selection::AlgorithmType::RDP,

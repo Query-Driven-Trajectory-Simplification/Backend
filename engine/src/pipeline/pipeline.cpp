@@ -28,7 +28,7 @@ struct Databases {
 
 Databases load_split(const Config &config) {
     const core::TrajectoryDb all = io::load_trajectories(config.data_path);
-    const auto parts = split::split(all, config.split);
+    const auto parts = split::split(all, config.split, config.seed);
     return {.database = core::subset(all, parts.database),
             .queries = core::subset(all, parts.queries)};
 }
@@ -59,11 +59,12 @@ void run(const Config &config) {
     print_size("database", database);
     print_size("queries", queries);
 
-    const auto knn_workload = query::generate_knn_queries(database, queries, config.knn);
-    const auto where_at = query::generate_where_at_queries(database, config.where_at);
+    const auto knn_workload =
+        query::generate_knn_queries(database, queries, config.knn, config.seed);
+    const auto where_at = query::generate_where_at_queries(database, config.where_at, config.seed);
     std::cout << "where-at: " << where_at.queries.size() << " probes, "
               << where_at.skipped_trajectories << " trips without eligible time\n";
-    const auto range = query::generate_range_queries(database, config.range);
+    const auto range = query::generate_range_queries(database, config.range, config.seed);
     std::cout << "range: " << range.queries.size() << " queries\n";
 
     for (const double share : config.budget_shares) {
@@ -76,11 +77,10 @@ void run(const Config &config) {
             std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm) << ": ";
             print_size("compressed", compressed);
 
-            const evaluator::Evaluator evaluator(database, compressed,
-                                                 {.knn = &knn_workload,
-                                                  .where_at = where_at.queries,
-                                                  .range = range.queries},
-                                                 config.where_at_scoring);
+            const evaluator::Evaluator evaluator(
+                database, compressed,
+                {.knn = &knn_workload, .where_at = where_at.queries, .range = range.queries},
+                config.where_at_scoring);
             print_scores(evaluator.evaluate());
         }
     }

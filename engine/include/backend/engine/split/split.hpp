@@ -17,9 +17,9 @@ enum class SplitType { Random, Time };
 struct SplitConfig {
     SplitType type = SplitType::Random;
     double query_percentage = 0.15;
-    std::uint64_t seed = 1; // only used by the random split
 };
 
-TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, const SplitConfig &config);
+TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, const SplitConfig &config,
+                        std::uint64_t seed = 42);
 
 } // namespace split

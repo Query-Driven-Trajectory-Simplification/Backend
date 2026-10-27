@@ -30,8 +30,7 @@ std::int64_t start_time(const core::TrajectoryDb &db, std::size_t idx) {
     return view.t.empty() ? std::numeric_limits<std::int64_t>::max() : view.t.front();
 }
 
-TrajectoryDbSplit time_split(const core::TrajectoryDb &trajectories,
-                                    double query_percentage) {
+TrajectoryDbSplit time_split(const core::TrajectoryDb &trajectories, double query_percentage) {
     validate(query_percentage);
 
     std::vector<std::size_t> indices(trajectories.size());
@@ -44,11 +43,11 @@ TrajectoryDbSplit time_split(const core::TrajectoryDb &trajectories,
     const auto split_index = compute_split_index(trajectories.size(), query_percentage);
 
     return TrajectoryDbSplit{.database = {indices.begin(), indices.begin() + split_index},
-                                    .queries = {indices.begin() + split_index, indices.end()}};
+                             .queries = {indices.begin() + split_index, indices.end()}};
 }
 
-TrajectoryDbSplit random_split(const core::TrajectoryDb &trajectories,
-                                      double query_percentage, std::uint64_t seed) {
+TrajectoryDbSplit random_split(const core::TrajectoryDb &trajectories, double query_percentage,
+                               std::uint64_t seed) {
     validate(query_percentage);
 
     const std::size_t n = trajectories.size();
@@ -74,15 +73,16 @@ TrajectoryDbSplit random_split(const core::TrajectoryDb &trajectories,
     }
 
     return TrajectoryDbSplit{.database = std::move(train_indices),
-                                    .queries = std::move(query_indices)};
+                             .queries = std::move(query_indices)};
 }
 
 } // namespace
 
-TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, const SplitConfig &config) {
+TrajectoryDbSplit split(const core::TrajectoryDb &trajectories, const SplitConfig &config,
+                        std::uint64_t seed) {
     switch (config.type) {
     case SplitType::Random:
-        return random_split(trajectories, config.query_percentage, config.seed);
+        return random_split(trajectories, config.query_percentage, seed);
     case SplitType::Time:
         return time_split(trajectories, config.query_percentage);
     }
