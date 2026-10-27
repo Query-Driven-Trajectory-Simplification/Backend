@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -98,9 +99,9 @@ TEST(Knn, FindsClosestTrajectoriesClosestFirst) {
     EXPECT_EQ(query::knn(db, query, 3), expected);
 }
 
-TEST(Knn, ZeroKReturnsNothing) {
+TEST(Knn, RejectsZeroK) {
     const auto db = make_db({{{39.9, 116.3}, {39.91, 116.3}}});
-    EXPECT_TRUE(query::knn(db, db.trajectory(0), 0).empty());
+    EXPECT_THROW(query::knn(db, db.trajectory(0), 0), std::invalid_argument);
 }
 
 TEST(Knn, KLargerThanDatabaseReturnsEverything) {

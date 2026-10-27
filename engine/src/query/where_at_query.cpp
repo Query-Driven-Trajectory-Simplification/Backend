@@ -61,11 +61,11 @@ double sample_time(const std::vector<EligibleInterval> &intervals, std::size_t p
 } // namespace
 
 WhereAtWorkload generate_where_at_queries(const core::TrajectoryDb &uncompressed_database,
-                                          const WhereAtConfig &config) {
+                                          const WhereAtConfig &config, std::uint64_t seed) {
     validate_config(config);
 
     WhereAtWorkload result;
-    std::mt19937_64 rng(config.seed);
+    std::mt19937_64 rng(seed);
     for (std::size_t i = 0; i < uncompressed_database.size(); i++) {
         const auto trajectory = uncompressed_database.trajectory(i);
         const auto intervals = eligible_intervals(trajectory, config.max_gap_seconds);

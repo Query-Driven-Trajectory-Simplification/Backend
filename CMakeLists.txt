@@ -13,6 +13,7 @@ add_compile_options($<$<CXX_COMPILER_ID:Clang>:-Wno-c2y-extensions>)
 
 find_package(Arrow REQUIRED QUIET)
 find_package(Parquet REQUIRED QUIET)
+find_package(nlohmann_json REQUIRED QUIET)
 
 enable_testing()
 

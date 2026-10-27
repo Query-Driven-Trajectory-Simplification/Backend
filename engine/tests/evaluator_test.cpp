@@ -29,8 +29,8 @@ TEST(Evaluator, CollectsBothWhereAtScoresWithoutUnconfiguredQueries) {
     const auto scores = evaluator.evaluate();
     EXPECT_DOUBLE_EQ(scores.where_at.within_radius, 1);
     EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
-    EXPECT_TRUE(std::isnan(scores.knn_kendalls_tau));
-    EXPECT_TRUE(std::isnan(scores.knn_recall_at_k));
+    EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau));
+    EXPECT_TRUE(std::isnan(scores.knn.recall_at_k));
     EXPECT_TRUE(std::isnan(scores.range_recall));
 }
 
@@ -59,8 +59,8 @@ TEST(Evaluator, NoWorkloadsReturnsUndefinedScores) {
     const auto db = original();
     evaluator::Evaluator evaluator(db, db);
     const auto scores = evaluator.evaluate();
-    EXPECT_TRUE(std::isnan(scores.knn_kendalls_tau));
-    EXPECT_TRUE(std::isnan(scores.knn_recall_at_k));
+    EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau));
+    EXPECT_TRUE(std::isnan(scores.knn.recall_at_k));
     EXPECT_TRUE(std::isnan(scores.range_recall));
     EXPECT_TRUE(std::isnan(scores.where_at.within_radius));
     EXPECT_TRUE(std::isnan(scores.where_at.average_hit));
@@ -95,14 +95,13 @@ TEST(Evaluator, CollectsKnnAndWhereAtScoresTogether) {
     const core::TrajectoryDb db({0, 2, 4}, {10, 20}, {0, 20, 0, 20}, {0, 1, 10, 11}, {0, 0, 0, 0});
     const auto where_at = query::generate_where_at_queries(db);
     const auto knn = query::generate_knn_queries(db, db, {.k = 2, .query_count = 0});
-    evaluator::Evaluator evaluator(db, db, {.where_at = where_at.queries});
-    evaluator.set_knn_workload(knn);
+    evaluator::Evaluator evaluator(db, db, {.knn = &knn, .where_at = where_at.queries});
 
     const auto scores = evaluator.evaluate();
-    EXPECT_DOUBLE_EQ(scores.knn_kendalls_tau, 1);
-    EXPECT_DOUBLE_EQ(scores.knn_recall_at_k, 1);
+    EXPECT_DOUBLE_EQ(scores.knn.kendalls_tau, 1);
+    EXPECT_DOUBLE_EQ(scores.knn.recall_at_k, 1);
     EXPECT_DOUBLE_EQ(scores.where_at.within_radius, 1);
     EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
-    EXPECT_DOUBLE_EQ(evaluator.get_knn_kendalls_tau(), scores.knn_kendalls_tau);
-    EXPECT_DOUBLE_EQ(evaluator.get_knn_recall_at_k(), scores.knn_recall_at_k);
+    EXPECT_DOUBLE_EQ(evaluator.get_knn_scores().kendalls_tau, scores.knn.kendalls_tau);
+    EXPECT_DOUBLE_EQ(evaluator.get_knn_scores().recall_at_k, scores.knn.recall_at_k);
 }

@@ -1,23 +1,15 @@
 #include "backend/engine/pipeline/config.hpp"
 #include "backend/engine/pipeline/pipeline.hpp"
 #include <iostream>
-#include <optional>
-
-std::optional<pipeline::Config> parse_args(int argc, char *argv[]) {
-    if (argc != 2) {
-        return std::nullopt;
-    }
-
-    return pipeline::Config{.path = argv[1]};
-}
 
 int main(int argc, char *argv[]) {
-    auto config = parse_args(argc, argv);
-    if (!config)
+    if (argc != 2) {
+        std::cerr << "usage: run <config.json>\n";
         return 1;
+    }
 
     try {
-        pipeline::run(*config);
+        pipeline::run(pipeline::load_config(argv[1]));
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
         return 1;

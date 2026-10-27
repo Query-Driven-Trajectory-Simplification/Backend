@@ -30,7 +30,6 @@ struct RangeConfig {
     std::size_t min_results = 5;
     std::size_t full_accept_at = 20;
     std::size_t attempts_per_query = 1000;
-    std::uint64_t seed = 42;
 };
 
 struct RangeWorkload {
@@ -38,7 +37,7 @@ struct RangeWorkload {
 };
 
 RangeWorkload generate_range_queries(const core::TrajectoryDb &original,
-                                     const RangeConfig &config = {});
+                                     const RangeConfig &config = {}, std::uint64_t seed = 42);
 
 std::vector<std::size_t> range(const core::TrajectoryDb &trajectories, const RangeBox &box);
 
