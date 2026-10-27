@@ -1,4 +1,5 @@
 #include "backend/engine/query/range_query.hpp"
+#include "backend/engine/core/parallel.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 
 #include <algorithm>
@@ -13,6 +14,9 @@
 namespace query {
 
 namespace {
+
+// Centres whose range is computed in parallel at a time.
+constexpr std::size_t kBatchSize = 1024;
 
 void validate_config(const RangeConfig &config) {
     if (!std::isfinite(config.box_size_m) || config.box_size_m <= 0)
@@ -93,33 +97,55 @@ RangeWorkload generate_range_queries(const core::TrajectoryDb &original, const R
     if (num_points == 0)
         return result;
 
-    std::mt19937_64 rng(seed);
+    std::mt19937_64 centre_rng(seed);
+    std::mt19937_64 accept_rng(seed + 1);
     std::uniform_int_distribution<std::size_t> random_point(0, num_points - 1);
     std::unordered_set<std::size_t> used_centres;
     const std::size_t max_attempts = config.query_count * config.attempts_per_query;
+
+    std::vector<std::size_t> centres;
+    std::vector<RangeBox> boxes;
+    std::vector<std::vector<std::size_t>> references;
+    std::size_t batch_position = 0;
     for (std::size_t attempt = 0;
          attempt < max_attempts && result.queries.size() < config.query_count &&
          used_centres.size() < num_points;
-         attempt++) {
-        const std::size_t point = random_point(rng);
+         attempt++, batch_position++) {
+        if (batch_position == centres.size()) {
+            const std::size_t batch = std::min(kBatchSize, max_attempts - attempt);
+            centres.resize(batch);
+            boxes.resize(batch);
+            references.assign(batch, {});
+            for (std::size_t &centre : centres)
+                centre = random_point(centre_rng);
+
+            core::parallel_for(batch, [&](std::size_t i) {
+                if (used_centres.contains(centres[i]))
+                    return;
+                const auto trajectory_index = static_cast<std::size_t>(
+                    std::ranges::upper_bound(offsets, centres[i]) - offsets.begin() - 1);
+                boxes[i] = box_around(original.trajectory(trajectory_index),
+                                      centres[i] - offsets[trajectory_index], config);
+                references[i] = range(original, boxes[i]);
+            });
+            batch_position = 0;
+        }
+
+        const std::size_t point = centres[batch_position];
         if (used_centres.contains(point))
             continue;
 
-        const auto trajectory_index = static_cast<std::size_t>(
-            std::ranges::upper_bound(offsets, point) - offsets.begin() - 1);
-        const auto box = box_around(original.trajectory(trajectory_index),
-                                    point - offsets[trajectory_index], config);
-        auto reference = range(original, box);
+        auto &reference = references[batch_position];
         // Too few results can never improve for this centre; random rejections can be retried.
         if (reference.size() < config.min_results) {
             used_centres.insert(point);
             continue;
         }
-        if (!accept(reference.size(), config, rng))
+        if (!accept(reference.size(), config, accept_rng))
             continue;
 
         used_centres.insert(point);
-        result.queries.push_back({box, std::move(reference)});
+        result.queries.push_back({boxes[batch_position], std::move(reference)});
     }
     return result;
 }

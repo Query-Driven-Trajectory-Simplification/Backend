@@ -24,7 +24,7 @@ struct RangeQuery {
 };
 
 struct RangeConfig {
-    std::size_t query_count = 500;
+    std::size_t query_count = 20000;
     double box_size_m = 2000.0;
     std::int64_t window_seconds = 604800; // 7 days
     std::size_t min_results = 5;

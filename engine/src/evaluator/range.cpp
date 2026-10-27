@@ -1,4 +1,5 @@
 #include "backend/engine/evaluator/range.hpp"
+#include "backend/engine/core/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -12,9 +13,13 @@ double evaluate_range(const core::TrajectoryDb &compressed,
                       std::span<const query::RangeQuery> queries) {
     double sum = 0.0;
     std::size_t scored = 0;
-    for (const auto &range_query : queries) {
+    std::vector<double> recalls(queries.size());
+    core::parallel_for(queries.size(), [&](std::size_t i) {
+        const auto &range_query = queries[i];
         const auto simplified = query::range(compressed, range_query.box);
-        const double recall = range::recall(range_query.reference, simplified);
+        recalls[i] = range::recall(range_query.reference, simplified);
+    });
+    for (const double recall : recalls) {
         if (!std::isnan(recall)) {
             sum += recall;
             ++scored;

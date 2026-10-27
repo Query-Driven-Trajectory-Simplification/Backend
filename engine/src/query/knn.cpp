@@ -1,4 +1,5 @@
 #include "backend/engine/query/knn.hpp"
+#include "backend/engine/core/parallel.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -81,6 +82,9 @@ struct neighbor {
 
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
                              const core::TrajectoryView &query_trajectory, std::size_t k) {
+    if (k == 0) {
+        throw std::invalid_argument("knn: k = 0, no neighbors");
+    }
 
     std::priority_queue<neighbor> curr_neighbors;
     std::vector<double> prev;
@@ -137,9 +141,9 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
     KnnWorkload results{core::subset(query_pool, picked), {}, config.k};
     results.entries.resize(results.queries.size());
 
-    for (std::size_t i = 0; i < results.queries.size(); ++i) {
+    core::parallel_for(results.queries.size(), [&](std::size_t i) {
         results.entries[i] = {i, knn(original, results.queries.trajectory(i), config.k)};
-    }
+    });
     return results;
 }
 

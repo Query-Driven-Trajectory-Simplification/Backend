@@ -58,6 +58,8 @@ add_executable(engine_tests
     tests/simplification_test.cpp
     tests/selectors/simplify_database_test.cpp
     tests/range_test.cpp
+    tests/parallel_test.cpp
+    tests/knn_test.cpp
     tests/config_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
