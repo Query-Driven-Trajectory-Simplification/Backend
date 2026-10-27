@@ -90,6 +90,22 @@ TEST(Config, AllowsComments) {
     EXPECT_EQ(config.knn.k, 3);
 }
 
+TEST(Config, BudgetSharesIncludeBothBoundaries) {
+    const auto config = pipeline::load_config(write_config(
+        "budget_boundaries.json", R"({"data_path": "d", "budget_shares": [0, 0.5, 1]})"));
+    EXPECT_EQ(config.budget_shares, (std::vector<double>{0.0, 0.5, 1.0}));
+}
+
+TEST(Config, RejectsInvalidBudgetShares) {
+    for (const auto &share : {"-0.01", "1.01", "1e999", "-1e999", "null", "\"NaN\""}) {
+        SCOPED_TRACE(share);
+        const auto contents =
+            std::string(R"({"data_path": "d", "budget_shares": [0.5, )") + share + "]}";
+        EXPECT_THROW(pipeline::load_config(write_config("invalid_budget.json", contents)),
+                     std::invalid_argument);
+    }
+}
+
 TEST(Config, RejectsUnknownKeysAndNestedSeeds) {
     EXPECT_THROW(
         pipeline::load_config(write_config("unknown_key.json", R"({"data_path": "d", "sead": 7})")),

@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <initializer_list>
 #include <stdexcept>
@@ -95,6 +96,10 @@ Config parse_config(const json &data) {
 
     // Every other key is optional and falls back to the struct's default
     config.budget_shares = data.value("budget_shares", config.budget_shares);
+    for (const double share : config.budget_shares) {
+        if (!std::isfinite(share) || share < 0.0 || share > 1.0)
+            throw std::invalid_argument("config: budget_shares must be finite and between 0 and 1");
+    }
     config.seed = data.value("seed", config.seed);
     if (data.contains("algorithms")) {
         config.algorithms.clear();
