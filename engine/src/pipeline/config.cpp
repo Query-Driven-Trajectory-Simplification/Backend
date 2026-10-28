@@ -85,8 +85,8 @@ void parse_where_at_scoring_config(Config &config, const json &scoring) {
 
 Config parse_config(const json &data) {
     validate_keys(data,
-                  {"data_path", "export_dir", "seed", "budget_shares", "algorithms", "split", "knn", "range",
-                   "where_at", "where_at_scoring"},
+                  {"data_path", "export_dir", "seed", "budget_shares", "algorithms", "split", "knn",
+                   "range", "where_at", "where_at_scoring"},
                   "root");
     Config config;
 
