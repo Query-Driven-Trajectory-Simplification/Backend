@@ -33,6 +33,7 @@ core::TrajectoryDb make_db(const std::vector<Track> &tracks) {
     return {std::move(offsets), std::move(ids), std::move(t), std::move(lat), std::move(lon)};
 }
 
+// Random walks starting anywhere in a ~20 km area, so some are near each other and most are not
 std::vector<Track> random_tracks(std::mt19937_64 &rng, std::size_t count) {
     std::uniform_real_distribution<double> start_lat(39.8, 40.0);
     std::uniform_real_distribution<double> start_lon(116.2, 116.45);
@@ -122,4 +123,40 @@ TEST(Knn, MatchesBruteForceOnRandomTrajectories) {
                 << "query " << q << ", k " << k;
         }
     }
+}
+
+TEST(Knn, MatchesBruteForceForOverlappingLongTrajectories) {
+    std::mt19937_64 rng(19);
+    std::normal_distribution<double> step(0.0, 0.0001);
+    std::vector<Track> tracks(28, Track(90));
+    for (auto &track : tracks) {
+        double lat = 39.9, lon = 116.3;
+        for (auto &point : track) {
+            lat += step(rng);
+            lon += step(rng);
+            point = {lat, lon};
+        }
+    }
+    const auto db = make_db({tracks.begin(), tracks.begin() + 20});
+    const auto queries = make_db({tracks.begin() + 20, tracks.end()});
+    for (const std::size_t k : {1u, 5u, 20u, 30u}) {
+        for (std::size_t q = 0; q < queries.size(); ++q) {
+            EXPECT_EQ(query::knn(db, queries.trajectory(q), k),
+                      brute_force_knn(db, queries.trajectory(q), k))
+                << "query " << q << ", k " << k;
+        }
+    }
+}
+
+TEST(Knn, AcceptsQueryViewWithoutCachedBoundingBox) {
+    std::mt19937_64 rng(23);
+    const auto db = make_db(random_tracks(rng, 30));
+    auto query = db.trajectory(4);
+    query.bbox = {};
+    EXPECT_EQ(query::knn(db, query, 5), brute_force_knn(db, query, 5));
+}
+
+TEST(Knn, BreaksEqualDistanceTiesByDatabaseIndex) {
+    const auto db = make_db(std::vector<Track>(80, {{39.9, 116.3}, {39.91, 116.31}}));
+    EXPECT_EQ(query::knn(db, db.trajectory(70), 5), (std::vector<std::size_t>{0, 1, 2, 3, 4}));
 }

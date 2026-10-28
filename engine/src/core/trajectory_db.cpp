@@ -1,5 +1,7 @@
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/core/projection.hpp"
+#include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -37,6 +39,21 @@ TrajectoryDb::TrajectoryDb(std::vector<std::uint64_t> offsets,
         xs[k] = p.x;
         ys[k] = p.y;
     }
+
+    // For each trajectory it goes throguh all its points
+    // and keeps min/max of x and y coordinates seen
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    m_boxes.resize(size());
+    for (std::size_t i = 0; i < size(); ++i) {
+        BoundingBox box{inf, -inf, inf, -inf};
+        for (auto k = m_offsets[i]; k < m_offsets[i + 1]; ++k) {
+            box.x_min = std::min(box.x_min, xs[k]);
+            box.x_max = std::max(box.x_max, xs[k]);
+            box.y_min = std::min(box.y_min, ys[k]);
+            box.y_max = std::max(box.y_max, ys[k]);
+        }
+        m_boxes[i] = box;
+    }
 }
 
 TrajectoryDb subset(const TrajectoryDb &trajectories, std::span<const std::size_t> indices) {
@@ -55,10 +72,12 @@ TrajectoryDb subset(const TrajectoryDb &trajectories, std::span<const std::size_
     result.m_lon.reserve(num_points);
     result.m_x.reserve(num_points);
     result.m_y.reserve(num_points);
+    result.m_boxes.reserve(indices.size());
 
     for (const std::size_t i : indices) {
         const auto trajectory = trajectories.trajectory(i);
         result.m_trajectory_ids.push_back(trajectory.trajectory_id);
+        result.m_boxes.push_back(trajectory.bbox);
         result.m_t.insert(result.m_t.end(), trajectory.t.begin(), trajectory.t.end());
         result.m_lat.insert(result.m_lat.end(), trajectory.lat.begin(), trajectory.lat.end());
         result.m_lon.insert(result.m_lon.end(), trajectory.lon.begin(), trajectory.lon.end());

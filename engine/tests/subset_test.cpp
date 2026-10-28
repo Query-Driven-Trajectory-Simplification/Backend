@@ -39,6 +39,10 @@ void expect_same_trajectory(const core::TrajectoryView &a, const core::Trajector
     EXPECT_TRUE(std::ranges::equal(a.lon, b.lon));
     EXPECT_TRUE(std::ranges::equal(a.x, b.x));
     EXPECT_TRUE(std::ranges::equal(a.y, b.y));
+    EXPECT_EQ(a.bbox.x_min, b.bbox.x_min);
+    EXPECT_EQ(a.bbox.x_max, b.bbox.x_max);
+    EXPECT_EQ(a.bbox.y_min, b.bbox.y_min);
+    EXPECT_EQ(a.bbox.y_max, b.bbox.y_max);
 }
 
 } // namespace
@@ -97,4 +101,15 @@ TEST(Subset, RejectsOutOfRangeIndices) {
     const auto db = make_db({{0, 1}});
     const std::vector<std::size_t> indices{1};
     EXPECT_THROW(core::subset(db, indices), std::out_of_range);
+}
+
+TEST(TrajectoryDb, BoundingBoxCoversExactlyTheTrajectorysPoints) {
+    const auto db = make_db({{0, 1, 2}, {5, 6}});
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const auto trajectory = db.trajectory(i);
+        EXPECT_EQ(trajectory.bbox.x_min, std::ranges::min(trajectory.x));
+        EXPECT_EQ(trajectory.bbox.x_max, std::ranges::max(trajectory.x));
+        EXPECT_EQ(trajectory.bbox.y_min, std::ranges::min(trajectory.y));
+        EXPECT_EQ(trajectory.bbox.y_max, std::ranges::max(trajectory.y));
+    }
 }
