@@ -1,5 +1,5 @@
 {
-    "data_path": "output/geolife.parquet",
+    "data_path": "data/geolife.parquet",
     "seed": 42,
     "budget_shares": [0.0025, 0.005, 0.01, 0.02],
     "split": {
@@ -8,8 +8,8 @@
     },
     "algorithms": ["RDP", "SED"],
     "knn": {
-        "k": 5,
-        "query_count": 10
+        "k": 10,
+        "query_count": 0
     },
     "range": {
         "query_count": 500,

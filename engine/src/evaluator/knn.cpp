@@ -86,6 +86,8 @@ KnnScores evaluate_knn(const core::TrajectoryDb &compressed, const query::KnnWor
     }
 
     KnnScores scores;
+    scores.query_count = workload.entries.size();
+    scores.tau_query_count = tau_scored;
     if (tau_scored != 0)
         scores.kendalls_tau = tau_sum / static_cast<double>(tau_scored);
     if (recall_scored != 0)

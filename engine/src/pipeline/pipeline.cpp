@@ -46,7 +46,8 @@ std::size_t total_budget(const core::TrajectoryDb &trajectories, double share) {
 }
 
 void print_scores(const evaluator::Scoretable &scores) {
-    std::cout << "  knn tau: " << scores.knn.kendalls_tau
+    std::cout << "  knn tau on shared neighbors: " << scores.knn.kendalls_tau << " ("
+              << scores.knn.tau_query_count << '/' << scores.knn.query_count << " queries)"
               << ", recall@k: " << scores.knn.recall_at_k << '\n';
     std::cout << "  where-at: within radius=" << scores.where_at.within_radius
               << ", average hit=" << scores.where_at.average_hit << '\n';
@@ -58,10 +59,11 @@ void print_scores(const evaluator::Scoretable &scores) {
 void run(const Config &config) {
     const auto [database, queries] = load_split(config);
     print_size("database", database);
-    print_size("queries", queries);
+    print_size("query pool", queries);
 
     const auto knn_workload =
         query::generate_knn_queries(database, queries, config.knn, config.seed);
+    std::cout << "knn: " << knn_workload.entries.size() << " queries, k=" << knn_workload.k << '\n';
     const auto where_at = query::generate_where_at_queries(database, config.where_at, config.seed);
     std::cout << "where-at: " << where_at.queries.size() << " probes, "
               << where_at.skipped_trajectories << " trips without eligible time\n";

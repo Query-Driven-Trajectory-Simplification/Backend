@@ -100,8 +100,31 @@ TEST(Evaluator, CollectsKnnAndWhereAtScoresTogether) {
     const auto scores = evaluator.evaluate();
     EXPECT_DOUBLE_EQ(scores.knn.kendalls_tau, 1);
     EXPECT_DOUBLE_EQ(scores.knn.recall_at_k, 1);
+    EXPECT_EQ(scores.knn.query_count, 2u);
+    EXPECT_EQ(scores.knn.tau_query_count, 2u);
     EXPECT_DOUBLE_EQ(scores.where_at.within_radius, 1);
     EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
     EXPECT_DOUBLE_EQ(evaluator.get_knn_scores().kendalls_tau, scores.knn.kendalls_tau);
     EXPECT_DOUBLE_EQ(evaluator.get_knn_scores().recall_at_k, scores.knn.recall_at_k);
+}
+
+TEST(KnnScores, ReportsCoverageWhenOnlySomeQueriesShareEnoughNeighbors) {
+    const core::TrajectoryDb db({0, 2, 4, 6, 8}, {10, 20, 30, 40}, {0, 10, 0, 10, 0, 10, 0, 10},
+                                std::vector<double>(8, 39.95),
+                                {116.35, 116.35, 116.36, 116.36, 116.37, 116.37, 116.38, 116.38});
+    const query::KnnWorkload workload{db, {{0, {0, 1}}, {0, {0, 2}}, {0, {2, 3}}}, 2};
+    const auto scores = evaluator::evaluate_knn(db, workload);
+    EXPECT_EQ(scores.query_count, 3u);
+    EXPECT_EQ(scores.tau_query_count, 1u);
+    EXPECT_DOUBLE_EQ(scores.kendalls_tau, 1.0);
+    EXPECT_DOUBLE_EQ(scores.recall_at_k, 0.5);
+}
+
+TEST(KnnScores, EmptyWorkloadHasZeroCoverageAndUndefinedScores) {
+    const auto db = original();
+    const auto scores = evaluator::evaluate_knn(db, {db, {}, 2});
+    EXPECT_EQ(scores.query_count, 0u);
+    EXPECT_EQ(scores.tau_query_count, 0u);
+    EXPECT_TRUE(std::isnan(scores.kendalls_tau));
+    EXPECT_TRUE(std::isnan(scores.recall_at_k));
 }

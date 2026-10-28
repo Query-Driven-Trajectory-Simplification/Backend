@@ -31,7 +31,7 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
                                  std::uint64_t seed = 42);
 
 // Indices into trajectories of the k trajectories closest to query by discrete Fréchet
-// distance, closest first.
+// distance, closest first. Equal distances are ordered by database index.
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectories,
                              const core::TrajectoryView &query, std::size_t k);
 
