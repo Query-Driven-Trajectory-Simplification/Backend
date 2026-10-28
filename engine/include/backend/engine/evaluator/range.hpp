@@ -1,7 +1,19 @@
 #pragma once
 
+#include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/query/range_query.hpp"
+
 #include <cstddef>
+#include <span>
 #include <vector>
+
+namespace evaluator {
+
+// Recall averaged over the queries where it is defined, NaN if it is defined for none.
+double evaluate_range(const core::TrajectoryDb &compressed,
+                      std::span<const query::RangeQuery> queries);
+
+} // namespace evaluator
 
 namespace evaluator::range {
 

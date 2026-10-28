@@ -19,7 +19,7 @@ std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &traject
         return sed::simplify(trajectory, points_to_keep);
     }
 
-    throw std::invalid_argument("Unknown algo type");
+    throw std::invalid_argument("simplify_trajectory: unknown algorithm");
 }
 
 core::Simplification simplify_database(const core::TrajectoryDb &trajectories,

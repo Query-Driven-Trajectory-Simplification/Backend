@@ -70,7 +70,8 @@ TEST(Subset, EmptyIndicesGiveEmptyDb) {
 
 TEST(Subset, SplitPartsTogetherHoldEveryTrajectoryOnce) {
     const auto db = make_db({{0, 1}, {2, 3, 4}, {5, 6}, {7, 8, 9, 10}, {11, 12}, {13, 14, 15}});
-    const auto parts = split::split(db, split::SplitType::Random, 0.5, 7);
+    const auto parts =
+        split::split(db, {.type = split::SplitType::Random, .query_percentage = 0.5}, 7);
 
     const auto database = core::subset(db, parts.database);
     const auto queries = core::subset(db, parts.queries);

@@ -1,9 +1,36 @@
 #include "backend/engine/evaluator/range.hpp"
+#include "backend/engine/core/parallel.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <vector>
+
+namespace evaluator {
+
+double evaluate_range(const core::TrajectoryDb &compressed,
+                      std::span<const query::RangeQuery> queries) {
+    double sum = 0.0;
+    std::size_t scored = 0;
+    std::vector<double> recalls(queries.size());
+    core::parallel_for(queries.size(), [&](std::size_t i) {
+        const auto &range_query = queries[i];
+        const auto simplified = query::range(compressed, range_query.box);
+        recalls[i] = range::recall(range_query.reference, simplified);
+    });
+    for (const double recall : recalls) {
+        if (!std::isnan(recall)) {
+            sum += recall;
+            ++scored;
+        }
+    }
+    if (scored == 0)
+        return std::numeric_limits<double>::quiet_NaN();
+    return sum / static_cast<double>(scored);
+}
+
+} // namespace evaluator
 
 namespace evaluator::range {
 

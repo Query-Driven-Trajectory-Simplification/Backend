@@ -10,11 +10,10 @@
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 
-#include <array>
+#include <magic_enum/magic_enum.hpp>
+
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
-#include <filesystem>
 #include <iostream>
 #include <string_view>
 
@@ -22,22 +21,14 @@ namespace pipeline {
 
 namespace {
 
-constexpr double kQueryPercentage = 0.15;
-constexpr std::uint64_t kSplitSeed = 1;
-
-// Hardcoded here for now. Should probably be some flag you give --compress-all, or --comress-0.25
-// or whatever
-constexpr std::array kBudgetShares{0.0025, 0.005, 0.01, 0.02};
-constexpr std::array kAlgorithms{selection::AlgorithmType::RDP, selection::AlgorithmType::SED};
-
 struct Databases {
     core::TrajectoryDb database;
     core::TrajectoryDb queries;
 };
 
-Databases load_split(const std::filesystem::path &path) {
-    const core::TrajectoryDb all = io::load_trajectories(path);
-    const auto parts = split::split(all, split::SplitType::Random, kQueryPercentage, kSplitSeed);
+Databases load_split(const Config &config) {
+    const core::TrajectoryDb all = io::load_trajectories(config.data_path);
+    const auto parts = split::split(all, config.split, config.seed);
     return {.database = core::subset(all, parts.database),
             .queries = core::subset(all, parts.queries)};
 }
@@ -53,51 +44,44 @@ std::size_t total_budget(const core::TrajectoryDb &trajectories, double share) {
     return endpoints + static_cast<std::size_t>(std::llround(extra));
 }
 
-std::string_view algorithm_name(selection::AlgorithmType algorithm) {
-    switch (algorithm) {
-    case selection::AlgorithmType::RDP:
-        return "RDP";
-    case selection::AlgorithmType::SED:
-        return "SED";
-    }
-    return "unknown";
+void print_scores(const evaluator::Scoretable &scores) {
+    std::cout << "  knn tau: " << scores.knn.kendalls_tau
+              << ", recall@k: " << scores.knn.recall_at_k << '\n';
+    std::cout << "  where-at: within radius=" << scores.where_at.within_radius
+              << ", average hit=" << scores.where_at.average_hit << '\n';
+    std::cout << "  range recall: " << scores.range_recall << '\n';
 }
 
 } // namespace
 
 void run(const Config &config) {
-    const auto [database, queries] = load_split(config.path);
+    const auto [database, queries] = load_split(config);
     print_size("database", database);
     print_size("queries", queries);
 
-    // extract from input config
-    query::KnnConfig knn_config;
-    const auto knn_workload = query::generate_knn_queries(database, queries, knn_config);
-    const auto where_at = query::generate_where_at_queries(database);
+    const auto knn_workload =
+        query::generate_knn_queries(database, queries, config.knn, config.seed);
+    const auto where_at = query::generate_where_at_queries(database, config.where_at, config.seed);
     std::cout << "where-at: " << where_at.queries.size() << " probes, "
               << where_at.skipped_trajectories << " trips without eligible time\n";
-    const auto range = query::generate_range_queries(database);
+    const auto range = query::generate_range_queries(database, config.range, config.seed);
     std::cout << "range: " << range.queries.size() << " queries\n";
 
-    for (const double share : kBudgetShares) {
+    for (const double share : config.budget_shares) {
         const auto budgets = allocation::create_trajectory_budgets(
-            database, allocation::AlgorithmType::kSizeProportional, total_budget(database, share));
+            database, allocation::AllocatorType::SizeProportional, total_budget(database, share));
 
-        for (const auto algorithm : kAlgorithms) {
+        for (const auto algorithm : config.algorithms) {
             const auto simplification = selection::simplify_database(database, algorithm, budgets);
             const auto compressed = core::materialize(database, simplification);
-            std::cout << share * 100 << "% " << algorithm_name(algorithm) << ": ";
+            std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm) << ": ";
             print_size("compressed", compressed);
 
-            evaluator::Evaluator evaluator(database, compressed,
-                                           {.where_at = where_at.queries, .range = range.queries});
-            evaluator.set_knn_workload(knn_workload);
-            const auto scores = evaluator.evaluate();
-            std::cout << "  knn tau: " << scores.knn_kendalls_tau
-                      << ", recall@k: " << scores.knn_recall_at_k << '\n';
-            std::cout << "  where-at: within radius=" << scores.where_at.within_radius
-                      << ", average hit=" << scores.where_at.average_hit << '\n';
-            std::cout << "  range recall: " << scores.range_recall << '\n';
+            const evaluator::Evaluator evaluator(
+                database, compressed,
+                {.knn = &knn_workload, .where_at = where_at.queries, .range = range.queries},
+                config.where_at_scoring);
+            print_scores(evaluator.evaluate());
         }
     }
 }

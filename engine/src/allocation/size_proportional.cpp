@@ -80,7 +80,8 @@ std::vector<std::size_t> proportional_budget(const core::TrajectoryDb &trajector
 
     if (total_budget < kMinPointsPerTrajectory * num_trajectories) {
         throw std::invalid_argument(std::format(
-            "Total budget must be at least {} points per trajectory", kMinPointsPerTrajectory));
+            "proportional_budget: total budget must be at least {} points per trajectory",
+            kMinPointsPerTrajectory));
     }
 
     std::vector<std::size_t> sizes(num_trajectories);
@@ -88,7 +89,7 @@ std::vector<std::size_t> proportional_budget(const core::TrajectoryDb &trajector
         sizes[i] = trajectories.trajectory(i).size();
         if (sizes[i] < kMinPointsPerTrajectory) {
             throw std::invalid_argument(std::format(
-                "Trajectory {} has {} points; at least {} required",
+                "proportional_budget: trajectory {} has {} points, at least {} required",
                 trajectories.trajectory(i).trajectory_id, sizes[i], kMinPointsPerTrajectory));
         }
     }
