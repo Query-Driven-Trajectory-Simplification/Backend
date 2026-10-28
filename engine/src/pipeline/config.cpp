@@ -45,9 +45,10 @@ void parse_split_config(Config &config, const json &split) {
 }
 
 void parse_knn_config(Config &config, const json &knn) {
-    validate_keys(knn, {"k", "query_count"}, "knn");
+    validate_keys(knn, {"k", "query_count", "p"}, "knn");
     config.knn.k = knn.value("k", config.knn.k);
     config.knn.query_count = knn.value("query_count", config.knn.query_count);
+    config.knn.p = knn.value("p", config.knn.p);
 }
 
 void parse_range_config(Config &config, const json &range) {

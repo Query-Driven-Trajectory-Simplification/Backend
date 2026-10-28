@@ -16,12 +16,14 @@ struct KnnQuery {
 struct KnnConfig {
     std::size_t k = 5;
     std::size_t query_count = 10; // 0 = use every trajectory in the query pool
+    double p = 0.5; // top-k tau penalty for a pair one list holds neither of, in [0, 1]
 };
 
 struct KnnWorkload {
     core::TrajectoryDb queries;
     std::vector<KnnQuery> entries;
     std::size_t k;
+    double p = 0.5;
 };
 
 // Samples query_count trajectories from query_pool (the held-out split) and stores their k
