@@ -77,6 +77,34 @@ TEST(RangeQueries, ReturnsEachMatchingTrajectoryOnceInOrder) {
     EXPECT_EQ(query::range(db, origin_box(0, 100)), (Indices{0, 2}));
 }
 
+TEST(RangeQueries, TrajectoryFullyInsideMatches) {
+    const auto db = make_db({{
+        {0, core::origin_lat + 0.0005},
+        {10, core::origin_lat, core::origin_lon + 0.0005},
+        {20, core::origin_lat - 0.0005, core::origin_lon - 0.0005},
+    }});
+    EXPECT_EQ(query::range(db, origin_box(0, 100)), Indices{0});
+}
+
+TEST(RangeQueries, OverlappingBoundingBoxWithoutPointsInsideIsOut) {
+    // Diagonal across the box: its bounding box covers the box, but neither point is inside
+    const auto db = make_db({{
+        {0, core::origin_lat - 0.002, core::origin_lon - 0.002},
+        {10, core::origin_lat + 0.002, core::origin_lon + 0.002},
+    }});
+    EXPECT_TRUE(query::range(db, origin_box(0, 100)).empty());
+}
+
+TEST(RangeQueries, TimeSpanOverlappingWindowWithoutPointsInsideIsOut) {
+    const auto db = make_db({{{-50}, {150}}});
+    EXPECT_TRUE(query::range(db, origin_box(0, 100)).empty());
+}
+
+TEST(RangeQueries, SkipsEmptyTrajectories) {
+    const auto db = make_db({{}, {{0}}});
+    EXPECT_EQ(query::range(db, origin_box(0, 100)), Indices{1});
+}
+
 TEST(RangeQueries, ReferenceIsTheRangeOfTheOriginal) {
     std::vector<std::vector<Point>> trajectories;
     for (std::int64_t i = 0; i < 30; ++i)

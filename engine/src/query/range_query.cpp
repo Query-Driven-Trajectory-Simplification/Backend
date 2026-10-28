@@ -36,6 +36,22 @@ bool in_box(const RangeBox &box, std::int64_t t, double x, double y) {
            y <= box.y_max;
 }
 
+// The trajectory's bounding box and time span miss the range box. Needs a nonempty trajectory.
+bool disjoint(const core::TrajectoryView &trajectory, const RangeBox &box) {
+    const auto &b = trajectory.bbox;
+    return b.x_max < box.x_min || b.x_min > box.x_max || b.y_max < box.y_min ||
+           b.y_min > box.y_max || trajectory.t.back() < box.t_min ||
+           trajectory.t.front() > box.t_max;
+}
+
+// Every point of the trajectory lies in the range box. Needs a nonempty trajectory.
+bool contained(const core::TrajectoryView &trajectory, const RangeBox &box) {
+    const auto &b = trajectory.bbox;
+    return b.x_min >= box.x_min && b.x_max <= box.x_max && b.y_min >= box.y_min &&
+           b.y_max <= box.y_max && trajectory.t.front() >= box.t_min &&
+           trajectory.t.back() <= box.t_max;
+}
+
 // Number of points before each trajectory, so a point index can be mapped to its trajectory
 std::vector<std::size_t> point_offsets(const core::TrajectoryDb &trajectories) {
     std::vector<std::size_t> offsets{0};
@@ -75,6 +91,12 @@ std::vector<std::size_t> range(const core::TrajectoryDb &trajectories, const Ran
     std::vector<std::size_t> matches;
     for (std::size_t i = 0; i < trajectories.size(); i++) {
         const auto trajectory = trajectories.trajectory(i);
+        if (trajectory.size() == 0 || disjoint(trajectory, box))
+            continue;
+        if (contained(trajectory, box)) {
+            matches.push_back(i);
+            continue;
+        }
         const auto first = std::ranges::lower_bound(trajectory.t, box.t_min) - trajectory.t.begin();
         for (auto j = static_cast<std::size_t>(first);
              j < trajectory.size() && trajectory.t[j] <= box.t_max; j++) {
