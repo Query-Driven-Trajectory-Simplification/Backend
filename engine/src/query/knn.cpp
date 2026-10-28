@@ -192,25 +192,38 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
         throw std::invalid_argument("knn: k = 0, no neighbors");
     }
 
-    // Lower bound on the Fréchet distance from the query to each trajectory, sorted ascending.
+    // Extract candidates incrementally by the stronger of the endpoint and box-extent bounds.
     // Once a bound reaches the current k-th best distance, every remaining candidate is out too.
     std::vector<Candidate> candidates(trajectory_db.size());
     for (std::size_t i = 0; i < trajectory_db.size(); ++i) {
         const core::TrajectoryView reference = trajectory_db.trajectory(i);
-        candidates[i] = {squared_endpoint_lower_bound(query_trajectory, reference), i};
+        candidates[i] = {
+            std::max(squared_endpoint_lower_bound(query_trajectory, reference),
+                     squared_box_extent_lower_bound(query_trajectory, reference)),
+            i};
     }
-    std::ranges::sort(candidates, [](const Candidate &a, const Candidate &b) {
-        return std::tie(a.squared_lower_bound, a.idx) < std::tie(b.squared_lower_bound, b.idx);
-    });
+    const auto farther = [](const Candidate &a, const Candidate &b) {
+        return std::tie(a.squared_lower_bound, a.idx) > std::tie(b.squared_lower_bound, b.idx);
+    };
+    std::make_heap(candidates.begin(), candidates.end(), farther);
+    const auto extract_candidate = [&]() {
+        std::pop_heap(candidates.begin(), candidates.end(), farther);
+        const Candidate candidate = candidates.back();
+        candidates.pop_back();
+        return candidate;
+    };
 
     double initial_cutoff = std::numeric_limits<double>::infinity();
+    std::vector<Candidate> seed_candidates;
     if (k <= candidates.size()) {
         constexpr std::size_t kInitialBoundCandidates = 64;
         const auto count = std::min(candidates.size(), std::max(k, kInitialBoundCandidates));
+        seed_candidates.reserve(count);
         std::priority_queue<double> upper_bounds;
         for (std::size_t i = 0; i < count; ++i) {
+            seed_candidates.push_back(extract_candidate());
             const double upper = squared_greedy_upper_bound(
-                query_trajectory, trajectory_db.trajectory(candidates[i].idx));
+                query_trajectory, trajectory_db.trajectory(seed_candidates.back().idx));
             if (upper_bounds.size() < k)
                 upper_bounds.push(upper);
             else if (upper < upper_bounds.top()) {
@@ -226,7 +239,11 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
     std::priority_queue<neighbor> curr_neighbors;
     std::vector<double> prev;
     std::vector<double> curr;
-    for (const Candidate &candidate : candidates) {
+    std::size_t seed_index = 0;
+    while (seed_index < seed_candidates.size() || !candidates.empty()) {
+        const Candidate candidate = seed_index < seed_candidates.size()
+                                        ? seed_candidates[seed_index++]
+                                        : extract_candidate();
         const std::size_t i = candidate.idx;
 
         // The greedy paths bound the k-th distance until exact results tighten it.
@@ -241,10 +258,8 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
 
         core::TrajectoryView reference_trajectory = trajectory_db.trajectory(i);
         if (std::isfinite(curr_max_dist) &&
-            (squared_box_extent_lower_bound(query_trajectory, reference_trajectory) >=
-                 curr_max_dist ||
-             squared_points_to_box_lower_bound(query_trajectory, reference_trajectory,
-                                               curr_max_dist) >= curr_max_dist)) {
+            squared_points_to_box_lower_bound(query_trajectory, reference_trajectory,
+                                              curr_max_dist) >= curr_max_dist) {
             continue;
         }
         double curr_dist = get_squared_frechet_distance(query_trajectory, reference_trajectory,
