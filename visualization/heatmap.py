@@ -22,16 +22,13 @@ t = table["t"].to_numpy()
 lat = table["lat"].to_numpy()
 lon = table["lon"].to_numpy()
 
-lat_min, lat_max = np.percentile(lat, [0.5, 99.5])
-lon_min, lon_max = np.percentile(lon, [0.5, 99.5])
+lat_min, lon_min = lat.min(), lon.min()
 lat_step = args.cell / 111_320
-lon_step = lat_step / math.cos(math.radians((lat_min + lat_max) / 2))
+lon_step = lat_step / math.cos(math.radians(np.median(lat)))
 
-keep = (lat >= lat_min) & (lat < lat_max) & (lon >= lon_min) & (lon < lon_max)
-tid, t = tid[keep], t[keep]
-row = ((lat[keep] - lat_min) // lat_step).astype(np.int64)
-col = ((lon[keep] - lon_min) // lon_step).astype(np.int64)
-cols = int((lon_max - lon_min) // lon_step) + 1
+row = ((lat - lat_min) // lat_step).astype(np.int64)
+col = ((lon - lon_min) // lon_step).astype(np.int64)
+cols = int(col.max()) + 1
 cell = row * cols + col
 week = (t - FIRST_MONDAY) // WEEK
 
