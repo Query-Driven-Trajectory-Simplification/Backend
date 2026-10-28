@@ -205,10 +205,8 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
 
     double initial_cutoff = std::numeric_limits<double>::infinity();
     if (k <= candidates.size()) {
-        // Inspect a small pool, since candidates with nearby endpoints may still
-        // take very different routes. Any k feasible paths give a safe cutoff.
-        constexpr std::size_t seed_candidates = 64;
-        const auto count = std::min(candidates.size(), std::max(k, seed_candidates));
+        constexpr std::size_t kInitialBoundCandidates = 64;
+        const auto count = std::min(candidates.size(), std::max(k, kInitialBoundCandidates));
         std::priority_queue<double> upper_bounds;
         for (std::size_t i = 0; i < count; ++i) {
             const double upper = squared_greedy_upper_bound(
