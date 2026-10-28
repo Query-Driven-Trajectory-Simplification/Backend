@@ -29,7 +29,7 @@ TEST(Evaluator, CollectsBothWhereAtScoresWithoutUnconfiguredQueries) {
     const auto scores = evaluator.evaluate();
     EXPECT_DOUBLE_EQ(scores.where_at.within_radius, 1);
     EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
-    EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau));
+    EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau_topk));
     EXPECT_TRUE(std::isnan(scores.knn.recall_at_k));
     EXPECT_TRUE(std::isnan(scores.range_recall));
 }
@@ -59,7 +59,7 @@ TEST(Evaluator, NoWorkloadsReturnsUndefinedScores) {
     const auto db = original();
     evaluator::Evaluator evaluator(db, db);
     const auto scores = evaluator.evaluate();
-    EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau));
+    EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau_topk));
     EXPECT_TRUE(std::isnan(scores.knn.recall_at_k));
     EXPECT_TRUE(std::isnan(scores.range_recall));
     EXPECT_TRUE(std::isnan(scores.where_at.within_radius));
@@ -98,33 +98,41 @@ TEST(Evaluator, CollectsKnnAndWhereAtScoresTogether) {
     evaluator::Evaluator evaluator(db, db, {.knn = &knn, .where_at = where_at.queries});
 
     const auto scores = evaluator.evaluate();
-    EXPECT_DOUBLE_EQ(scores.knn.kendalls_tau, 1);
     EXPECT_DOUBLE_EQ(scores.knn.recall_at_k, 1);
+    EXPECT_DOUBLE_EQ(scores.knn.kendalls_tau_topk, 1);
     EXPECT_EQ(scores.knn.query_count, 2u);
-    EXPECT_EQ(scores.knn.tau_query_count, 2u);
     EXPECT_DOUBLE_EQ(scores.where_at.within_radius, 1);
     EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
-    EXPECT_DOUBLE_EQ(evaluator.get_knn_scores().kendalls_tau, scores.knn.kendalls_tau);
+    EXPECT_DOUBLE_EQ(evaluator.get_knn_scores().kendalls_tau_topk, scores.knn.kendalls_tau_topk);
     EXPECT_DOUBLE_EQ(evaluator.get_knn_scores().recall_at_k, scores.knn.recall_at_k);
 }
 
-TEST(KnnScores, ReportsCoverageWhenOnlySomeQueriesShareEnoughNeighbors) {
+TEST(KnnScores, AveragesOverQueriesWithPartialOverlap) {
     const core::TrajectoryDb db({0, 2, 4, 6, 8}, {10, 20, 30, 40}, {0, 10, 0, 10, 0, 10, 0, 10},
                                 std::vector<double>(8, 39.95),
                                 {116.35, 116.35, 116.36, 116.36, 116.37, 116.37, 116.38, 116.38});
     const query::KnnWorkload workload{db, {{0, {0, 1}}, {0, {0, 2}}, {0, {2, 3}}}, 2};
     const auto scores = evaluator::evaluate_knn(db, workload);
     EXPECT_EQ(scores.query_count, 3u);
-    EXPECT_EQ(scores.tau_query_count, 1u);
-    EXPECT_DOUBLE_EQ(scores.kendalls_tau, 1.0);
+    // the compressed answer is {0, 1}: identical, one swap-in (4/5 of max), disjoint
+    EXPECT_DOUBLE_EQ(scores.kendalls_tau_topk, (1.0 + 0.8 + 0.0) / 3);
     EXPECT_DOUBLE_EQ(scores.recall_at_k, 0.5);
+}
+
+TEST(KnnScores, TopkTauScoresPairsOutsideTheOverlap) {
+    // (7,3) is swapped, and 9 and 5 each only appear in one list: 2 of a possible 9 + 0.5 * 6
+    EXPECT_DOUBLE_EQ(evaluator::knn::kendalls_tau_topk({7, 3, 9}, {3, 7, 5}, 0.5), 1.0 - 2.0 / 12);
+    EXPECT_DOUBLE_EQ(evaluator::knn::kendalls_tau_topk({1, 2, 3}, {1, 2, 3}, 0.5), 1.0);
+    EXPECT_DOUBLE_EQ(evaluator::knn::kendalls_tau_topk({1, 2}, {3, 4}, 0.5), 0.0);
+    // the simplified list holds neither 2 nor 3, so (2,3) costs p
+    EXPECT_DOUBLE_EQ(evaluator::knn::kendalls_tau_topk({1, 2, 3}, {1}, 1.0), 1.0 - 1.0 / 6);
+    EXPECT_TRUE(std::isnan(evaluator::knn::kendalls_tau_topk({}, {}, 0.5)));
 }
 
 TEST(KnnScores, EmptyWorkloadHasZeroCoverageAndUndefinedScores) {
     const auto db = original();
     const auto scores = evaluator::evaluate_knn(db, {db, {}, 2});
     EXPECT_EQ(scores.query_count, 0u);
-    EXPECT_EQ(scores.tau_query_count, 0u);
-    EXPECT_TRUE(std::isnan(scores.kendalls_tau));
+    EXPECT_TRUE(std::isnan(scores.kendalls_tau_topk));
     EXPECT_TRUE(std::isnan(scores.recall_at_k));
 }

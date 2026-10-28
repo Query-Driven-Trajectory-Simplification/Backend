@@ -275,6 +275,9 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
     if (config.k == 0) {
         throw std::invalid_argument("knn: k = 0, no neighbors");
     }
+    if (config.p < 0.0 || config.p > 1.0) {
+        throw std::invalid_argument("knn: p must be in [0, 1]");
+    }
 
     std::vector<std::size_t> picked(query_pool.size());
     std::ranges::iota(picked.begin(), picked.end(), 0);
@@ -284,7 +287,7 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
         picked.resize(config.query_count);
     }
 
-    KnnWorkload results{core::subset(query_pool, picked), {}, config.k};
+    KnnWorkload results{core::subset(query_pool, picked), {}, config.k, config.p};
     results.entries.resize(results.queries.size());
 
     core::parallel_for(results.queries.size(), [&](std::size_t i) {
