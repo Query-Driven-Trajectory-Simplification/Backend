@@ -131,7 +131,7 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
     }
 
     std::vector<std::size_t> picked(query_pool.size());
-    std::ranges::iota(picked.begin(), picked.end(), 0);
+    std::iota(picked.begin(), picked.end(), 0);
     if (config.query_count != 0 && config.query_count < picked.size()) {
         std::mt19937_64 rng(seed);
         std::ranges::shuffle(picked, rng);

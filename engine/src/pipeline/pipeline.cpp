@@ -4,6 +4,7 @@
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/io/workload_export.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 #include "backend/engine/query/where_at_query.hpp"
@@ -66,6 +67,11 @@ void run(const Config &config) {
               << where_at.skipped_trajectories << " trips without eligible time\n";
     const auto range = query::generate_range_queries(database, config.range, config.seed);
     std::cout << "range: " << range.queries.size() << " queries\n";
+
+    if (!config.export_dir.empty()) {
+        io::export_workloads(config.export_dir, database, range.queries, knn_workload);
+        std::cout << "workloads written to " << config.export_dir.string() << '\n';
+    }
 
     for (const double share : config.budget_shares) {
         const auto budgets = allocation::create_trajectory_budgets(
