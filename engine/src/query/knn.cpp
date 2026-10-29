@@ -52,28 +52,48 @@ double get_squared_frechet_distance(const core::TrajectoryView &query,
     if (last == 0)
         return inf;
 
+    // Cells at or above the cutoff keep their value instead of becoming infinity. They can only
+    // lead to values at or above the cutoff, so every value below it stays exact.
     std::size_t first = 0;
     for (std::size_t i = 1; i < n; ++i) {
+        const double qx = query.x[i];
+        const double qy = query.y[i];
+        const auto dist = [&](std::size_t j) {
+            return squared_point_dist(qx, qy, reference.x[j], reference.y[j]);
+        };
         std::size_t next_first = m;
         std::size_t next_last = 0;
-        double left = inf;
-        for (std::size_t j = first; j < m; ++j) {
-            // Beyond the previous row, only a reachable cell on the left can
-            // extend the path. j == last can still use the diagonal predecessor.
-            if (j > last && left >= max_squared_dist)
-                break;
-            const double above = j < last ? prev[j] : inf;
-            const double diagonal = j > first && j <= last ? prev[j - 1] : inf;
-            const double predecessor = std::min({above, diagonal, left});
-            value = std::max(predecessor, squared_point_dist(query.x[i], query.y[i], reference.x[j],
-                                                             reference.y[j]));
-            left = value < max_squared_dist ? value : inf;
+
+        // Within the previous row's reachable span [first, last), the cell above always exists,
+        // and the diagonal does for every cell but the first
+        double left = std::max(prev[first], dist(first));
+        curr[first] = left;
+        if (left < max_squared_dist) {
+            next_first = first;
+            next_last = first + 1;
+        }
+        for (std::size_t j = first + 1; j < last; ++j) {
+            left = std::max(std::min({prev[j], prev[j - 1], left}), dist(j));
             curr[j] = left;
             if (left < max_squared_dist) {
                 next_first = std::min(next_first, j);
                 next_last = j + 1;
             }
         }
+
+        // Past the span only the cell on the left continues a path, plus the diagonal at j == last
+        for (std::size_t j = last; j < m; ++j) {
+            const double predecessor = j == last ? std::min(prev[last - 1], left) : left;
+            if (predecessor >= max_squared_dist)
+                break;
+            left = std::max(predecessor, dist(j));
+            if (left >= max_squared_dist)
+                break;
+            curr[j] = left;
+            next_first = std::min(next_first, j);
+            next_last = j + 1;
+        }
+
         if (next_last == 0)
             return inf;
         first = next_first;
