@@ -52,28 +52,48 @@ double get_squared_frechet_distance(const core::TrajectoryView &query,
     if (last == 0)
         return inf;
 
+    // Cells at or above the cutoff keep their value instead of becoming infinity. They can only
+    // lead to values at or above the cutoff, so every value below it stays exact.
     std::size_t first = 0;
     for (std::size_t i = 1; i < n; ++i) {
+        const double qx = query.x[i];
+        const double qy = query.y[i];
+        const auto dist = [&](std::size_t j) {
+            return squared_point_dist(qx, qy, reference.x[j], reference.y[j]);
+        };
         std::size_t next_first = m;
         std::size_t next_last = 0;
-        double left = inf;
-        for (std::size_t j = first; j < m; ++j) {
-            // Beyond the previous row, only a reachable cell on the left can
-            // extend the path. j == last can still use the diagonal predecessor.
-            if (j > last && left >= max_squared_dist)
-                break;
-            const double above = j < last ? prev[j] : inf;
-            const double diagonal = j > first && j <= last ? prev[j - 1] : inf;
-            const double predecessor = std::min({above, diagonal, left});
-            value = std::max(predecessor, squared_point_dist(query.x[i], query.y[i], reference.x[j],
-                                                             reference.y[j]));
-            left = value < max_squared_dist ? value : inf;
+
+        // Within the previous row's reachable span [first, last), the cell above always exists,
+        // and the diagonal does for every cell but the first
+        double left = std::max(prev[first], dist(first));
+        curr[first] = left;
+        if (left < max_squared_dist) {
+            next_first = first;
+            next_last = first + 1;
+        }
+        for (std::size_t j = first + 1; j < last; ++j) {
+            left = std::max(std::min({prev[j], prev[j - 1], left}), dist(j));
             curr[j] = left;
             if (left < max_squared_dist) {
                 next_first = std::min(next_first, j);
                 next_last = j + 1;
             }
         }
+
+        // Past the span only the cell on the left continues a path, plus the diagonal at j == last
+        for (std::size_t j = last; j < m; ++j) {
+            const double predecessor = j == last ? std::min(prev[last - 1], left) : left;
+            if (predecessor >= max_squared_dist)
+                break;
+            left = std::max(predecessor, dist(j));
+            if (left >= max_squared_dist)
+                break;
+            curr[j] = left;
+            next_first = std::min(next_first, j);
+            next_last = j + 1;
+        }
+
         if (next_last == 0)
             return inf;
         first = next_first;
@@ -192,25 +212,37 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
         throw std::invalid_argument("knn: k = 0, no neighbors");
     }
 
-    // Lower bound on the Fréchet distance from the query to each trajectory, sorted ascending.
+    // Extract candidates incrementally by the stronger of the endpoint and box-extent bounds.
     // Once a bound reaches the current k-th best distance, every remaining candidate is out too.
     std::vector<Candidate> candidates(trajectory_db.size());
     for (std::size_t i = 0; i < trajectory_db.size(); ++i) {
         const core::TrajectoryView reference = trajectory_db.trajectory(i);
-        candidates[i] = {squared_endpoint_lower_bound(query_trajectory, reference), i};
+        candidates[i] = {std::max(squared_endpoint_lower_bound(query_trajectory, reference),
+                                  squared_box_extent_lower_bound(query_trajectory, reference)),
+                         i};
     }
-    std::ranges::sort(candidates, [](const Candidate &a, const Candidate &b) {
-        return std::tie(a.squared_lower_bound, a.idx) < std::tie(b.squared_lower_bound, b.idx);
-    });
+    const auto farther = [](const Candidate &a, const Candidate &b) {
+        return std::tie(a.squared_lower_bound, a.idx) > std::tie(b.squared_lower_bound, b.idx);
+    };
+    std::make_heap(candidates.begin(), candidates.end(), farther);
+    const auto extract_candidate = [&]() {
+        std::pop_heap(candidates.begin(), candidates.end(), farther);
+        const Candidate candidate = candidates.back();
+        candidates.pop_back();
+        return candidate;
+    };
 
     double initial_cutoff = std::numeric_limits<double>::infinity();
+    std::vector<Candidate> seed_candidates;
     if (k <= candidates.size()) {
         constexpr std::size_t kInitialBoundCandidates = 64;
         const auto count = std::min(candidates.size(), std::max(k, kInitialBoundCandidates));
+        seed_candidates.reserve(count);
         std::priority_queue<double> upper_bounds;
         for (std::size_t i = 0; i < count; ++i) {
+            seed_candidates.push_back(extract_candidate());
             const double upper = squared_greedy_upper_bound(
-                query_trajectory, trajectory_db.trajectory(candidates[i].idx));
+                query_trajectory, trajectory_db.trajectory(seed_candidates.back().idx));
             if (upper_bounds.size() < k)
                 upper_bounds.push(upper);
             else if (upper < upper_bounds.top()) {
@@ -226,7 +258,11 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
     std::priority_queue<neighbor> curr_neighbors;
     std::vector<double> prev;
     std::vector<double> curr;
-    for (const Candidate &candidate : candidates) {
+    std::size_t seed_index = 0;
+    while (seed_index < seed_candidates.size() || !candidates.empty()) {
+        const Candidate candidate = seed_index < seed_candidates.size()
+                                        ? seed_candidates[seed_index++]
+                                        : extract_candidate();
         const std::size_t i = candidate.idx;
 
         // The greedy paths bound the k-th distance until exact results tighten it.
@@ -241,10 +277,8 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
 
         core::TrajectoryView reference_trajectory = trajectory_db.trajectory(i);
         if (std::isfinite(curr_max_dist) &&
-            (squared_box_extent_lower_bound(query_trajectory, reference_trajectory) >=
-                 curr_max_dist ||
-             squared_points_to_box_lower_bound(query_trajectory, reference_trajectory,
-                                               curr_max_dist) >= curr_max_dist)) {
+            squared_points_to_box_lower_bound(query_trajectory, reference_trajectory,
+                                              curr_max_dist) >= curr_max_dist) {
             continue;
         }
         double curr_dist = get_squared_frechet_distance(query_trajectory, reference_trajectory,
@@ -275,6 +309,9 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
     if (config.k == 0) {
         throw std::invalid_argument("knn: k = 0, no neighbors");
     }
+    if (config.p < 0.0 || config.p > 1.0) {
+        throw std::invalid_argument("knn: p must be in [0, 1]");
+    }
 
     std::vector<std::size_t> picked(query_pool.size());
     std::iota(picked.begin(), picked.end(), 0);
@@ -284,7 +321,7 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
         picked.resize(config.query_count);
     }
 
-    KnnWorkload results{core::subset(query_pool, picked), {}, config.k};
+    KnnWorkload results{core::subset(query_pool, picked), {}, config.k, config.p};
     results.entries.resize(results.queries.size());
 
     core::parallel_for(results.queries.size(), [&](std::size_t i) {

@@ -148,6 +148,19 @@ TEST(Knn, MatchesBruteForceForOverlappingLongTrajectories) {
     }
 }
 
+TEST(Knn, MatchesBruteForceAcrossSeedCountBoundary) {
+    std::mt19937_64 rng(31);
+    const auto db = make_db(random_tracks(rng, 90));
+    const auto queries = make_db(random_tracks(rng, 3));
+    for (const std::size_t k : {1u, 63u, 64u, 65u, 90u, 100u}) {
+        for (std::size_t q = 0; q < queries.size(); ++q) {
+            EXPECT_EQ(query::knn(db, queries.trajectory(q), k),
+                      brute_force_knn(db, queries.trajectory(q), k))
+                << "query " << q << ", k " << k;
+        }
+    }
+}
+
 TEST(Knn, AcceptsQueryViewWithoutCachedBoundingBox) {
     std::mt19937_64 rng(23);
     const auto db = make_db(random_tracks(rng, 30));

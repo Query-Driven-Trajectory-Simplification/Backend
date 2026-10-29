@@ -11,10 +11,9 @@
 namespace evaluator {
 
 struct KnnScores {
-    double kendalls_tau = std::numeric_limits<double>::quiet_NaN();
     double recall_at_k = std::numeric_limits<double>::quiet_NaN();
+    double kendalls_tau_topk = std::numeric_limits<double>::quiet_NaN();
     std::size_t query_count = 0;
-    std::size_t tau_query_count = 0; // queries with at least two shared neighbors
 };
 
 struct KnnAnswer {
@@ -35,9 +34,10 @@ KnnEvaluation evaluate_knn(const core::TrajectoryDb &compressed,
 
 namespace evaluator::knn {
 
-// Rank agreement on shared neighbors only; NaN when fewer than two are shared.
-double kendalls_tau(const std::vector<std::size_t> &original,
-                    const std::vector<std::size_t> &simplified);
+// Fagin's K^(p) over the union of both lists as a similarity in [0, 1], 1 = identical. A pair
+// that one list holds neither item of costs p. NaN if no pair can be penalized (e.g. both empty).
+double kendalls_tau_topk(const std::vector<std::size_t> &original,
+                         const std::vector<std::size_t> &simplified, double p);
 
 // Share of original that also appears in simplified, ignoring order. NaN if original is empty.
 double recall_at_k(const std::vector<std::size_t> &original,

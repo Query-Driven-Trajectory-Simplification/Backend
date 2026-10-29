@@ -36,7 +36,7 @@ week = (t - FIRST_MONDAY) // WEEK
 def counts(key):
     keys, points = np.unique(key, return_counts=True)
     ids = tid.max() + 1
-    traj_keys, trajectories = np.unique(np.unique(key * ids + tid) // ids, return_counts=True)
+    _, trajectories = np.unique(np.unique(key * ids + tid) // ids, return_counts=True)
     return keys.tolist(), points.tolist(), trajectories.tolist()
 
 

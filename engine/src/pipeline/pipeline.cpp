@@ -48,9 +48,9 @@ std::size_t total_budget(const core::TrajectoryDb &trajectories, double share) {
 }
 
 void print_scores(const evaluator::Scoretable &scores) {
-    std::cout << "  knn tau on shared neighbors: " << scores.knn.kendalls_tau << " ("
-              << scores.knn.tau_query_count << '/' << scores.knn.query_count << " queries)"
-              << ", recall@k: " << scores.knn.recall_at_k << '\n';
+    std::cout << "  knn top-k tau: " << scores.knn.kendalls_tau_topk
+              << ", recall@k: " << scores.knn.recall_at_k << " (" << scores.knn.query_count
+              << " queries)\n";
     std::cout << "  where-at: within radius=" << scores.where_at.within_radius
               << ", average hit=" << scores.where_at.average_hit << '\n';
     std::cout << "  range recall: " << scores.range_recall << '\n';
@@ -96,7 +96,7 @@ void run(const Config &config) {
 
             if (config.export_results) {
                 const std::string name =
-                    std::format("{}_{}pct", magic_enum::enum_name(algorithm), share * 100);
+                    std::format("{}_{:g}pct", magic_enum::enum_name(algorithm), share * 100);
                 io::export_results(config.export_dir, name, evaluation);
             }
         }
