@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <format>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -71,7 +72,7 @@ void run(const Config &config) {
     const auto range = query::generate_range_queries(database, config.range, config.seed);
     std::cout << "range: " << range.queries.size() << " queries\n";
 
-    if (!config.export_dir.empty()) {
+    if (config.export_results) {
         io::export_workloads(config.export_dir, database, range.queries, knn_workload);
         std::cout << "workloads written to " << config.export_dir.string() << '\n';
     }
@@ -90,13 +91,13 @@ void run(const Config &config) {
                 database, compressed,
                 {.knn = &knn_workload, .where_at = where_at.queries, .range = range.queries},
                 config.where_at_scoring);
-            print_scores(evaluator.evaluate());
+            const auto evaluation = evaluator.evaluate();
+            print_scores(evaluation.scores);
 
-            if (!config.export_dir.empty()) {
-                const std::string name = std::string(magic_enum::enum_name(algorithm)) + "_" +
-                                         std::to_string(std::llround(share * 100)) + "pct";
-                io::export_results(config.export_dir, name, compressed, range.queries,
-                                   knn_workload);
+            if (config.export_results) {
+                const std::string name =
+                    std::format("{}_{}pct", magic_enum::enum_name(algorithm), share * 100);
+                io::export_results(config.export_dir, name, evaluation);
             }
         }
     }

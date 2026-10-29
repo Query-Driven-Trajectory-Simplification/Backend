@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 
@@ -14,7 +15,6 @@ void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb
                       std::span<const query::RangeQuery> range, const query::KnnWorkload &knn);
 
 void export_results(const std::filesystem::path &dir, std::string_view name,
-                    const core::TrajectoryDb &compressed, std::span<const query::RangeQuery> range,
-                    const query::KnnWorkload &knn);
+                    const evaluator::EvaluationResult &evaluation);
 
 } // namespace io

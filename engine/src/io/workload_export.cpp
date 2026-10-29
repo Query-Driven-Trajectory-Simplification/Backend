@@ -2,7 +2,10 @@
 
 #include "backend/engine/core/projection.hpp"
 
+#include <arrow/api.h>
+#include <arrow/io/api.h>
 #include <nlohmann/json.hpp>
+#include <parquet/arrow/writer.h>
 
 #include <fstream>
 #include <stdexcept>
@@ -14,8 +17,10 @@ namespace {
 
 using json = nlohmann::json;
 
-json trajectory_ids(const core::TrajectoryDb &database, std::span<const std::size_t> indices) {
-    json ids = json::array();
+std::vector<std::int32_t> trajectory_ids(const core::TrajectoryDb &database,
+                                         std::span<const std::size_t> indices) {
+    std::vector<std::int32_t> ids;
+    ids.reserve(indices.size());
     for (const auto i : indices)
         ids.push_back(database.trajectory(i).trajectory_id);
     return ids;
@@ -28,6 +33,70 @@ void write_file(const json &data, const std::filesystem::path &path) {
     if (!out)
         throw std::runtime_error("cannot open " + path.string());
     out << data.dump() << '\n';
+    out.close();
+    if (!out)
+        throw std::runtime_error("cannot write " + path.string());
+}
+
+void check_arrow(const arrow::Status &status) {
+    if (!status.ok())
+        throw std::runtime_error(status.ToString());
+}
+
+template <typename T> T unwrap(arrow::Result<T> result) {
+    check_arrow(result.status());
+    return std::move(result).ValueOrDie();
+}
+
+void write_parquet(const std::shared_ptr<arrow::Table> &table, const std::filesystem::path &path) {
+    if (path.has_parent_path())
+        std::filesystem::create_directories(path.parent_path());
+    const auto out = unwrap(arrow::io::FileOutputStream::Open(path.string()));
+    check_arrow(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), out));
+    check_arrow(out->Close());
+}
+
+json knn_json(std::span<const evaluator::KnnAnswer> answers) {
+    json rows = json::array();
+    for (const auto &answer : answers)
+        rows.push_back({{"id", answer.query_trajectory_id}, {"neighbours", answer.neighbors}});
+    return rows;
+}
+
+void write_knn_parquet(std::span<const evaluator::KnnAnswer> answers,
+                       const std::filesystem::path &path) {
+    arrow::Int32Builder query_ids, neighbor_ids;
+    arrow::Int64Builder ranks;
+    for (const auto &answer : answers) {
+        for (std::size_t i = 0; i < answer.neighbors.size(); ++i) {
+            check_arrow(query_ids.Append(answer.query_trajectory_id));
+            check_arrow(ranks.Append(static_cast<std::int64_t>(i) + 1));
+            check_arrow(neighbor_ids.Append(answer.neighbors[i]));
+        }
+    }
+    const auto schema = arrow::schema({arrow::field("query_trajectory_id", arrow::int32()),
+                                       arrow::field("rank", arrow::int64()),
+                                       arrow::field("neighbor_trajectory_id", arrow::int32())});
+    write_parquet(arrow::Table::Make(schema, {unwrap(query_ids.Finish()), unwrap(ranks.Finish()),
+                                              unwrap(neighbor_ids.Finish())}),
+                  path);
+}
+
+void write_range_parquet(std::span<const std::vector<std::int32_t>> answers,
+                         const std::filesystem::path &path) {
+    arrow::Int64Builder query_indices;
+    arrow::Int32Builder trajectory_ids;
+    for (std::size_t i = 0; i < answers.size(); ++i) {
+        for (const auto id : answers[i]) {
+            check_arrow(query_indices.Append(static_cast<std::int64_t>(i)));
+            check_arrow(trajectory_ids.Append(id));
+        }
+    }
+    const auto schema = arrow::schema({arrow::field("query_index", arrow::int64()),
+                                       arrow::field("trajectory_id", arrow::int32())});
+    write_parquet(arrow::Table::Make(
+                      schema, {unwrap(query_indices.Finish()), unwrap(trajectory_ids.Finish())}),
+                  path);
 }
 
 } // namespace
@@ -35,8 +104,11 @@ void write_file(const json &data, const std::filesystem::path &path) {
 void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb &database,
                       std::span<const query::RangeQuery> range, const query::KnnWorkload &knn) {
     json range_json = {{"type", "FeatureCollection"}, {"features", json::array()}};
+    std::vector<std::vector<std::int32_t>> range_answers;
+    range_answers.reserve(range.size());
     for (std::size_t n = 0; n < range.size(); ++n) {
         const auto &[box, reference] = range[n];
+        range_answers.push_back(trajectory_ids(database, reference));
         const std::pair<double, double> corners[] = {{box.x_min, box.y_min},
                                                      {box.x_max, box.y_min},
                                                      {box.x_max, box.y_max},
@@ -53,37 +125,27 @@ void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb
               {{"query", n},
                {"t_min", box.t_min},
                {"t_max", box.t_max},
-               {"ids", trajectory_ids(database, reference)}}},
+               {"ids", range_answers.back()}}},
              {"geometry", {{"type", "Polygon"}, {"coordinates", json::array({ring})}}}});
     }
     write_file(range_json, dir / "range.geojson");
 
-    json knn_json = {{"k", knn.k}, {"queries", json::array()}};
-    for (const auto &entry : knn.entries) {
-        knn_json["queries"].push_back(
-            {{"id", knn.queries.trajectory(entry.query_index).trajectory_id},
-             {"neighbours", trajectory_ids(database, entry.reference)}});
-    }
-    write_file(knn_json, dir / "knn_queries.json");
+    write_range_parquet(range_answers, dir / "range_original.parquet");
+    std::vector<evaluator::KnnAnswer> answers;
+    answers.reserve(knn.entries.size());
+    for (const auto &entry : knn.entries)
+        answers.push_back({knn.queries.trajectory(entry.query_index).trajectory_id,
+                           trajectory_ids(database, entry.reference)});
+    write_file({{"k", knn.k}, {"queries", knn_json(answers)}}, dir / "knn_queries.json");
+    write_knn_parquet(answers, dir / "knn_original.parquet");
 }
 
 void export_results(const std::filesystem::path &dir, std::string_view name,
-                    const core::TrajectoryDb &compressed, std::span<const query::RangeQuery> range,
-                    const query::KnnWorkload &knn) {
-    json range_json = json::array();
-    for (const auto &[box, reference] : range)
-        range_json.push_back(trajectory_ids(compressed, query::range(compressed, box)));
-    write_file(range_json, dir / ("range_" + std::string(name) + ".json"));
-
-    json knn_json = json::array();
-    for (const auto &entry : knn.entries) {
-        const auto trajectory = knn.queries.trajectory(entry.query_index);
-        knn_json.push_back(
-            {{"id", trajectory.trajectory_id},
-             {"neighbours",
-              trajectory_ids(compressed, query::knn(compressed, trajectory, knn.k))}});
-    }
-    write_file(knn_json, dir / ("knn_" + std::string(name) + ".json"));
+                    const evaluator::EvaluationResult &evaluation) {
+    write_file(evaluation.range, dir / ("range_" + std::string(name) + ".json"));
+    write_file(knn_json(evaluation.knn), dir / ("knn_" + std::string(name) + ".json"));
+    write_range_parquet(evaluation.range, dir / ("range_" + std::string(name) + ".parquet"));
+    write_knn_parquet(evaluation.knn, dir / ("knn_" + std::string(name) + ".parquet"));
 }
 
 } // namespace io

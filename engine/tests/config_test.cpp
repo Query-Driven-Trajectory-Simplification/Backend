@@ -117,3 +117,31 @@ TEST(Config, RejectsUnknownKeysAndNestedSeeds) {
                      std::invalid_argument);
     }
 }
+
+TEST(Config, ExportIsExplicitlyEnabled) {
+    EXPECT_FALSE(pipeline::load_config(
+                     write_config("export_default.json", R"({"data_path":"data.parquet"})"))
+                     .export_results);
+    EXPECT_TRUE(
+        pipeline::load_config(write_config("export_enabled.json",
+                                           R"({"data_path":"data.parquet","export_results":true})"))
+            .export_results);
+    EXPECT_THROW(
+        pipeline::load_config(write_config(
+            "export_invalid.json", R"({"data_path":"data.parquet","export_results":"yes"})")),
+        std::invalid_argument);
+}
+
+TEST(Config, ExportDirectoryDoesNotEnableExport) {
+    const auto defaults = pipeline::load_config(
+        write_config("export_path_default.json", R"({"data_path":"data.parquet"})"));
+    EXPECT_EQ(defaults.export_dir, "output/queries");
+    const auto custom = pipeline::load_config(write_config(
+        "export_path_custom.json", R"({"data_path":"data.parquet","export_dir":"output/custom"})"));
+    EXPECT_EQ(custom.export_dir, "output/custom");
+    EXPECT_FALSE(custom.export_results);
+    EXPECT_THROW(pipeline::load_config(write_config(
+                     "export_path_empty.json",
+                     R"({"data_path":"data.parquet","export_results":true,"export_dir":""})")),
+                 std::invalid_argument);
+}

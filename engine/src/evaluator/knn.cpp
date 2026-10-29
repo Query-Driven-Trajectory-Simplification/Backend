@@ -58,7 +58,10 @@ double recall_at_k(const std::vector<std::size_t> &original,
 
 namespace evaluator {
 
-KnnScores evaluate_knn(const core::TrajectoryDb &compressed, const query::KnnWorkload &workload) {
+KnnEvaluation evaluate_knn(const core::TrajectoryDb &compressed,
+                           const query::KnnWorkload &workload) {
+    KnnEvaluation result;
+    result.answers.resize(workload.entries.size());
     double tau_sum = 0.0;
     std::size_t tau_scored = 0;
     double recall_sum = 0.0;
@@ -69,6 +72,11 @@ KnnScores evaluate_knn(const core::TrajectoryDb &compressed, const query::KnnWor
         const auto &query = workload.entries[i];
         const auto trajectory = workload.queries.trajectory(query.query_index);
         const auto simplified = query::knn(compressed, trajectory, workload.k);
+        auto &answer = result.answers[i];
+        answer.query_trajectory_id = trajectory.trajectory_id;
+        answer.neighbors.reserve(simplified.size());
+        for (const auto index : simplified)
+            answer.neighbors.push_back(compressed.trajectory(index).trajectory_id);
         taus[i] = knn::kendalls_tau(query.reference, simplified);
         recalls[i] = knn::recall_at_k(query.reference, simplified);
     });
@@ -85,14 +93,14 @@ KnnScores evaluate_knn(const core::TrajectoryDb &compressed, const query::KnnWor
         }
     }
 
-    KnnScores scores;
+    auto &scores = result.scores;
     scores.query_count = workload.entries.size();
     scores.tau_query_count = tau_scored;
     if (tau_scored != 0)
         scores.kendalls_tau = tau_sum / static_cast<double>(tau_scored);
     if (recall_scored != 0)
         scores.recall_at_k = recall_sum / static_cast<double>(recall_scored);
-    return scores;
+    return result;
 }
 
 } // namespace evaluator

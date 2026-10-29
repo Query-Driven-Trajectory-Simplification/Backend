@@ -85,15 +85,18 @@ void parse_where_at_scoring_config(Config &config, const json &scoring) {
 
 Config parse_config(const json &data) {
     validate_keys(data,
-                  {"data_path", "export_dir", "seed", "budget_shares", "algorithms", "split", "knn",
-                   "range", "where_at", "where_at_scoring"},
+                  {"data_path", "export_results", "export_dir", "seed", "budget_shares",
+                   "algorithms", "split", "knn", "range", "where_at", "where_at_scoring"},
                   "root");
     Config config;
 
     if (!data.contains("data_path"))
         throw std::invalid_argument("config: data_path is required");
     config.data_path = data["data_path"].get<std::string>();
-    config.export_dir = data.value("export_dir", std::string());
+    config.export_results = data.value("export_results", config.export_results);
+    config.export_dir = data.value("export_dir", config.export_dir.string());
+    if (config.export_results && config.export_dir.empty())
+        throw std::invalid_argument("config: export_dir must not be empty when export is enabled");
 
     // Every other key is optional and falls back to the struct's default
     config.budget_shares = data.value("budget_shares", config.budget_shares);

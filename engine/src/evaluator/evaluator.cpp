@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <stdexcept>
+#include <utility>
 
 namespace evaluator {
 
@@ -19,20 +20,22 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
     }
 }
 
-Scoretable Evaluator::evaluate() const {
-    return Scoretable{
-        .knn = get_knn_scores(),
-        .range_recall = get_range_recall(),
-        .where_at = get_where_at_scores(),
-    };
+EvaluationResult Evaluator::evaluate() const {
+    auto knn = m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnEvaluation{};
+    auto range = evaluate_range(m_simplified, m_workloads.range);
+    return {.scores = {.knn = knn.scores,
+                       .range_recall = range.recall,
+                       .where_at = get_where_at_scores()},
+            .knn = std::move(knn.answers),
+            .range = std::move(range.answers)};
 }
 
 KnnScores Evaluator::get_knn_scores() const {
-    return m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnScores{};
+    return m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn).scores : KnnScores{};
 }
 
 double Evaluator::get_range_recall() const {
-    return evaluate_range(m_simplified, m_workloads.range);
+    return evaluate_range(m_simplified, m_workloads.range).recall;
 }
 
 WhereAtScores Evaluator::get_where_at_scores() const {

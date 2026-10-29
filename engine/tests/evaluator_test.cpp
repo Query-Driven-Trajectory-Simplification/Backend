@@ -26,7 +26,7 @@ TEST(Evaluator, CollectsBothWhereAtScoresWithoutUnconfiguredQueries) {
     const auto db = original();
     const auto workload = query::generate_where_at_queries(db);
     evaluator::Evaluator evaluator(db, db, {.where_at = workload.queries});
-    const auto scores = evaluator.evaluate();
+    const auto scores = evaluator.evaluate().scores;
     EXPECT_DOUBLE_EQ(scores.where_at.within_radius, 1);
     EXPECT_DOUBLE_EQ(scores.where_at.average_hit, 1);
     EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau));
@@ -42,7 +42,7 @@ TEST(Evaluator, DelegatesToWhereAtModule) {
     const auto expected = evaluator::evaluate_where_at(compressed, workload.queries, config);
     evaluator::Evaluator evaluator(db, compressed, {.where_at = workload.queries}, config);
     EXPECT_DOUBLE_EQ(evaluator.get_where_at_scores().within_radius, expected.within_radius);
-    EXPECT_DOUBLE_EQ(evaluator.evaluate().where_at.average_hit, expected.average_hit);
+    EXPECT_DOUBLE_EQ(evaluator.evaluate().scores.where_at.average_hit, expected.average_hit);
 }
 
 TEST(Evaluator, ReusesSameWorkloadAcrossDatabases) {
@@ -58,7 +58,7 @@ TEST(Evaluator, ReusesSameWorkloadAcrossDatabases) {
 TEST(Evaluator, NoWorkloadsReturnsUndefinedScores) {
     const auto db = original();
     evaluator::Evaluator evaluator(db, db);
-    const auto scores = evaluator.evaluate();
+    const auto scores = evaluator.evaluate().scores;
     EXPECT_TRUE(std::isnan(scores.knn.kendalls_tau));
     EXPECT_TRUE(std::isnan(scores.knn.recall_at_k));
     EXPECT_TRUE(std::isnan(scores.range_recall));
@@ -80,7 +80,7 @@ TEST(Evaluator, AveragesRangeRecallOverQueries) {
     evaluator::Evaluator simplified(db, compressed, {.range = queries});
     EXPECT_DOUBLE_EQ(baseline.get_range_recall(), 1);
     EXPECT_DOUBLE_EQ(simplified.get_range_recall(), 0.5);
-    EXPECT_DOUBLE_EQ(simplified.evaluate().range_recall, 0.5);
+    EXPECT_DOUBLE_EQ(simplified.evaluate().scores.range_recall, 0.5);
 }
 
 TEST(Evaluator, RejectsDifferentTrajectoryCountsAndIds) {
@@ -97,7 +97,7 @@ TEST(Evaluator, CollectsKnnAndWhereAtScoresTogether) {
     const auto knn = query::generate_knn_queries(db, db, {.k = 2, .query_count = 0});
     evaluator::Evaluator evaluator(db, db, {.knn = &knn, .where_at = where_at.queries});
 
-    const auto scores = evaluator.evaluate();
+    const auto scores = evaluator.evaluate().scores;
     EXPECT_DOUBLE_EQ(scores.knn.kendalls_tau, 1);
     EXPECT_DOUBLE_EQ(scores.knn.recall_at_k, 1);
     EXPECT_EQ(scores.knn.query_count, 2u);
@@ -113,7 +113,7 @@ TEST(KnnScores, ReportsCoverageWhenOnlySomeQueriesShareEnoughNeighbors) {
                                 std::vector<double>(8, 39.95),
                                 {116.35, 116.35, 116.36, 116.36, 116.37, 116.37, 116.38, 116.38});
     const query::KnnWorkload workload{db, {{0, {0, 1}}, {0, {0, 2}}, {0, {2, 3}}}, 2};
-    const auto scores = evaluator::evaluate_knn(db, workload);
+    const auto scores = evaluator::evaluate_knn(db, workload).scores;
     EXPECT_EQ(scores.query_count, 3u);
     EXPECT_EQ(scores.tau_query_count, 1u);
     EXPECT_DOUBLE_EQ(scores.kendalls_tau, 1.0);
@@ -122,7 +122,7 @@ TEST(KnnScores, ReportsCoverageWhenOnlySomeQueriesShareEnoughNeighbors) {
 
 TEST(KnnScores, EmptyWorkloadHasZeroCoverageAndUndefinedScores) {
     const auto db = original();
-    const auto scores = evaluator::evaluate_knn(db, {db, {}, 2});
+    const auto scores = evaluator::evaluate_knn(db, {db, {}, 2}).scores;
     EXPECT_EQ(scores.query_count, 0u);
     EXPECT_EQ(scores.tau_query_count, 0u);
     EXPECT_TRUE(std::isnan(scores.kendalls_tau));

@@ -9,14 +9,20 @@
 
 namespace evaluator {
 
-double evaluate_range(const core::TrajectoryDb &compressed,
-                      std::span<const query::RangeQuery> queries) {
+RangeEvaluation evaluate_range(const core::TrajectoryDb &compressed,
+                               std::span<const query::RangeQuery> queries) {
+    RangeEvaluation result;
+    result.answers.resize(queries.size());
     double sum = 0.0;
     std::size_t scored = 0;
     std::vector<double> recalls(queries.size());
     core::parallel_for(queries.size(), [&](std::size_t i) {
         const auto &range_query = queries[i];
         const auto simplified = query::range(compressed, range_query.box);
+        auto &answer = result.answers[i];
+        answer.reserve(simplified.size());
+        for (const auto index : simplified)
+            answer.push_back(compressed.trajectory(index).trajectory_id);
         recalls[i] = range::recall(range_query.reference, simplified);
     });
     for (const double recall : recalls) {
@@ -25,9 +31,9 @@ double evaluate_range(const core::TrajectoryDb &compressed,
             ++scored;
         }
     }
-    if (scored == 0)
-        return std::numeric_limits<double>::quiet_NaN();
-    return sum / static_cast<double>(scored);
+    if (scored != 0)
+        result.recall = sum / static_cast<double>(scored);
+    return result;
 }
 
 } // namespace evaluator
