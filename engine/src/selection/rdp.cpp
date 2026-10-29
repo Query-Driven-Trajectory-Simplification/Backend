@@ -1,7 +1,6 @@
 #include "backend/engine/selection/rdp.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <queue>
 #include <span>
 
@@ -14,14 +13,16 @@ namespace {
 // The implementation uses max-prio queue with fixed point budget instead of standard epsilon error
 // like in vid.
 
-double segment_distance(double px, double py, double ax, double ay, double bx, double by) {
+double squared_segment_distance(double px, double py, double ax, double ay, double bx, double by) {
     const double dx = bx - ax;
     const double dy = by - ay;
     const double len_sq = dx * dx + dy * dy;
     double s = 0.0;
     if (len_sq > 0.0)
         s = std::clamp(((px - ax) * dx + (py - ay) * dy) / len_sq, 0.0, 1.0);
-    return std::hypot(px - (ax + s * dx), py - (ay + s * dy));
+    const double ex = px - (ax + s * dx);
+    const double ey = py - (ay + s * dy);
+    return ex * ex + ey * ey;
 }
 
 struct Split {
@@ -39,7 +40,7 @@ void push_split(std::priority_queue<Split> &heap, std::span<const double> x,
         return;
     Split split{-1.0, first + 1, first, last};
     for (std::size_t k = first + 1; k < last; ++k) {
-        const double d = segment_distance(x[k], y[k], x[first], y[first], x[last], y[last]);
+        const double d = squared_segment_distance(x[k], y[k], x[first], y[first], x[last], y[last]);
         if (d > split.error) {
             split.error = d;
             split.index = k;
