@@ -217,10 +217,9 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
     std::vector<Candidate> candidates(trajectory_db.size());
     for (std::size_t i = 0; i < trajectory_db.size(); ++i) {
         const core::TrajectoryView reference = trajectory_db.trajectory(i);
-        candidates[i] = {
-            std::max(squared_endpoint_lower_bound(query_trajectory, reference),
-                     squared_box_extent_lower_bound(query_trajectory, reference)),
-            i};
+        candidates[i] = {std::max(squared_endpoint_lower_bound(query_trajectory, reference),
+                                  squared_box_extent_lower_bound(query_trajectory, reference)),
+                         i};
     }
     const auto farther = [](const Candidate &a, const Candidate &b) {
         return std::tie(a.squared_lower_bound, a.idx) > std::tie(b.squared_lower_bound, b.idx);
