@@ -67,4 +67,23 @@ void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb
     write_file(knn_json, dir / "knn_queries.json");
 }
 
+void export_results(const std::filesystem::path &dir, std::string_view name,
+                    const core::TrajectoryDb &compressed, std::span<const query::RangeQuery> range,
+                    const query::KnnWorkload &knn) {
+    json range_json = json::array();
+    for (const auto &[box, reference] : range)
+        range_json.push_back(trajectory_ids(compressed, query::range(compressed, box)));
+    write_file(range_json, dir / ("range_" + std::string(name) + ".json"));
+
+    json knn_json = json::array();
+    for (const auto &entry : knn.entries) {
+        const auto trajectory = knn.queries.trajectory(entry.query_index);
+        knn_json.push_back(
+            {{"id", trajectory.trajectory_id},
+             {"neighbours",
+              trajectory_ids(compressed, query::knn(compressed, trajectory, knn.k))}});
+    }
+    write_file(knn_json, dir / ("knn_" + std::string(name) + ".json"));
+}
+
 } // namespace io

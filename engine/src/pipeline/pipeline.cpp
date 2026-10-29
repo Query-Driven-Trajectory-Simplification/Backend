@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <iostream>
+#include <string>
 #include <string_view>
 
 namespace pipeline {
@@ -90,6 +91,13 @@ void run(const Config &config) {
                 {.knn = &knn_workload, .where_at = where_at.queries, .range = range.queries},
                 config.where_at_scoring);
             print_scores(evaluator.evaluate());
+
+            if (!config.export_dir.empty()) {
+                const std::string name = std::string(magic_enum::enum_name(algorithm)) + "_" +
+                                         std::to_string(std::llround(share * 100)) + "pct";
+                io::export_results(config.export_dir, name, compressed, range.queries,
+                                   knn_workload);
+            }
         }
     }
 }
