@@ -25,6 +25,7 @@ void validate_config(const WhereAtConfig &config) {
 std::vector<EligibleInterval> eligible_intervals(const core::TrajectoryView &trajectory,
                                                  double max_gap_seconds) {
     std::vector<EligibleInterval> intervals;
+    intervals.reserve(trajectory.size() > 0 ? trajectory.size() - 1 : 0);
     double duration = 0;
     for (std::size_t j = 1; j < trajectory.size(); ++j) {
         const double start = static_cast<double>(trajectory.t[j - 1]);
@@ -65,6 +66,17 @@ WhereAtWorkload generate_where_at_queries(const core::TrajectoryDb &uncompressed
     validate_config(config);
 
     WhereAtWorkload result;
+    std::size_t eligible = 0;
+    for (std::size_t i = 0; i < uncompressed_database.size(); ++i) {
+        const auto times = uncompressed_database.trajectory(i).t;
+        eligible +=
+            std::adjacent_find(times.begin(), times.end(), [&](auto a, auto b) {
+                return static_cast<double>(b) - static_cast<double>(a) <= config.max_gap_seconds;
+            }) != times.end();
+    }
+    if (eligible > result.queries.max_size() / config.probes_per_trajectory)
+        throw std::length_error("where-at: too many probes");
+    result.queries.reserve(eligible * config.probes_per_trajectory);
     std::mt19937_64 rng(seed);
     for (std::size_t i = 0; i < uncompressed_database.size(); i++) {
         const auto trajectory = uncompressed_database.trajectory(i);
