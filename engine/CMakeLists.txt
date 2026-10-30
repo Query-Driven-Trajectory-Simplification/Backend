@@ -14,6 +14,7 @@ FetchContent_MakeAvailable(magic_enum)
 add_library(engine
     src/core/trajectory_db.cpp
     src/io/parquet_loader.cpp
+    src/io/workload_export.cpp
     src/pipeline/config.cpp
     src/pipeline/pipeline.cpp
     src/selection/rdp.cpp

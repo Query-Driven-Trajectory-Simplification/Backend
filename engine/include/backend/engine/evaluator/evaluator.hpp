@@ -24,13 +24,18 @@ struct Scoretable {
     WhereAtScores where_at;
 };
 
+struct EvaluationResult {
+    Scoretable scores;
+    std::vector<KnnAnswer> knn;
+    std::vector<std::vector<std::int32_t>> range;
+};
+
 class Evaluator {
   public:
     Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
               Workloads workloads = {}, WhereAtScoringConfig where_at_config = {});
 
-    // Runs every evaluation
-    Scoretable evaluate() const;
+    EvaluationResult evaluate() const;
 
     // Each runs only its own evaluation
     KnnScores get_knn_scores() const;

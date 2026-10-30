@@ -15,6 +15,8 @@ namespace pipeline {
 
 struct Config {
     std::filesystem::path data_path;
+    bool export_results = false;
+    std::filesystem::path export_dir = "output/queries";
     std::uint64_t seed = 42;
     split::SplitConfig split;
     std::vector<double> budget_shares{0.0025, 0.005, 0.01, 0.02};

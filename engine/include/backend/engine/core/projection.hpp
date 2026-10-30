@@ -67,4 +67,20 @@ constexpr core::LocalPoint to_local_metres(double lat, double lon) noexcept {
     };
 }
 
+struct LatLon {
+    double lat;
+    double lon;
+};
+
+constexpr LatLon to_lat_lon(double x, double y) noexcept {
+    double dlat = y / detail::coeffs.lat1;
+    double dlon = x / detail::coeffs.lon1;
+    for (int i = 0; i < 5; ++i) {
+        dlon = x / (detail::coeffs.lon1 + detail::coeffs.lon_lat_cross * dlat);
+        dlat = (y - detail::coeffs.lon2 * (dlon * dlon)) /
+               (detail::coeffs.lat1 + detail::coeffs.lat2 * dlat);
+    }
+    return {.lat = origin_lat + dlat, .lon = origin_lon + dlon};
+}
+
 } // namespace core

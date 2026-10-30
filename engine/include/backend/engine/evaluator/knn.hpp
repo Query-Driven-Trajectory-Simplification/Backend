@@ -4,6 +4,7 @@
 #include "backend/engine/query/knn.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -15,8 +16,19 @@ struct KnnScores {
     std::size_t query_count = 0;
 };
 
-// Each score is averaged over the queries where it is defined, NaN if it is defined for none.
-KnnScores evaluate_knn(const core::TrajectoryDb &compressed, const query::KnnWorkload &workload);
+struct KnnAnswer {
+    std::int32_t query_trajectory_id;
+    std::vector<std::int32_t> neighbors;
+};
+
+struct KnnEvaluation {
+    KnnScores scores;
+    std::vector<KnnAnswer> answers;
+};
+
+// Executes each query once and returns both scores and answers in workload entry order.
+KnnEvaluation evaluate_knn(const core::TrajectoryDb &compressed,
+                           const query::KnnWorkload &workload);
 
 } // namespace evaluator
 

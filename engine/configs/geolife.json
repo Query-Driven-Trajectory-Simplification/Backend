@@ -1,5 +1,7 @@
 {
     "data_path": "data/geolife.parquet",
+    "export_results": true,
+    "export_dir": "data/output/geolife",
     "seed": 42,
     "budget_shares": [0.0025, 0.005, 0.01, 0.02],
     "split": {

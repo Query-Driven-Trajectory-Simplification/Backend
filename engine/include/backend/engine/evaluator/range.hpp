@@ -4,14 +4,20 @@
 #include "backend/engine/query/range_query.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
 namespace evaluator {
 
-// Recall averaged over the queries where it is defined, NaN if it is defined for none.
-double evaluate_range(const core::TrajectoryDb &compressed,
-                      std::span<const query::RangeQuery> queries);
+struct RangeEvaluation {
+    double recall = std::numeric_limits<double>::quiet_NaN();
+    std::vector<std::vector<std::int32_t>> answers;
+};
+
+RangeEvaluation evaluate_range(const core::TrajectoryDb &compressed,
+                               std::span<const query::RangeQuery> queries);
 
 } // namespace evaluator
 
