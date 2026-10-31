@@ -99,6 +99,44 @@ void write_range_parquet(std::span<const std::vector<std::int32_t>> answers,
                   path);
 }
 
+void write_trajectory_parquet(const core::TrajectoryDb &database,
+                              const std::filesystem::path &path) {
+    arrow::Int32Builder trajectory_ids;
+    arrow::Int64Builder timestamps;
+    arrow::DoubleBuilder latitudes, longitudes;
+    for (std::size_t i = 0; i < database.size(); ++i) {
+        const auto trajectory = database.trajectory(i);
+        for (std::size_t j = 0; j < trajectory.size(); ++j) {
+            check_arrow(trajectory_ids.Append(trajectory.trajectory_id));
+            check_arrow(timestamps.Append(trajectory.t[j]));
+            check_arrow(latitudes.Append(trajectory.lat[j]));
+            check_arrow(longitudes.Append(trajectory.lon[j]));
+        }
+    }
+    const auto schema = arrow::schema(
+        {arrow::field("trajectory_id", arrow::int32()), arrow::field("t", arrow::int64()),
+         arrow::field("lat", arrow::float64()), arrow::field("lon", arrow::float64())});
+    write_parquet(arrow::Table::Make(
+                      schema, {unwrap(trajectory_ids.Finish()), unwrap(timestamps.Finish()),
+                               unwrap(latitudes.Finish()), unwrap(longitudes.Finish())}),
+                  path);
+}
+
+json trajectories_json(const core::TrajectoryDb &database) {
+    json features = json::array();
+    for (std::size_t i = 0; i < database.size(); ++i) {
+        const auto trajectory = database.trajectory(i);
+        json coordinates = json::array();
+        for (std::size_t j = 0; j < trajectory.size(); ++j)
+            coordinates.push_back({trajectory.lon[j], trajectory.lat[j]});
+        features.push_back(
+            {{"type", "Feature"},
+             {"properties", {{"trajectory_id", trajectory.trajectory_id}}},
+             {"geometry", {{"type", "LineString"}, {"coordinates", coordinates}}}});
+    }
+    return {{"type", "FeatureCollection"}, {"features", features}};
+}
+
 } // namespace
 
 void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb &database,
@@ -146,6 +184,13 @@ void export_results(const std::filesystem::path &dir, std::string_view name,
     write_file(knn_json(evaluation.knn), dir / ("knn_" + std::string(name) + ".json"));
     write_range_parquet(evaluation.range, dir / ("range_" + std::string(name) + ".parquet"));
     write_knn_parquet(evaluation.knn, dir / ("knn_" + std::string(name) + ".parquet"));
+}
+
+void export_trajectories(const std::filesystem::path &dir, std::string_view name,
+                         const core::TrajectoryDb &database) {
+    const auto filename = "trajectories_" + std::string(name);
+    write_file(trajectories_json(database), dir / (filename + ".json"));
+    write_trajectory_parquet(database, dir / (filename + ".parquet"));
 }
 
 } // namespace io

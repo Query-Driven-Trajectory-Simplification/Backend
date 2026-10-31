@@ -97,6 +97,7 @@ void run(const Config &config) {
             if (config.export_results) {
                 const std::string name =
                     std::format("{}_{:g}pct", magic_enum::enum_name(algorithm), share * 100);
+                io::export_trajectories(config.export_dir, name, compressed);
                 io::export_results(config.export_dir, name, evaluation);
             }
         }
