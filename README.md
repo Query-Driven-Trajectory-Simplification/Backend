@@ -109,32 +109,3 @@ engine/                 Simplification and evaluation
 ```
 
 Each engine module has its header in `include/backend/engine/<module>/` and its source in `src/<module>/`.
-
-## Contributing
-
-Formatting is enforced in CI ([format.yml](.github/workflows/format.yml)) with clang-format 23.1.1,
-using the style in [.clang-format](.clang-format). Install the same version with `pip install clang-format==23.1.1`.
-
-Format a single file:
-
-```sh
-clang-format -i engine/src/query/range_query.cpp engine/include/backend/engine/query/range_query.hpp
-```
-
-Format every tracked C++ file:
-
-```sh
-# Bash / macOS
-git ls-files '*.cpp' '*.hpp' | xargs clang-format -i
-# PowerShell
-clang-format -i (git ls-files '*.cpp' '*.hpp')
-```
-
-Check without changing anything (what CI runs):
-
-```sh
-# Bash / macOS
-git ls-files '*.cpp' '*.hpp' | xargs clang-format --dry-run --Werror
-# PowerShell
-clang-format --dry-run --Werror (git ls-files '*.cpp' '*.hpp')
-```
