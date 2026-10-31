@@ -116,10 +116,10 @@ void write_trajectory_parquet(const core::TrajectoryDb &database,
     const auto schema = arrow::schema(
         {arrow::field("trajectory_id", arrow::int32()), arrow::field("t", arrow::int64()),
          arrow::field("lat", arrow::float64()), arrow::field("lon", arrow::float64())});
-    write_parquet(arrow::Table::Make(
-                      schema, {unwrap(trajectory_ids.Finish()), unwrap(timestamps.Finish()),
-                               unwrap(latitudes.Finish()), unwrap(longitudes.Finish())}),
-                  path);
+    write_parquet(
+        arrow::Table::Make(schema, {unwrap(trajectory_ids.Finish()), unwrap(timestamps.Finish()),
+                                    unwrap(latitudes.Finish()), unwrap(longitudes.Finish())}),
+        path);
 }
 
 json trajectories_json(const core::TrajectoryDb &database) {
@@ -129,10 +129,9 @@ json trajectories_json(const core::TrajectoryDb &database) {
         json coordinates = json::array();
         for (std::size_t j = 0; j < trajectory.size(); ++j)
             coordinates.push_back({trajectory.lon[j], trajectory.lat[j]});
-        features.push_back(
-            {{"type", "Feature"},
-             {"properties", {{"trajectory_id", trajectory.trajectory_id}}},
-             {"geometry", {{"type", "LineString"}, {"coordinates", coordinates}}}});
+        features.push_back({{"type", "Feature"},
+                            {"properties", {{"trajectory_id", trajectory.trajectory_id}}},
+                            {"geometry", {{"type", "LineString"}, {"coordinates", coordinates}}}});
     }
     return {{"type", "FeatureCollection"}, {"features", features}};
 }
