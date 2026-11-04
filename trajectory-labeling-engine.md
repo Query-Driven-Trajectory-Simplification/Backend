@@ -125,15 +125,19 @@ MLSimp (Song et al., PVLDB 2025) is the learned baseline. The comparison below i
 
 | | **Learned allocator** | **MLSimp** |
 |---|---|---|
-| Decides | **How many** points each trajectory keeps (allocation across the database) | **Which** points to keep inside a trajectory (point importance) |
-| Trained on | The **query score** directly (kNN + range + where-at from the Evaluator) | **Never sees queries**: self-supervised contrastive losses plus mutual learning with a diffusion model (`Model/GraphSimp.py`) |
-| Query types | Targets the project's three, and can weight them by query requirements | Query-agnostic; queries are only used to evaluate it |
+| Decides | **How many** points each trajectory keeps (allocation across the database) | **Which** points to keep (point importance); allocation follows implicitly from the scores |
+| Trained on | The **query score** directly (kNN + range + where-at from the Evaluator) | **No queries in training**: self-supervised contrastive losses plus mutual learning with a diffusion model (`Model/GraphSimp.py`) |
+| Query types | Targets the project's three, and can weight them by query requirements | Training is query-agnostic; at simplification time, points inside range query boxes get a score bonus (`adjust`, weight `ad_ratio` = 0.5 on GeoLife) |
 | Context | Trajectory features include density, i.e. each trajectory's position relative to the rest of the database | Point graph and embeddings, centred on each trajectory |
 | Model | 3 parameters, log-linear | GAT plus T-BERT plus a diffusion model |
 | Training | Minutes on CPU, black-box optimization | GPU, gradient descent |
 | Labels | None (reward from queries) | None (self-supervised) |
 
-In the released code, MLSimp keeps a fixed share of each trajectory's points (`rate × size` in `simp_trajs`), so its allocation is effectively proportional. That is the part the learned allocator replaces.
+**How MLSimp allocates** (`validation.py`): each point's score is 0.5 × GNN importance plus 0.5 × a bonus if it lies inside a range query box. MLSimp then samples `cr × total` points across the whole database, with probability proportional to score, and always keeps the endpoints. A trajectory's budget therefore follows its share of the total score. On variable-length data, that is roughly size-proportional, which is the allocation the learned allocator beats with both RDP (+2.8 to +5.1) and SED (+3.3 to +5.1).
+
+**Notes for a fair comparison:**
+- MLSimp's own benchmark appears to use equal-length trajectories (they are stacked into one fixed-width array). There, size-proportional and uniform allocation coincide, so the effect this project exploits does not appear in MLSimp's setup.
+- MLSimp's query bonus is built from the same range queries it is evaluated on. In this project's comparison it must use the training workload.
 
 **What this means:**
 - **The two methods are different contributions.** MLSimp learns point importance without queries. The learned allocator learns budget allocation from query accuracy, which section 4 shows is worth +3 to +5 points on the combined score.
