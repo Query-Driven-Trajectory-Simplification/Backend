@@ -10,10 +10,7 @@ namespace query {
 
 struct JoinConfig {
     std::size_t query_count = 10; // 0 = use every trajectory in the query pool
-    double eps_m = 0.0;           // join threshold in metres, 0 = derive it from the data
-    // With eps_m = 0, eps is the median over the queries of the Fréchet distance to their
-    // eps_neighbor-th nearest database trajectory, so a typical query has that many matches
-    std::size_t eps_neighbor = 10;
+    double eps_m = 500.0;         // join threshold in metres, must be positive
 };
 
 struct JoinQuery {

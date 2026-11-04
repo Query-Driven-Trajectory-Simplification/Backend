@@ -39,11 +39,10 @@ TEST(Config, MissingKeysKeepDefaults) {
 TEST(Config, ReadsJoinKeys) {
     const auto config = pipeline::load_config(write_config("join.json", R"({
         "data_path": "data.parquet",
-        "join": {"query_count": 0, "eps_m": 250, "eps_neighbor": 3}
+        "join": {"query_count": 0, "eps_m": 250}
     })"));
     EXPECT_EQ(config.join.query_count, 0);
     EXPECT_DOUBLE_EQ(config.join.eps_m, 250);
-    EXPECT_EQ(config.join.eps_neighbor, 3);
 }
 
 TEST(Config, ReadsTopLevelAndNestedKeys) {

@@ -85,10 +85,9 @@ void parse_where_at_scoring_config(Config &config, const json &scoring) {
 }
 
 void parse_join_config(Config &config, const json &join) {
-    validate_keys(join, {"query_count", "eps_m", "eps_neighbor"}, "join");
+    validate_keys(join, {"query_count", "eps_m"}, "join");
     config.join.query_count = join.value("query_count", config.join.query_count);
     config.join.eps_m = join.value("eps_m", config.join.eps_m);
-    config.join.eps_neighbor = join.value("eps_neighbor", config.join.eps_neighbor);
 }
 
 Config parse_config(const json &data) {

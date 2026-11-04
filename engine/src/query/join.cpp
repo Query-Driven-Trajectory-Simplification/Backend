@@ -1,7 +1,6 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/core/parallel.hpp"
 #include "backend/engine/query/frechet_helper.hpp"
-#include "backend/engine/query/knn.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -25,12 +24,6 @@ std::vector<std::size_t> endpoint_candidates(const core::TrajectoryDb &trajector
     return candidates;
 }
 
-double median(std::vector<double> values) {
-    const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
-    std::ranges::nth_element(values, middle);
-    return *middle;
-}
-
 } // namespace
 
 std::vector<std::size_t> join(const core::TrajectoryDb &trajectories,
@@ -46,10 +39,8 @@ std::vector<std::size_t> join(const core::TrajectoryDb &trajectories,
 JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
                                    const core::TrajectoryDb &query_pool, const JoinConfig &config,
                                    std::uint64_t seed) {
-    if (!std::isfinite(config.eps_m) || config.eps_m < 0.0)
-        throw std::invalid_argument("join: eps_m must be finite and non-negative");
-    if (config.eps_m == 0.0 && config.eps_neighbor == 0)
-        throw std::invalid_argument("join: eps_neighbor must be positive when eps_m is 0");
+    if (!std::isfinite(config.eps_m) || config.eps_m <= 0.0)
+        throw std::invalid_argument("join: eps_m must be finite and positive");
 
     std::vector<std::size_t> picked(query_pool.size());
     std::iota(picked.begin(), picked.end(), 0);
@@ -63,17 +54,6 @@ JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
     const std::size_t n = results.queries.size();
     if (n == 0 || original.size() == 0)
         return results;
-
-    if (results.eps_m == 0.0) {
-        const std::size_t rank = std::min(config.eps_neighbor, original.size());
-        std::vector<double> distances(n);
-        core::parallel_for(n, [&](std::size_t i) {
-            const auto query = results.queries.trajectory(i);
-            const auto neighbors = knn(original, query, rank);
-            distances[i] = frechet_distance(query, original.trajectory(neighbors.back()));
-        });
-        results.eps_m = median(std::move(distances));
-    }
 
     results.entries.resize(n);
     core::parallel_for(n, [&](std::size_t i) {

@@ -115,24 +115,21 @@ TEST(Join, MatchesBruteForce) {
     }
 }
 
-TEST(Join, WorkloadDerivesEpsFromNeighbourDistance) {
+TEST(Join, WorkloadStoresTheJoinOnTheOriginalData) {
     std::mt19937_64 rng(13);
     const auto db = make_db(random_tracks(rng, 150));
     const auto pool = make_db(random_tracks(rng, 30));
     const auto workload =
-        query::generate_join_queries(db, pool, {.query_count = 0, .eps_neighbor = 5});
+        query::generate_join_queries(db, pool, {.query_count = 0, .eps_m = 300.0});
     ASSERT_EQ(workload.entries.size(), pool.size());
-    EXPECT_GT(workload.eps_m, 0.0);
-
-    // eps is the median distance to the 5th neighbour, so half the queries have at least 5 matches
-    std::size_t with_five = 0;
+    std::size_t pairs = 0;
     for (const auto &entry : workload.entries) {
         const auto query = workload.queries.trajectory(entry.query_index);
         EXPECT_EQ(entry.reference, query::join(db, query, workload.eps_m));
         EXPECT_TRUE(std::ranges::includes(entry.candidates, entry.reference));
-        with_five += entry.reference.size() >= 5;
+        pairs += entry.reference.size();
     }
-    EXPECT_GE(with_five, pool.size() / 2);
+    EXPECT_GT(pairs, 0u);
 }
 
 TEST(Join, FixedEpsIsUsedAsGiven) {
@@ -148,8 +145,7 @@ TEST(Join, FixedEpsIsUsedAsGiven) {
 TEST(Join, RejectsInvalidConfig) {
     const auto db = make_db({{{39.9, 116.3}, {39.91, 116.3}}});
     EXPECT_THROW(query::generate_join_queries(db, db, {.eps_m = -1.0}), std::invalid_argument);
-    EXPECT_THROW(query::generate_join_queries(db, db, {.eps_m = 0.0, .eps_neighbor = 0}),
-                 std::invalid_argument);
+    EXPECT_THROW(query::generate_join_queries(db, db, {.eps_m = 0.0}), std::invalid_argument);
 }
 
 TEST(JoinEvaluator, UnsimplifiedDatabaseScoresPerfectly) {

@@ -11,7 +11,7 @@
     "algorithms": ["RDP", "SED"],
     "knn": {
         "k": 10,
-        "query_count": 0
+        "query_count": 100
     },
     "range": {
         "query_count": 500,
@@ -32,6 +32,6 @@
     },
     "join": {
         "query_count": 1000,
-        "eps_neighbor": 10
+        "eps_m": 500.0
     }
 }
