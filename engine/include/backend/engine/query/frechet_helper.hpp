@@ -20,18 +20,14 @@ double get_squared_frechet_distance(const core::TrajectoryView &query,
                                     const core::TrajectoryView &reference, double max_squared_dist,
                                     std::vector<double> &prev, std::vector<double> &curr);
 
-
 double squared_endpoint_lower_bound(const core::TrajectoryView &query,
                                     const core::TrajectoryView &reference);
-
 
 double frechet_distance(const core::TrajectoryView &a, const core::TrajectoryView &b);
 
 // Whether the discrete Fréchet distance is at most max_dist, up to a relative 1e-12 for
 // rounding. Stops as soon as it is not.
-bool frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b,
-                    double max_dist);
-
+bool frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b, double max_dist);
 
 double endpoint_lower_bound(const core::TrajectoryView &a, const core::TrajectoryView &b);
 

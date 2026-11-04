@@ -18,7 +18,6 @@ struct JoinScores {
     std::size_t query_count = 0;
 };
 
-
 JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload);
 
 } // namespace evaluator

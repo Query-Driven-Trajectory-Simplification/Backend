@@ -14,11 +14,10 @@ struct JoinConfig {
 };
 
 struct JoinQuery {
-    std::size_t query_index;            
-    std::vector<std::size_t> reference;  
-    std::vector<std::size_t> candidates; 
+    std::size_t query_index;
+    std::vector<std::size_t> reference;
+    std::vector<std::size_t> candidates;
 };
-
 
 struct JoinWorkload {
     core::TrajectoryDb queries;
@@ -31,7 +30,6 @@ struct JoinWorkload {
 JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
                                    const core::TrajectoryDb &query_pool,
                                    const JoinConfig &config = {}, std::uint64_t seed = 42);
-
 
 std::vector<std::size_t> join(const core::TrajectoryDb &trajectories,
                               const core::TrajectoryView &query, double eps);

@@ -11,7 +11,7 @@
     "algorithms": ["RDP", "SED"],
     "knn": {
         "k": 10,
-        "query_count": 100
+        "query_count": 0
     },
     "range": {
         "query_count": 500,

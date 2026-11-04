@@ -96,13 +96,12 @@ void run(const Config &config) {
             std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm) << ": ";
             print_size("compressed", compressed);
 
-            const evaluator::Evaluator evaluator(
-                database, compressed,
-                {.knn = &knn_workload,
-                 .where_at = where_at.queries,
-                 .range = range.queries,
-                 .join = &join},
-                config.where_at_scoring);
+            const evaluator::Evaluator evaluator(database, compressed,
+                                                 {.knn = &knn_workload,
+                                                  .where_at = where_at.queries,
+                                                  .range = range.queries,
+                                                  .join = &join},
+                                                 config.where_at_scoring);
             const auto evaluation = evaluator.evaluate();
             print_scores(evaluation.scores);
 
