@@ -206,6 +206,28 @@ struct neighbor {
     }
 };
 
+double frechet_distance(const core::TrajectoryView &a, const core::TrajectoryView &b) {
+    std::vector<double> prev;
+    std::vector<double> curr;
+    return std::sqrt(get_squared_frechet_distance(a, b, std::numeric_limits<double>::infinity(),
+                                                  prev, curr));
+}
+
+bool frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b,
+                    double max_dist) {
+    // Values below the cutoff are exact, so anything at most max_dist^2 is found. The relative
+    // slack absorbs rounding when max_dist is itself a distance, as sqrt(d)^2 can fall below d.
+    const double cutoff = std::nextafter(max_dist * max_dist * (1.0 + 1e-12),
+                                         std::numeric_limits<double>::infinity());
+    std::vector<double> prev;
+    std::vector<double> curr;
+    return get_squared_frechet_distance(a, b, cutoff, prev, curr) < cutoff;
+}
+
+double endpoint_lower_bound(const core::TrajectoryView &a, const core::TrajectoryView &b) {
+    return std::sqrt(squared_endpoint_lower_bound(a, b));
+}
+
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
                              const core::TrajectoryView &query_trajectory, std::size_t k) {
     if (k == 0) {

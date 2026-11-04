@@ -32,6 +32,18 @@ TEST(Config, MissingKeysKeepDefaults) {
     EXPECT_EQ(config.range.query_count, defaults.range.query_count);
     EXPECT_EQ(config.where_at.probes_per_trajectory, defaults.where_at.probes_per_trajectory);
     EXPECT_DOUBLE_EQ(config.where_at_scoring.hit_radius_m, defaults.where_at_scoring.hit_radius_m);
+    EXPECT_EQ(config.join.query_count, defaults.join.query_count);
+    EXPECT_DOUBLE_EQ(config.join.eps_m, defaults.join.eps_m);
+}
+
+TEST(Config, ReadsJoinKeys) {
+    const auto config = pipeline::load_config(write_config("join.json", R"({
+        "data_path": "data.parquet",
+        "join": {"query_count": 0, "eps_m": 250, "eps_neighbor": 3}
+    })"));
+    EXPECT_EQ(config.join.query_count, 0);
+    EXPECT_DOUBLE_EQ(config.join.eps_m, 250);
+    EXPECT_EQ(config.join.eps_neighbor, 3);
 }
 
 TEST(Config, ReadsTopLevelAndNestedKeys) {
@@ -111,7 +123,7 @@ TEST(Config, RejectsUnknownKeysAndNestedSeeds) {
     EXPECT_THROW(
         pipeline::load_config(write_config("unknown_key.json", R"({"data_path": "d", "sead": 7})")),
         std::invalid_argument);
-    for (const auto &section : {"split", "knn", "range", "where_at"}) {
+    for (const auto &section : {"split", "knn", "range", "where_at", "join"}) {
         const auto contents =
             std::string(R"({"data_path": "d", ")") + section + R"(": {"seed": 7}})";
         EXPECT_THROW(pipeline::load_config(write_config("nested_seed.json", contents)),

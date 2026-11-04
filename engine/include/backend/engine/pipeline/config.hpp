@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend/engine/evaluator/where_at.hpp"
+#include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 #include "backend/engine/query/where_at_query.hpp"
@@ -26,6 +27,7 @@ struct Config {
     query::RangeConfig range;
     query::WhereAtConfig where_at;
     evaluator::WhereAtScoringConfig where_at_scoring;
+    query::JoinConfig join;
 };
 
 // Reads a JSON config. Only data_path is required, a missing key keeps its default.

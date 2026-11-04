@@ -29,5 +29,9 @@
         "hit_radius_m": 100.0,
         "min_tolerance_m": 25.0,
         "max_tolerance_m": 500.0
+    },
+    "join": {
+        "query_count": 1000,
+        "eps_neighbor": 10
     }
 }

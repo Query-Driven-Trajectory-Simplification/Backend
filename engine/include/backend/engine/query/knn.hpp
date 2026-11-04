@@ -37,4 +37,16 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectories,
                              const core::TrajectoryView &query, std::size_t k);
 
+// Discrete Fréchet distance in metres, infinity if either trajectory is empty
+double frechet_distance(const core::TrajectoryView &a, const core::TrajectoryView &b);
+
+// Whether the discrete Fréchet distance is at most max_dist, up to a relative 1e-12 for
+// rounding. Stops as soon as it is not.
+bool frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b,
+                    double max_dist);
+
+// Lower bound on the discrete Fréchet distance from the endpoints, which every simplification
+// keeps, so it is the same for a trajectory and any of its simplifications
+double endpoint_lower_bound(const core::TrajectoryView &a, const core::TrajectoryView &b);
+
 } // namespace query

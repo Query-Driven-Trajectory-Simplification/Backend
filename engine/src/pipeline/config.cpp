@@ -84,10 +84,17 @@ void parse_where_at_scoring_config(Config &config, const json &scoring) {
         scoring.value("max_tolerance_m", config.where_at_scoring.max_tolerance_m);
 }
 
+void parse_join_config(Config &config, const json &join) {
+    validate_keys(join, {"query_count", "eps_m", "eps_neighbor"}, "join");
+    config.join.query_count = join.value("query_count", config.join.query_count);
+    config.join.eps_m = join.value("eps_m", config.join.eps_m);
+    config.join.eps_neighbor = join.value("eps_neighbor", config.join.eps_neighbor);
+}
+
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
-                   "algorithms", "split", "knn", "range", "where_at", "where_at_scoring"},
+                   "algorithms", "split", "knn", "range", "where_at", "where_at_scoring", "join"},
                   "root");
     Config config;
 
@@ -117,6 +124,7 @@ Config parse_config(const json &data) {
     parse_range_config(config, data.value("range", json::object()));
     parse_where_at_config(config, data.value("where_at", json::object()));
     parse_where_at_scoring_config(config, data.value("where_at_scoring", json::object()));
+    parse_join_config(config, data.value("join", json::object()));
 
     return config;
 }

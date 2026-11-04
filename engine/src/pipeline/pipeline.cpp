@@ -5,6 +5,7 @@
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/io/workload_export.hpp"
+#include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 #include "backend/engine/query/where_at_query.hpp"
@@ -54,6 +55,8 @@ void print_scores(const evaluator::Scoretable &scores) {
     std::cout << "  where-at: within radius=" << scores.where_at.within_radius
               << ", average hit=" << scores.where_at.average_hit << '\n';
     std::cout << "  range recall: " << scores.range_recall << '\n';
+    std::cout << "  join F1: " << scores.join.f1 << ", precision: " << scores.join.precision
+              << ", recall: " << scores.join.recall << '\n';
 }
 
 } // namespace
@@ -71,6 +74,12 @@ void run(const Config &config) {
               << where_at.skipped_trajectories << " trips without eligible time\n";
     const auto range = query::generate_range_queries(database, config.range, config.seed);
     std::cout << "range: " << range.queries.size() << " queries\n";
+    const auto join = query::generate_join_queries(database, queries, config.join, config.seed);
+    std::size_t join_pairs = 0;
+    for (const auto &entry : join.entries)
+        join_pairs += entry.reference.size();
+    std::cout << "join: " << join.entries.size() << " queries, eps=" << join.eps_m << " m, "
+              << join_pairs << " matching pairs\n";
 
     if (config.export_results) {
         io::export_workloads(config.export_dir, database, range.queries, knn_workload);
@@ -89,7 +98,10 @@ void run(const Config &config) {
 
             const evaluator::Evaluator evaluator(
                 database, compressed,
-                {.knn = &knn_workload, .where_at = where_at.queries, .range = range.queries},
+                {.knn = &knn_workload,
+                 .where_at = where_at.queries,
+                 .range = range.queries,
+                 .join = &join},
                 config.where_at_scoring);
             const auto evaluation = evaluator.evaluate();
             print_scores(evaluation.scores);

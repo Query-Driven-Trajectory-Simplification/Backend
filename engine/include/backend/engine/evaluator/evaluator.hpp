@@ -1,8 +1,10 @@
 #pragma once
 
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/evaluator/join.hpp"
 #include "backend/engine/evaluator/knn.hpp"
 #include "backend/engine/evaluator/where_at.hpp"
+#include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 
@@ -15,6 +17,7 @@ struct Workloads {
     const query::KnnWorkload *knn = nullptr; // a pointer, as it also carries k and the query db
     std::span<const query::WhereAtQuery> where_at = {};
     std::span<const query::RangeQuery> range = {};
+    const query::JoinWorkload *join = nullptr; // a pointer, as it also carries eps and the queries
 };
 
 // Kendall's tau is in [-1, 1] and the others in [0, 1], or NaN if it could not be computed
@@ -22,6 +25,7 @@ struct Scoretable {
     KnnScores knn;
     double range_recall;
     WhereAtScores where_at;
+    JoinScores join;
 };
 
 struct EvaluationResult {
@@ -41,6 +45,7 @@ class Evaluator {
     KnnScores get_knn_scores() const;
     double get_range_recall() const;
     WhereAtScores get_where_at_scores() const;
+    JoinScores get_join_scores() const;
 
   private:
     const core::TrajectoryDb &m_simplified;
