@@ -1,6 +1,8 @@
 # Learned Budget Allocator for Query-Driven Trajectory Simplification
 
-The ML method of the project: a small model that decides how many points each trajectory keeps, trained directly on query accuracy for kNN, range and where-at queries. It needs no labels.
+The ML method of the project: a small model that decides how many points each trajectory keeps. It is trained directly on query accuracy for kNN, range and where-at queries, and needs no labels.
+
+Earlier experiments that led to this design are in [experiment-history.md](experiment-history.md).
 
 ---
 
@@ -12,7 +14,7 @@ Minimize query error on the compressed database for all three query types at bud
 reward = mean(knn.recall_at_k, range_recall, where_at.average_hit)
 ```
 
-## 2. Structure
+## 2. Model
 
 ```
 trajectories ─► 3 features ─► linear score ─► weight ─► points per trajectory ─► SED ─► compressed DB
@@ -28,7 +30,7 @@ trajectories ─► 3 features ─► linear score ─► weight ─► points p
 
 Each feature is log-transformed and z-scored over the dataset.
 
-**2. Model.** Linear, with three learned parameters θ:
+**2. Score.** Linear, with three learned parameters θ:
 
 ```
 score_i  = θ₁·size_i + θ₂·density_i + θ₃·curve_i
@@ -47,7 +49,7 @@ There are no labels. The model is trained on the Evaluator's score:
 
 ```
 θ = start at size^0.25
-repeat ~150 times:
+repeat 150 times:
     θ' = θ + σ · noise
     allocate with θ', simplify with SED, run the Evaluator on the training workloads
     if reward improved: keep θ', grow σ;  else: shrink σ
@@ -56,55 +58,41 @@ repeat ~150 times:
 - **Optimizer:** a (1+1) evolution strategy. No gradients are needed.
 - **Parameters:** one θ per budget share, so 3 × 4 numbers in total.
 - **Workloads:**
-  - Training: the kNN train half of the held-out pool, plus range queries and where-at probes generated with training seeds.
-  - Test: the kNN test half, plus range and where-at generated with other seeds. Test workloads are used only for the final comparison.
-- **Ground truth:** the only ground truth is the reference answer of each query on the original data, which the generators already produce.
+  - Training: the kNN train half of the held-out pool, plus range queries and where-at probes generated with a training seed.
+  - Test: the kNN test half, plus range and where-at generated with another seed. Test workloads are used only for the final scores.
+- **Ground truth:** the only ground truth is the reference answer of each query on the original data, which the query generators already produce.
+- **Cost:** about 8 minutes per budget share on 8 CPU cores at full GeoLife scale.
 
-## 4. Inference
-
+**Inference:**
 1. Compute the three features (one pass over the data).
 2. Apply the stored θ for the chosen budget share.
 3. Allocate the budget and run SED.
 
 No queries are needed and the cost is linear in data size, so the method works for new uploads in the service.
 
-## 5. Why this design
-
-Experiments on GeoLife (29,064 trajectories, 16.1M points; kNN scored on 2,565 held-out queries):
-
-- **Allocation matters.** A flatter allocation than size-proportional improves kNN recall@k by +4 to +7 points and where-at by +3 to +8, and costs about 1–2 points of range recall.
-- **Labels from specific queries overfit.** An oracle fitted to training queries gained up to +15 points on them, but almost nothing on test queries.
-- **Three features are enough.** Nine features or an MLP added nothing over this linear model.
-- **Training has to use all three query types.** A model trained on kNN alone improved kNN but lowered where-at and the mean score.
-
-## 6. Results
+## 4. Results
 
 **Setup:**
 - GeoLife, random split (seed 42): 29,064 database trajectories, 16.1M points. SED selector.
 - Training workloads: 2,564 kNN queries (k = 10), 2,000 range queries, 3.72M where-at probes.
 - Test workloads: 2,565 different kNN queries, plus range and where-at generated with a different seed.
-- 150 training evaluations per budget share, about 8 minutes each.
 
 All scores below are on the **test** workloads.
 
 | Budget | Allocation | kNN R@k | Range | Where-at | **Mean** |
 |---|---|---|---|---|---|
-| 0.25% | Size-proportional | 0.479 | 0.745 | 0.589 | 0.604 |
-| | size^0.25 | 0.537 | 0.729 | 0.654 | 0.640 |
-| | Trained on kNN only | 0.537 | 0.729 | 0.654 | 0.640 |
-| | **Trained on all three** | 0.536 | 0.738 | 0.676 | **0.650** |
+| 0.25% | Size-proportional (current) | 0.479 | 0.745 | 0.589 | 0.604 |
+| | size^0.25 (hand rule) | 0.537 | 0.729 | 0.654 | 0.640 |
+| | **Learned allocator** | 0.536 | 0.738 | 0.676 | **0.650** |
 | 0.5% | Size-proportional | 0.552 | 0.813 | 0.690 | 0.685 |
 | | size^0.25 | 0.619 | 0.793 | 0.770 | 0.727 |
-| | Trained on kNN only | 0.613 | 0.771 | 0.744 | 0.709 |
-| | **Trained on all three** | 0.620 | 0.806 | 0.782 | **0.736** |
+| | **Learned allocator** | 0.620 | 0.806 | 0.782 | **0.736** |
 | 1% | Size-proportional | 0.636 | 0.881 | 0.815 | 0.778 |
 | | size^0.25 | 0.702 | 0.871 | 0.881 | 0.818 |
-| | Trained on kNN only | 0.714 | 0.871 | 0.865 | 0.817 |
-| | **Trained on all three** | 0.709 | 0.882 | 0.886 | **0.826** |
+| | **Learned allocator** | 0.709 | 0.882 | 0.886 | **0.826** |
 | 2% | Size-proportional | 0.721 | 0.937 | 0.921 | 0.860 |
 | | size^0.25 | 0.777 | 0.929 | 0.954 | 0.887 |
-| | Trained on kNN only | 0.791 | 0.919 | 0.911 | 0.874 |
-| | **Trained on all three** | 0.785 | 0.938 | 0.955 | **0.893** |
+| | **Learned allocator** | 0.785 | 0.938 | 0.955 | **0.893** |
 
 **Findings:**
 - **Best mean score at every budget.**
@@ -115,7 +103,6 @@ All scores below are on the **test** workloads.
   - range is back to size-proportional level at 1–2%, and within 0.7 points at 0.25–0.5%;
   - kNN is +5.7 to +7.0 over size-proportional;
   - where-at is +3.4 to +9.2 over size-proportional.
-- **The kNN-only model is worse on the mean than the hand rule.** Training on all three query types is what makes the model useful.
 - **The learned weights are stable across budgets:**
 
   | Budget | size | density | curve |
@@ -132,7 +119,29 @@ All scores below are on the **test** workloads.
 - No standard errors in this run. Earlier kNN runs had a standard error of about 0.3 points on similar differences.
 - Range and where-at differences below 1 point should be confirmed with a second seed.
 
-## 7. Comparison
+## 5. How it differs from MLSimp
+
+MLSimp (Song et al., PVLDB 2025) is the learned baseline. The comparison below is based on its code in `baselines/mlsimp/`.
+
+| | **Learned allocator** | **MLSimp** |
+|---|---|---|
+| Decides | **How many** points each trajectory keeps (allocation across the database) | **Which** points to keep inside a trajectory (point importance) |
+| Trained on | The **query score** directly (kNN + range + where-at from the Evaluator) | **Never sees queries**: self-supervised contrastive losses plus mutual learning with a diffusion model (`Model/GraphSimp.py`) |
+| Query types | Targets the project's three, and can weight them by query requirements | Query-agnostic; queries are only used to evaluate it |
+| Context | Trajectory features include density, i.e. each trajectory's position relative to the rest of the database | Point graph and embeddings, centred on each trajectory |
+| Model | 3 parameters, log-linear | GAT plus T-BERT plus a diffusion model |
+| Training | Minutes on CPU, black-box optimization | GPU, gradient descent |
+| Labels | None (reward from queries) | None (self-supervised) |
+
+In the released code, MLSimp keeps a fixed share of each trajectory's points (`rate × size` in `simp_trajs`), so its allocation is effectively proportional. That is the part the learned allocator replaces.
+
+**What this means:**
+- **The two methods are different contributions.** MLSimp learns point importance without queries. The learned allocator learns budget allocation from query accuracy, which section 4 shows is worth +3 to +5 points on the combined score.
+- **They can be combined:** the learned allocator decides how many points, and MLSimp or SED decides which ones. Comparing "learned allocator + MLSimp" with "MLSimp alone" would test whether they are complementary.
+- **The weak spot is simplicity.** The answer to "is 3 parameters real ML?" is in the results: more capacity (9 features, an MLP) did not help (see the history file), and the small model generalizes.
+- **Still open:** the head-to-head on the same queries. MLSimp has not been run through this engine yet, so the methods can be called different, but not yet ranked.
+
+## 6. Comparison plan
 
 Every method uses the same database split and the same test workloads (fixed seeds), and is scored with the engine's `Evaluator`. Results are reported per metric and as the mean, at each budget share.
 
@@ -140,15 +149,16 @@ Every method uses the same database split and the same test workloads (fixed see
 |---|---|
 | RDP, size-proportional | Current pipeline |
 | SED, size-proportional | Current pipeline |
-| SED, size^0.25 | Hand rule; best non-learned method so far |
-| MLSimp | Learned baseline (self-supervised point importance) |
+| SED, size^0.25 | Hand rule; best non-learned method |
+| MLSimp (its kept points exported and scored by this engine) | Learned baseline |
 | **Learned allocator + SED** | This method |
+| Learned allocator + MLSimp *(optional)* | Combination |
 
-## 8. Implementation
+## 7. Implementation
 
 | Part | Location |
 |---|---|
-| Experiments so far | `engine/apps/knn_alloc_oracle.cpp`. The results in section 6 come from `./build-release/engine/knn_alloc_oracle engine/configs/geolife.json --train 0 --test 0 --combined 1 --evaluations 150` (about 35 minutes) |
+| Experiments | `engine/apps/knn_alloc_oracle.cpp`. Section 4 comes from `./build-release/engine/knn_alloc_oracle engine/configs/geolife.json --train 0 --test 0 --combined 1 --evaluations 150` (about 35 minutes) |
 | Features and allocator | new `engine/src/allocation/learned.cpp`, `AllocatorType::Learned` |
 | Training app (writes θ to JSON) | new `engine/apps/train_allocator.cpp` |
 | θ per budget share in the config | `pipeline/config.cpp` (`load_config` rejects unknown keys, so extend the key list) |
