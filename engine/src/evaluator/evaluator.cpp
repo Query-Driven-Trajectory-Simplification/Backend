@@ -25,7 +25,8 @@ EvaluationResult Evaluator::evaluate() const {
     auto range = evaluate_range(m_simplified, m_workloads.range);
     return {.scores = {.knn = knn.scores,
                        .range_recall = range.recall,
-                       .where_at = get_where_at_scores()},
+                       .where_at = get_where_at_scores(),
+                       .join = get_join_scores()},
             .knn = std::move(knn.answers),
             .range = std::move(range.answers)};
 }
@@ -40,6 +41,10 @@ double Evaluator::get_range_recall() const {
 
 WhereAtScores Evaluator::get_where_at_scores() const {
     return evaluate_where_at(m_simplified, m_workloads.where_at, m_where_at_config);
+}
+
+JoinScores Evaluator::get_join_scores() const {
+    return m_workloads.join ? evaluate_join(m_simplified, *m_workloads.join) : JoinScores{};
 }
 
 } // namespace evaluator
