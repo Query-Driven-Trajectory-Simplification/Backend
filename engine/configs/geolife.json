@@ -31,7 +31,7 @@
         "max_tolerance_m": 500.0
     },
     "join": {
-        "query_count": 1000,
+        "query_count": 0,
         "eps_m": 500.0
     }
 }
