@@ -10,6 +10,8 @@ All experimental findings of the project up to 2026-11-04, with what each one me
 - **A small allocator trained on query accuracy** (3 features, no labels) gets the best mean score at every budget. It improves every selector tested (RDP, SED, MLSimp), and it beats the best hand-tuned rule by +0.6 to +1.0 points.
 - **Most of the gain comes from allocation itself, not from the learning.** A simple rule (size^0.25), or fixed per-trajectory budgets, captures most of it.
 - **The effect depends on the data.** On MLSimp's benchmark, where every trajectory has exactly 1,000 points, the allocator adds nothing over SED.
+- **It holds on a second real dataset.** On Porto taxi trips (less length variation than GeoLife), allocation gains +2 to +4 points at the same points per trajectory, about 70–85% of the GeoLife effect. The learned part again adds little over size^0.25 (−0.0 to +0.8).
+- **The gain grows with length variation.** On ship trips (Gulf of Mexico AIS, length CV 1.82), the allocator gains +7 to +12 points at the same points per trajectory, against +3 to +5 on GeoLife (CV 1.12) and +2 to +4 on Porto (CV 0.74). Here the learned model also beats the fixed size^0.25 rule by up to +3.6, because the best size exponent changes with the budget.
 - **Learned point selection (a ranker) failed** when it scored each point once and kept the top n. A label oracle shows there is headroom at small budgets, but only for step-by-step selection.
 - **On our metrics, MLSimp is 7–11 points below plain SED.** On MLSimp's own metrics it wins only when it is given the test queries. Without them, SED is better at almost every budget.
 - **Fixed per-trajectory budgets improve MLSimp on both our metrics and its own,** by up to +3.7 points.
@@ -211,6 +213,112 @@ Data: MLSimp's GeoLife test set (2,000 trajectories of exactly 1,000 points each
 
 Script: `mlsimp_metrics.py` (session scratchpad; it should be moved into the repo), run from the MLSimp directory after the `--mlsimp ... --export DIR` export. About 15 minutes.
 
+## 11. Second dataset: Porto taxi trips
+
+**Setup:**
+- Porto taxi trajectories (ECML/PKDD 2015, UCI mirror). Random sample of 40,000 trips with `MISSING_DATA = False`, at least 10 points, inside the Porto area, and no step above 50 m/s.
+- After the split (seed 42): 34,000 database trajectories, 1.69M points. kNN pool halves of 3,000 train and 3,000 test queries. Range and where-at as in the setup above.
+- Porto has no per-point timestamps. Times are the trip start plus 15 s per point.
+- The engine's projection is fixed at GeoLife's origin, so coordinates are moved there, with the longitude offset scaled by cos(41.15°)/cos(39.95°) so that metric distances are kept.
+- 100 ES evaluations per budget (150 on GeoLife). SED selector.
+
+**Length variation:**
+
+| Dataset | Trajectories | Mean length | Median | p5–p95 | Max | CV |
+|---|---|---|---|---|---|---|
+| GeoLife | 34,193 | 552 | 352 | 115–1,654 | 12,488 | 1.12 |
+| Porto sample | 40,000 | 50 | 43 | 17–102 | 1,099 | 0.74 |
+
+Porto trips are about 10× shorter, so at GeoLife's budget shares almost the whole budget goes to endpoints. The run therefore adds larger shares that match GeoLife's points per trajectory.
+
+**Test scores (mean of kNN, range and where-at):**
+
+| Budget | Kept per trajectory | Size-proportional | size^0.25 | **Learned allocator** | Δ vs size-prop. | Δ vs size^0.25 |
+|---|---|---|---|---|---|---|
+| 0.25% | 2.1 | 0.367 | 0.373 | 0.373 | +0.6 | −0.0 |
+| 1% | 2.5 | 0.411 | 0.423 | 0.427 | +1.6 | +0.4 |
+| 3% | 3.4 | 0.520 | 0.549 | 0.553 | +3.3 | +0.4 |
+| 6% | 4.9 | 0.643 | 0.678 | 0.686 | +4.3 | +0.8 |
+| 12% | 7.7 | 0.788 | 0.821 | 0.823 | +3.5 | +0.2 |
+| 24% | 13.5 | 0.899 | 0.919 | 0.921 | +2.3 | +0.2 |
+
+**Compared with GeoLife at the same points per trajectory** (learned allocator vs size-proportional):
+
+| Kept per trajectory | GeoLife | Porto |
+|---|---|---|
+| about 3.4 | +4.6 (0.25%) | +3.3 (3%) |
+| about 4.9 | +5.1 (0.5%) | +4.3 (6%) |
+| about 7.6 | +4.8 (1%) | +3.5 (12%) |
+| about 13 | +3.3 (2%) | +2.3 (24%) |
+
+**Findings:**
+1. **Allocation matters on a second real dataset.** The gain is +2.3 to +4.3 points at 3–24%, about 70–85% of the GeoLife effect at the same points per trajectory. The smaller effect fits Porto's lower length variation, which supports the claim that the effect follows length variation.
+2. **At GeoLife's budget shares (0.25–1%), there is little to allocate.** At 0.25%, only about 4k of the 72k points are not endpoints. Budgets should be compared by points per trajectory, not only by share.
+3. **The learned part adds −0.0 to +0.8 over size^0.25.** This is consistent with GeoLife (+0.6 to +1.0), and probably within noise at several budgets.
+4. **The learned weights agree with GeoLife at 3% and above:**
+   - size +0.11 to +0.26;
+   - curve −0.16 to −0.41;
+   - density about 0, which fits a dataset where all trips are in one dense city.
+
+   At 0.25–1% the weights are unstable (curve +0.85, then −1.29), and at 0.25% the train gain does not carry over to test. With almost nothing to allocate, the ES fits noise.
+5. **The GeoLife-trained kNN-only θ** (only available at 0.25% and 1%) is no better than size^0.25 on Porto. This is another sign that θ must be retrained for each dataset (section 10).
+
+**Caveats:** one seed, a 40k-trip sample, 100 evaluations, and no standard errors.
+
+Config: `engine/configs/geolife.json` with `data_path` pointing to the Porto parquet, `export_results` false, and `budget_shares` [0.0025, 0.01, 0.03, 0.06, 0.12, 0.24]. Run with `--train 0 --test 0 --combined 1 --evaluations 100` (about 15 minutes on 4 cores). Converter: `porto_to_parquet.py <train.csv> <out.parquet> 40000` (session scratchpad; it should be moved into the repo).
+
+## 12. Third dataset: ship trips with very varying lengths (AIS)
+
+**Setup:**
+- NOAA Marine Cadastre AIS, 15–16 January 2023, Texas–Louisiana Gulf coast (lat 27.5–30.5, lon −95.5 to −89.0). Median sampling 70 s.
+- A trip is one vessel's moving segment: split at gaps over 10 minutes and wherever SOG < 0.5 kn. At least 10 points and 500 m extent; steps above 30 m/s dropped.
+- 13,167 trips. After the split (seed 42): 11,192 database trajectories, 1.0M points. kNN pool halves of 987 train and 988 test queries.
+- Coordinates are moved to the engine's origin as in section 11. `where_at.max_gap_seconds` is 180 (60 elsewhere) to fit the sampling rate.
+- 100 ES evaluations per budget. SED selector.
+
+**Length variation:**
+
+| Dataset | Trajectories | Mean length | Median | p5–p95 | Max | CV |
+|---|---|---|---|---|---|---|
+| Porto sample | 40,000 | 50 | 43 | 17–102 | 1,099 | 0.74 |
+| GeoLife | 34,193 | 552 | 352 | 115–1,654 | 12,488 | 1.12 |
+| **Gulf AIS** | 13,167 | 89 | 27 | 10–414 | 2,062 | **1.82** |
+
+**Test scores (mean of kNN, range and where-at):**
+
+| Budget | Kept per trajectory | Size-proportional | size^0.25 | **Learned allocator** | Δ vs size-prop. | Δ vs size^0.25 |
+|---|---|---|---|---|---|---|
+| 0.25% | 2.2 | 0.427 | 0.434 | 0.446 | +1.9 | +1.2 |
+| 0.5% | 2.4 | 0.442 | 0.460 | 0.478 | +3.6 | +1.8 |
+| 1% | 2.9 | 0.471 | 0.494 | 0.528 | +5.7 | +3.3 |
+| 1.6% | 3.4 | 0.503 | 0.571 | 0.581 | +7.7 | +1.0 |
+| 2% | 3.7 | 0.523 | 0.600 | 0.610 | +8.7 | +0.9 |
+| 3.3% | 4.9 | 0.578 | 0.675 | 0.679 | +10.1 | +0.3 |
+| 6.4% | 7.6 | 0.673 | 0.772 | 0.791 | +11.9 | +2.0 |
+| 12.6% | 13.0 | 0.815 | 0.848 | 0.884 | +7.0 | +3.6 |
+
+**All three datasets at the same points per trajectory** (learned allocator vs size-proportional):
+
+| Kept per trajectory | Porto (CV 0.74) | GeoLife (CV 1.12) | Gulf AIS (CV 1.82) |
+|---|---|---|---|
+| about 3.4 | +3.3 | +4.6 | +7.7 |
+| about 4.9 | +4.3 | +5.1 | +10.1 |
+| about 7.6 | +3.5 | +4.8 | +11.9 |
+| about 13 | +2.3 | +3.3 | +7.0 |
+
+**Findings:**
+1. **The gain grows with length variation.** At every matched budget the order is Porto < GeoLife < AIS, the same order as their length CV. On AIS the gain over size-proportional is +7 to +12 points, about twice the GeoLife effect. This is the strongest evidence so far that the effect comes from length variation.
+2. **The learned model beats the fixed hand rule by more here:** +0.3 to +3.6 points, against +0.6 to +1.0 on GeoLife.
+3. **The reason is that the best size exponent depends on the budget.** The learned size weight rises from about 0 at 0.25–1% to +0.51 at 6.4% and +0.70 at 12.6%. A fixed size^0.25 is too flat at large budgets: at 12.6% it drops range recall from 0.76 to 0.60, and the learned model recovers most of that (0.73) while keeping kNN and where-at.
+4. **Density weight is positive at every budget** (+0.05 to +0.16). The curve weight is near 0 and unstable.
+5. **Range recall is low on this dataset** (0.21–0.76 at all budgets), probably because 2 km boxes in open water hold few trips. Range is the query type most hurt by flat allocation.
+
+**Caveats:**
+- One seed, one region, two days, 13k trips, 988 kNN test queries. No standard errors.
+- The gain over size^0.25 is partly because α = 0.25 was fixed on GeoLife. A size^α rule tuned per budget on AIS is the fair comparison, and would likely close part of the gap at 6.4–12.6%.
+
+Config: as in section 11, with `data_path` pointing to the AIS parquet, `max_gap_seconds` 180 and `budget_shares` [0.0025, 0.005, 0.01, 0.016, 0.02, 0.033, 0.064, 0.126]. Run with `--train 0 --test 0 --combined 1 --evaluations 100` (about 3 minutes on 4 cores). Converter: `ais_to_parquet.py <out.parquet> 40000 AIS_2023_01_15.csv AIS_2023_01_16.csv` (session scratchpad; it should be moved into the repo).
+
 ---
 
 ## What this means for the learned allocator as our contribution
@@ -219,6 +327,8 @@ Script: `mlsimp_metrics.py` (session scratchpad; it should be moved into the rep
 - A large, robust gain on realistic variable-length data: +3.3 to +5.1 over SED, with the same gain on training and test.
 - It improves every selector tested: RDP, SED and MLSimp.
 - MLSimp's implicit allocation is a measurable weakness that the allocator fixes.
+- The allocation effect reproduces on Porto: +2.3 to +4.3 at matched points per trajectory (section 11).
+- Across three datasets, the gain follows length variation: Porto < GeoLife < AIS, with +7 to +12 on AIS (section 12). On AIS the learned model also beats the fixed hand rule by up to +3.6, because the best size exponent changes with the budget.
 
 **What weakened it:**
 - On length-normalised data (MLSimp's benchmark) it adds nothing over SED.
@@ -235,7 +345,7 @@ Script: `mlsimp_metrics.py` (session scratchpad; it should be moved into the rep
 
 **How to strengthen it:**
 1. Argue that real data is not length-normalised, and that uploads to the service look like the engine's GeoLife split.
-2. Repeat the main result on a second real dataset with natural length variation (T-Drive or Porto).
+2. Repeat the main result on a second real dataset with natural length variation. First evidence on Porto is in section 11. It still needs seeds and standard errors.
 3. Present the learned model as the way to find the best rule automatically, for any dataset and any query weighting. A Pareto front across query weightings shows what a single hand rule cannot do.
 4. Retrain θ with MLSimp's metrics as the reward on MLSimp's benchmark. Uniform budgets are inside the search space, so it should at least match them. The external evidence that holds already is that **fixed per-trajectory budgets improve MLSimp under its own metrics** (section 10).
 
