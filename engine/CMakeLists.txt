@@ -44,6 +44,20 @@ add_executable(run
 
 target_link_libraries(run PRIVATE engine)
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/apps/conflict_pilot.cpp)
+    add_executable(conflict_pilot
+        apps/conflict_pilot.cpp
+    )
+
+    target_link_libraries(conflict_pilot PRIVATE engine magic_enum::magic_enum)
+endif()
+
+add_executable(knn_alloc_oracle
+    apps/knn_alloc_oracle.cpp
+)
+
+target_link_libraries(knn_alloc_oracle PRIVATE engine)
+
 add_executable(engine_tests
     tests/parquet_loader_test.cpp
     tests/projection_test.cpp

@@ -77,11 +77,62 @@ Experiments on GeoLife (29,064 trajectories, 16.1M points; kNN scored on 2,565 h
 - **Three features are enough.** Nine features or an MLP added nothing over this linear model.
 - **Training has to use all three query types.** A model trained on kNN alone improved kNN but lowered where-at and the mean score.
 
-**Status:**
-- The kNN-only version of this model was trained and tested.
-- The combined-reward version above is the next step.
+## 6. Results
 
-## 6. Comparison
+**Setup:**
+- GeoLife, random split (seed 42): 29,064 database trajectories, 16.1M points. SED selector.
+- Training workloads: 2,564 kNN queries (k = 10), 2,000 range queries, 3.72M where-at probes.
+- Test workloads: 2,565 different kNN queries, plus range and where-at generated with a different seed.
+- 150 training evaluations per budget share, about 8 minutes each.
+
+All scores below are on the **test** workloads.
+
+| Budget | Allocation | kNN R@k | Range | Where-at | **Mean** |
+|---|---|---|---|---|---|
+| 0.25% | Size-proportional | 0.479 | 0.745 | 0.589 | 0.604 |
+| | size^0.25 | 0.537 | 0.729 | 0.654 | 0.640 |
+| | Trained on kNN only | 0.537 | 0.729 | 0.654 | 0.640 |
+| | **Trained on all three** | 0.536 | 0.738 | 0.676 | **0.650** |
+| 0.5% | Size-proportional | 0.552 | 0.813 | 0.690 | 0.685 |
+| | size^0.25 | 0.619 | 0.793 | 0.770 | 0.727 |
+| | Trained on kNN only | 0.613 | 0.771 | 0.744 | 0.709 |
+| | **Trained on all three** | 0.620 | 0.806 | 0.782 | **0.736** |
+| 1% | Size-proportional | 0.636 | 0.881 | 0.815 | 0.778 |
+| | size^0.25 | 0.702 | 0.871 | 0.881 | 0.818 |
+| | Trained on kNN only | 0.714 | 0.871 | 0.865 | 0.817 |
+| | **Trained on all three** | 0.709 | 0.882 | 0.886 | **0.826** |
+| 2% | Size-proportional | 0.721 | 0.937 | 0.921 | 0.860 |
+| | size^0.25 | 0.777 | 0.929 | 0.954 | 0.887 |
+| | Trained on kNN only | 0.791 | 0.919 | 0.911 | 0.874 |
+| | **Trained on all three** | 0.785 | 0.938 | 0.955 | **0.893** |
+
+**Findings:**
+- **Best mean score at every budget.**
+  - vs size-proportional: +4.6 / +5.1 / +4.8 / +3.3 points (0.25 / 0.5 / 1 / 2%)
+  - vs size^0.25: +1.0 / +0.8 / +0.8 / +0.6 points
+- **It generalizes.** The gain over size^0.25 is the same on training and test workloads: +0.8 / +0.9 / +0.7 / +0.6 on training.
+- **It removes the range penalty of the flat rule** while keeping most of its kNN and where-at gains:
+  - range is back to size-proportional level at 1–2%, and within 0.7 points at 0.25–0.5%;
+  - kNN is +5.7 to +7.0 over size-proportional;
+  - where-at is +3.4 to +9.2 over size-proportional.
+- **The kNN-only model is worse on the mean than the hand rule.** Training on all three query types is what makes the model useful.
+- **The learned weights are stable across budgets:**
+
+  | Budget | size | density | curve |
+  |---|---|---|---|
+  | 0.25% | +0.20 | +0.10 | −0.40 |
+  | 0.5% | +0.21 | +0.08 | −0.45 |
+  | 1% | +0.29 | +0.06 | −0.31 |
+  | 2% | +0.31 | +0.10 | −0.43 |
+
+  The pattern: a much flatter allocation than size-proportional, slightly more points in dense areas, and fewer points for winding trajectories. One shared θ for all budgets would likely do almost as well.
+
+**Caveats:**
+- One seed and one dataset.
+- No standard errors in this run. Earlier kNN runs had a standard error of about 0.3 points on similar differences.
+- Range and where-at differences below 1 point should be confirmed with a second seed.
+
+## 7. Comparison
 
 Every method uses the same database split and the same test workloads (fixed seeds), and is scored with the engine's `Evaluator`. Results are reported per metric and as the mean, at each budget share.
 
@@ -93,11 +144,11 @@ Every method uses the same database split and the same test workloads (fixed see
 | MLSimp | Learned baseline (self-supervised point importance) |
 | **Learned allocator + SED** | This method |
 
-## 7. Implementation
+## 8. Implementation
 
 | Part | Location |
 |---|---|
-| Experiments so far | `engine/apps/knn_alloc_oracle.cpp` |
+| Experiments so far | `engine/apps/knn_alloc_oracle.cpp`. The results in section 6 come from `./build-release/engine/knn_alloc_oracle engine/configs/geolife.json --train 0 --test 0 --combined 1 --evaluations 150` (about 35 minutes) |
 | Features and allocator | new `engine/src/allocation/learned.cpp`, `AllocatorType::Learned` |
 | Training app (writes θ to JSON) | new `engine/apps/train_allocator.cpp` |
 | θ per budget share in the config | `pipeline/config.cpp` (`load_config` rejects unknown keys, so extend the key list) |
