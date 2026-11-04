@@ -14,7 +14,7 @@
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/evaluator/join.hpp"
 #include "backend/engine/query/join.hpp"
-#include "backend/engine/query/knn.hpp"
+#include "backend/engine/query/frechet_helper.hpp"
 #include "backend/engine/selection/selector.hpp"
 
 namespace {

@@ -17,13 +17,12 @@ struct JoinConfig {
 };
 
 struct JoinQuery {
-    std::size_t query_index;             // index into JoinWorkload::queries
-    std::vector<std::size_t> reference;  // database trajectories within eps, sorted
-    std::vector<std::size_t> candidates; // within eps by the endpoint bound, sorted
+    std::size_t query_index;            
+    std::vector<std::size_t> reference;  
+    std::vector<std::size_t> candidates; 
 };
 
-// Similarity join between full-resolution query trajectories and the database: every database
-// trajectory within discrete Fréchet distance eps of a query
+
 struct JoinWorkload {
     core::TrajectoryDb queries;
     std::vector<JoinQuery> entries;
@@ -36,7 +35,7 @@ JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
                                    const core::TrajectoryDb &query_pool,
                                    const JoinConfig &config = {}, std::uint64_t seed = 42);
 
-// Indices into trajectories of those within discrete Fréchet distance eps of query, sorted
+
 std::vector<std::size_t> join(const core::TrajectoryDb &trajectories,
                               const core::TrajectoryView &query, double eps);
 

@@ -18,8 +18,7 @@ struct JoinScores {
     std::size_t query_count = 0;
 };
 
-// Runs each join query on compressed, which must hold the same trajectories in the same order
-// as the database the workload was generated on
+
 JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload);
 
 } // namespace evaluator

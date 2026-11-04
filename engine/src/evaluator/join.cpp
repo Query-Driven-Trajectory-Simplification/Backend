@@ -1,6 +1,6 @@
 #include "backend/engine/evaluator/join.hpp"
 #include "backend/engine/core/parallel.hpp"
-#include "backend/engine/query/knn.hpp"
+#include "backend/engine/query/frechet_helper.hpp"
 
 #include <algorithm>
 #include <cmath>

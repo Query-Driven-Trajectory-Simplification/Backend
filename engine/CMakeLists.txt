@@ -29,6 +29,7 @@ add_library(engine
     src/evaluator/evaluator.cpp
     src/evaluator/knn.cpp
     src/query/knn.cpp
+    src/query/frechet_helper.cpp
     src/evaluator/where_at.cpp
     src/query/range_query.cpp
     src/evaluator/range.cpp
