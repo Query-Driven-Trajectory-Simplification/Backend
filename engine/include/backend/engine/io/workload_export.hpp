@@ -17,4 +17,7 @@ void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb
 void export_results(const std::filesystem::path &dir, std::string_view name,
                     const evaluator::EvaluationResult &evaluation);
 
+void export_trajectories(const std::filesystem::path &dir, std::string_view name,
+                         const core::TrajectoryDb &database);
+
 } // namespace io
