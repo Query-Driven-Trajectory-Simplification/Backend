@@ -35,6 +35,7 @@ add_library(engine
     src/evaluator/range.cpp
     src/query/join.cpp
     src/evaluator/join.cpp
+    src/evaluator/combined.cpp
 )
 
 target_include_directories(engine PUBLIC include)
@@ -66,6 +67,7 @@ add_executable(engine_tests
     tests/knn_test.cpp
     tests/config_test.cpp
     tests/join_test.cpp
+    tests/combined_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
 gtest_discover_tests(engine_tests)

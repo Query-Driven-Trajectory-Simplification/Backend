@@ -2,6 +2,7 @@
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/evaluator/combined.hpp"
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/io/workload_export.hpp"
@@ -20,6 +21,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pipeline {
 
@@ -59,6 +61,26 @@ void print_scores(const evaluator::Scoretable &scores) {
               << ", recall: " << scores.join.recall << '\n';
 }
 
+void print_normalized(const evaluator::NormalizedScores &scores) {
+    std::cout << "  normalized: knn=" << scores.knn << ", range=" << scores.range
+              << ", where-at=" << scores.where_at << ", join=" << scores.join
+              << ", combined=" << scores.combined << '\n';
+}
+
+core::Simplification endpoints_only(const core::TrajectoryDb &trajectories) {
+    core::Simplification simplification;
+    for (std::size_t i = 0; i < trajectories.size(); ++i) {
+        const std::size_t n = trajectories.trajectory(i).size();
+        std::vector<std::size_t> kept;
+        if (n > 0)
+            kept.push_back(0);
+        if (n > 1)
+            kept.push_back(n - 1);
+        simplification.add_trajectory(kept);
+    }
+    return simplification;
+}
+
 } // namespace
 
 void run(const Config &config) {
@@ -86,6 +108,17 @@ void run(const Config &config) {
         std::cout << "workloads written to " << config.export_dir.string() << '\n';
     }
 
+    const evaluator::Workloads workloads{
+        .knn = &knn_workload, .where_at = where_at.queries, .range = range.queries, .join = &join};
+
+    const auto floor_db = core::materialize(database, endpoints_only(database));
+    std::cout << "floor, endpoints only: ";
+    print_size("compressed", floor_db);
+    const auto floor = evaluator::Evaluator(database, floor_db, workloads, config.where_at_scoring)
+                           .evaluate()
+                           .scores;
+    print_scores(floor);
+
     for (const double share : config.budget_shares) {
         const auto budgets = allocation::create_trajectory_budgets(
             database, allocation::AllocatorType::SizeProportional, total_budget(database, share));
@@ -96,14 +129,11 @@ void run(const Config &config) {
             std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm) << ": ";
             print_size("compressed", compressed);
 
-            const evaluator::Evaluator evaluator(database, compressed,
-                                                 {.knn = &knn_workload,
-                                                  .where_at = where_at.queries,
-                                                  .range = range.queries,
-                                                  .join = &join},
+            const evaluator::Evaluator evaluator(database, compressed, workloads,
                                                  config.where_at_scoring);
             const auto evaluation = evaluator.evaluate();
             print_scores(evaluation.scores);
+            print_normalized(evaluator::normalize_scores(evaluation.scores, floor));
 
             if (config.export_results) {
                 const std::string name =
