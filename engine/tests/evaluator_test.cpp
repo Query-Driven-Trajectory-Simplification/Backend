@@ -137,3 +137,17 @@ TEST(KnnScores, EmptyWorkloadHasZeroCoverageAndUndefinedScores) {
     EXPECT_TRUE(std::isnan(scores.kendalls_tau_topk));
     EXPECT_TRUE(std::isnan(scores.recall_at_k));
 }
+
+TEST(Evaluator, ExposesRangeF1AndSelfJoinTogether) {
+    const auto db = original();
+    const auto compressed = endpoints(db);
+    const auto a = db.trajectory(0);
+    const std::vector<query::RangeQuery> queries{
+        {{a.x[0] - 1, a.x[0] + 1, a.y[0] - 1, a.y[0] + 1, 0, 0}, {0}}};
+    const auto join = query::generate_self_join(db);
+    const evaluator::Evaluator eval(db, compressed, {.range = queries, .join = &join});
+    EXPECT_DOUBLE_EQ(eval.get_range_f1(), 1);
+    EXPECT_DOUBLE_EQ(eval.evaluate().scores.range_f1, 1);
+    EXPECT_EQ(eval.get_join_scores().mode, query::JoinMode::Self);
+    EXPECT_TRUE(std::isnan(eval.get_join_scores().f1)); // one trajectory: no unordered pairs
+}

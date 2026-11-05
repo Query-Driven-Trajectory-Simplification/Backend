@@ -230,6 +230,18 @@ TEST(RangeRecall, DroppedPointsInsideTheBoxLowerRecall) {
     const auto compressed = core::materialize(original, kept);
 
     const auto box = origin_box(0, 100);
+    const std::vector<query::RangeQuery> workload{{box, {0, 1}}};
+    const auto scores = evaluator::evaluate_range(compressed, workload);
+    EXPECT_DOUBLE_EQ(scores.recall, 0.5);
+    EXPECT_DOUBLE_EQ(scores.f1, 2.0 / 3);
     EXPECT_DOUBLE_EQ(
         evaluator::range::recall(query::range(original, box), query::range(compressed, box)), 0.5);
+}
+
+TEST(RangeF1, ScoresMembershipIncludingEmptySetsAndFalsePositives) {
+    EXPECT_DOUBLE_EQ(evaluator::range::f1({1, 2, 3, 4}, {1, 2}), 2.0 / 3);
+    EXPECT_DOUBLE_EQ(evaluator::range::f1({1, 2}, {1, 3}), 0.5);
+    EXPECT_DOUBLE_EQ(evaluator::range::f1({1}, {}), 0);
+    EXPECT_DOUBLE_EQ(evaluator::range::f1({}, {1}), 0);
+    EXPECT_TRUE(std::isnan(evaluator::range::f1({}, {})));
 }

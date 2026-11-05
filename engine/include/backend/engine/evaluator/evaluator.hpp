@@ -8,6 +8,7 @@
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 
+#include <limits>
 #include <span>
 
 namespace evaluator {
@@ -26,6 +27,7 @@ struct Scoretable {
     double range_recall;
     WhereAtScores where_at;
     JoinScores join;
+    double range_f1 = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct EvaluationResult {
@@ -44,6 +46,7 @@ class Evaluator {
     // Each runs only its own evaluation
     KnnScores get_knn_scores() const;
     double get_range_recall() const;
+    double get_range_f1() const;
     WhereAtScores get_where_at_scores() const;
     JoinScores get_join_scores() const;
 

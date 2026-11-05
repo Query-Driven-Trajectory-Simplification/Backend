@@ -15,7 +15,7 @@ RangeEvaluation evaluate_range(const core::TrajectoryDb &compressed,
     result.answers.resize(queries.size());
     double sum = 0.0;
     std::size_t scored = 0;
-    std::vector<double> recalls(queries.size());
+    std::vector<double> recalls(queries.size()), f1s(queries.size());
     core::parallel_for(queries.size(), [&](std::size_t i) {
         const auto &range_query = queries[i];
         const auto simplified = query::range(compressed, range_query.box);
@@ -24,6 +24,7 @@ RangeEvaluation evaluate_range(const core::TrajectoryDb &compressed,
         for (const auto index : simplified)
             answer.push_back(compressed.trajectory(index).trajectory_id);
         recalls[i] = range::recall(range_query.reference, simplified);
+        f1s[i] = range::f1(range_query.reference, simplified);
     });
     for (const double recall : recalls) {
         if (!std::isnan(recall)) {
@@ -33,6 +34,16 @@ RangeEvaluation evaluate_range(const core::TrajectoryDb &compressed,
     }
     if (scored != 0)
         result.recall = sum / static_cast<double>(scored);
+    sum = 0.0;
+    scored = 0;
+    for (const double f1 : f1s) {
+        if (!std::isnan(f1)) {
+            sum += f1;
+            ++scored;
+        }
+    }
+    if (scored != 0)
+        result.f1 = sum / static_cast<double>(scored);
     return result;
 }
 
@@ -50,6 +61,16 @@ double recall(const std::vector<std::size_t> &original,
     for (const std::size_t i : simplified)
         hits += std::ranges::binary_search(original, i);
     return static_cast<double>(hits) / static_cast<double>(original.size());
+}
+
+double f1(const std::vector<std::size_t> &original, const std::vector<std::size_t> &simplified) {
+    if (original.empty() && simplified.empty())
+        return std::numeric_limits<double>::quiet_NaN();
+    std::size_t hits = 0;
+    for (const auto i : simplified)
+        hits += std::ranges::binary_search(original, i);
+    return 2.0 * static_cast<double>(hits) /
+           (static_cast<double>(original.size()) + static_cast<double>(simplified.size()));
 }
 
 } // namespace evaluator::range

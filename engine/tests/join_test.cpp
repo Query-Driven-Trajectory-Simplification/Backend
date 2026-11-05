@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <utility>
@@ -195,4 +196,149 @@ TEST(JoinEvaluator, EmptyWorkloadIsNaN) {
     const auto scores = evaluator::evaluate_join(db, workload);
     EXPECT_TRUE(std::isnan(scores.f1));
     EXPECT_EQ(scores.query_count, 0u);
+}
+
+TEST(SelfJoin, BothOperandsAreSimplifiedAndPairsAreUnordered) {
+    const Track bend{{39.9, 116.3}, {39.92, 116.3}, {39.9, 116.31}};
+    const auto db = make_db({bend, bend});
+    const auto workload = query::generate_self_join(db, 500);
+    ASSERT_EQ(workload.entries.size(), 2u);
+    EXPECT_EQ(workload.entries[0].candidates, (std::vector<std::size_t>{1}));
+    EXPECT_EQ(workload.entries[0].reference, (std::vector<std::size_t>{1}));
+    EXPECT_TRUE(workload.entries[1].candidates.empty());
+    core::Simplification one, both;
+    const std::vector<std::size_t> endpoints{0, 2}, full{0, 1, 2};
+    one.add_trajectory(endpoints);
+    one.add_trajectory(full);
+    both.add_trajectory(endpoints);
+    both.add_trajectory(endpoints);
+    EXPECT_DOUBLE_EQ(evaluator::evaluate_join(core::materialize(db, one), workload).f1, 0);
+    const auto scores = evaluator::evaluate_join(core::materialize(db, both), workload);
+    EXPECT_DOUBLE_EQ(scores.f1, 1);
+    EXPECT_EQ(scores.reference_pairs, 1u);
+    EXPECT_EQ(scores.predicted_pairs, 1u);
+    EXPECT_EQ(scores.true_positive_pairs, 1u);
+    EXPECT_EQ(scores.query_count, 0u);
+    EXPECT_EQ(scores.mode, query::JoinMode::Self);
+}
+
+TEST(SelfJoin, CountsFalsePositivesAndUsesMicroRatherThanRowMean) {
+    const Track up{{39.9, 116.3}, {39.92, 116.3}, {39.9, 116.31}};
+    const Track down{{39.9, 116.3}, {39.88, 116.3}, {39.9, 116.31}};
+    const auto db = make_db({up, up, down});
+    const auto workload = query::generate_self_join(db);
+    core::Simplification s;
+    const std::vector<std::size_t> endpoints{0, 2};
+    for (int i = 0; i < 3; ++i)
+        s.add_trajectory(endpoints);
+    const auto scores = evaluator::evaluate_join(core::materialize(db, s), workload);
+    EXPECT_EQ(scores.candidate_pairs, 3u);
+    EXPECT_EQ(scores.reference_pairs, 1u);
+    EXPECT_EQ(scores.predicted_pairs, 3u);
+    EXPECT_EQ(scores.true_positive_pairs, 1u);
+    EXPECT_DOUBLE_EQ(scores.precision, 1.0 / 3);
+    EXPECT_DOUBLE_EQ(scores.recall, 1);
+    EXPECT_DOUBLE_EQ(scores.f1, 0.5);
+}
+
+TEST(SelfJoin, MatchesIndependentFullGridOnAllOriginalAndCompressedPairs) {
+    std::mt19937_64 rng(478);
+    const auto db = make_db(random_tracks(rng, 30));
+    core::Simplification s;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const auto n = db.trajectory(i).size();
+        std::vector<std::size_t> kept{0};
+        for (std::size_t k = 1; k + 1 < n; ++k)
+            if (rng() % 3 == 0)
+                kept.push_back(k);
+        kept.push_back(n - 1);
+        s.add_trajectory(kept);
+    }
+    const auto compressed = core::materialize(db, s);
+    for (double eps : {100., 500., 1500.}) {
+        const auto workload = query::generate_self_join(db, eps);
+        std::size_t truth = 0, predicted = 0, hits = 0;
+        for (std::size_t i = 0; i < db.size(); ++i) {
+            std::vector<std::size_t> expected;
+            for (std::size_t j = i + 1; j < db.size(); ++j) {
+                const bool ref = frechet(db.trajectory(i), db.trajectory(j)) <= eps;
+                const bool pred =
+                    frechet(compressed.trajectory(i), compressed.trajectory(j)) <= eps;
+                if (ref)
+                    expected.push_back(j);
+                truth += ref;
+                predicted += pred;
+                hits += ref && pred;
+            }
+            EXPECT_EQ(workload.entries[i].reference, expected);
+        }
+        const auto scores = evaluator::evaluate_join(compressed, workload);
+        EXPECT_EQ(scores.reference_pairs, truth);
+        EXPECT_EQ(scores.predicted_pairs, predicted);
+        EXPECT_EQ(scores.true_positive_pairs, hits);
+        if (truth + predicted)
+            EXPECT_DOUBLE_EQ(scores.f1, 2.0 * hits / (truth + predicted));
+        else
+            EXPECT_TRUE(std::isnan(scores.f1));
+        if (truth)
+            EXPECT_DOUBLE_EQ(evaluator::evaluate_join(db, workload).f1, 1);
+    }
+}
+
+TEST(SelfJoin, ConfigModeIgnoresHeldOutPoolSamplingAndSeed) {
+    const auto db = make_db({{{39.9, 116.3}}, {{39.9, 116.3}}, {{39.9, 116.3}}});
+    const query::JoinConfig config{.query_count = 1, .mode = query::JoinMode::Self};
+    const auto workload = query::generate_join_queries(db, make_db({}), config, 912);
+    const auto scores = evaluator::evaluate_join(db, workload);
+    EXPECT_EQ(scores.reference_pairs, 3u);
+    EXPECT_DOUBLE_EQ(scores.f1, 1);
+}
+
+TEST(SelfJoin, IncludesThresholdBoundaryAndPrunesEitherEndpoint) {
+    const auto db = make_db({{{39.9, 116.3}, {39.9, 116.31}},
+                             {{39.901, 116.3}, {39.901, 116.31}},
+                             {{39.9, 116.3}, {40.0, 116.31}},
+                             {{40.0, 116.3}, {39.9, 116.31}}});
+    const double eps = query::endpoint_lower_bound(db.trajectory(0), db.trajectory(1));
+    const auto workload = query::generate_self_join(db, eps);
+    EXPECT_EQ(workload.entries[0].candidates, (std::vector<std::size_t>{1}));
+    EXPECT_EQ(workload.entries[0].reference, (std::vector<std::size_t>{1}));
+}
+
+TEST(SelfJoin, EmptyPairSetsAreUndefinedAndInvalidInputsAreRejected) {
+    for (const auto &db :
+         {make_db({}), make_db({{{39.9, 116.3}}}), make_db({{{39.9, 116.3}}, {{40.9, 116.3}}})}) {
+        const auto scores = evaluator::evaluate_join(db, query::generate_self_join(db));
+        EXPECT_TRUE(std::isnan(scores.f1));
+        EXPECT_TRUE(std::isnan(scores.precision));
+        EXPECT_TRUE(std::isnan(scores.recall));
+    }
+    const auto db = make_db({{{39.9, 116.3}}, {{39.9, 116.3}}});
+    for (double eps : {0., -1., std::numeric_limits<double>::infinity(),
+                       std::numeric_limits<double>::quiet_NaN()})
+        EXPECT_THROW(query::generate_self_join(db, eps), std::invalid_argument);
+    EXPECT_THROW(query::generate_self_join(make_db({{}})), std::invalid_argument);
+    const auto workload = query::generate_self_join(db);
+    EXPECT_THROW(evaluator::evaluate_join(make_db({}), workload), std::invalid_argument);
+    EXPECT_THROW(evaluator::evaluate_join(make_db({{{40.0, 116.3}}, {{39.9, 116.3}}}), workload),
+                 std::invalid_argument);
+    const std::vector<std::size_t> reverse{1, 0};
+    EXPECT_THROW(evaluator::evaluate_join(core::subset(db, reverse), workload),
+                 std::invalid_argument);
+}
+
+TEST(SelfJoin, EmptyReferenceWithFalsePositivesScoresZero) {
+    const auto db = make_db({{{39.9, 116.3}, {39.92, 116.3}, {39.9, 116.31}},
+                             {{39.9, 116.3}, {39.88, 116.3}, {39.9, 116.31}}});
+    core::Simplification s;
+    const std::vector<std::size_t> endpoints{0, 2};
+    s.add_trajectory(endpoints);
+    s.add_trajectory(endpoints);
+    const auto scores =
+        evaluator::evaluate_join(core::materialize(db, s), query::generate_self_join(db));
+    EXPECT_EQ(scores.reference_pairs, 0u);
+    EXPECT_EQ(scores.predicted_pairs, 1u);
+    EXPECT_DOUBLE_EQ(scores.f1, 0);
+    EXPECT_DOUBLE_EQ(scores.precision, 0);
+    EXPECT_TRUE(std::isnan(scores.recall));
 }

@@ -56,7 +56,7 @@ void print_scores(const evaluator::Scoretable &scores) {
               << " queries)\n";
     std::cout << "  where-at: within radius=" << scores.where_at.within_radius
               << ", average hit=" << scores.where_at.average_hit << '\n';
-    std::cout << "  range recall: " << scores.range_recall << '\n';
+    std::cout << "  range F1: " << scores.range_f1 << ", recall: " << scores.range_recall << '\n';
     std::cout << "  join F1: " << scores.join.f1 << ", precision: " << scores.join.precision
               << ", recall: " << scores.join.recall << '\n';
 }
@@ -100,8 +100,10 @@ void run(const Config &config) {
     std::size_t join_pairs = 0;
     for (const auto &entry : join.entries)
         join_pairs += entry.reference.size();
-    std::cout << "join: " << join.entries.size() << " queries, eps=" << join.eps_m << " m, "
-              << join_pairs << " matching pairs\n";
+    std::cout << "join " << magic_enum::enum_name(join.mode) << ": " << join.entries.size()
+              << (join.mode == query::JoinMode::Self ? " database trajectories, eps="
+                                                     : " queries, eps=")
+              << join.eps_m << " m, " << join_pairs << " matching pairs\n";
 
     if (config.export_results) {
         io::export_workloads(config.export_dir, database, range.queries, knn_workload);
