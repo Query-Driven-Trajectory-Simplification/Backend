@@ -14,7 +14,7 @@
         "query_count": 0
     },
     "range": {
-        "query_count": 500,
+        "query_count": 20000,
         "box_size_m": 2000.0,
         "window_seconds": 604800,
         "min_results": 5,
@@ -26,12 +26,12 @@
         "max_gap_seconds": 60.0
     },
     "where_at_scoring": {
-        "hit_radius_m": 100.0,
+        "hit_radius_m": 150.0,
         "min_tolerance_m": 25.0,
         "max_tolerance_m": 500.0
     },
     "join": {
-        "query_count": 0,
+        "mode": "Self",
         "eps_m": 500.0
     }
 }

@@ -1,5 +1,6 @@
 # Build output
 build/
+build*/
 
 # Editor and tooling
 .cache/

@@ -1,5 +1,6 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/core/parallel.hpp"
+#include "backend/engine/core/simplification.hpp"
 #include "backend/engine/query/frechet_helper.hpp"
 
 #include <algorithm>
@@ -42,6 +43,9 @@ JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
     if (!std::isfinite(config.eps_m) || config.eps_m <= 0.0)
         throw std::invalid_argument("join: eps_m must be finite and positive");
 
+    if (config.mode == JoinMode::Self)
+        return generate_self_join(original, config.eps_m);
+
     std::vector<std::size_t> picked(query_pool.size());
     std::iota(picked.begin(), picked.end(), 0);
     if (config.query_count != 0 && config.query_count < picked.size()) {
@@ -67,6 +71,36 @@ JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
         }
     });
     return results;
+}
+
+JoinWorkload generate_self_join(const core::TrajectoryDb &original, double eps_m) {
+    if (!std::isfinite(eps_m) || eps_m <= 0.0)
+        throw std::invalid_argument("self join: eps_m must be finite and positive");
+    core::Simplification endpoints;
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        const auto n = original.trajectory(i).size();
+        if (n == 0)
+            throw std::invalid_argument("self join: empty trajectory");
+        const std::vector<std::size_t> kept =
+            n == 1 ? std::vector<std::size_t>{0} : std::vector<std::size_t>{0, n - 1};
+        endpoints.add_trajectory(kept);
+    }
+    JoinWorkload result{core::materialize(original, endpoints), {}, eps_m, JoinMode::Self};
+    result.entries.resize(original.size());
+    core::parallel_for(original.size(), [&](std::size_t i) {
+        auto &entry = result.entries[i];
+        entry.query_index = i;
+        const auto a = original.trajectory(i);
+        for (std::size_t j = i + 1; j < original.size(); ++j) {
+            const auto b = original.trajectory(j);
+            if (endpoint_lower_bound(a, b) > eps_m)
+                continue;
+            entry.candidates.push_back(j);
+            if (frechet_within(a, b, eps_m))
+                entry.reference.push_back(j);
+        }
+    });
+    return result;
 }
 
 } // namespace query

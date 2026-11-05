@@ -8,9 +8,12 @@
 
 namespace query {
 
+enum class JoinMode { HeldOut, Self };
+
 struct JoinConfig {
-    std::size_t query_count = 10; // 0 = use every trajectory in the query pool
-    double eps_m = 500.0;         // join threshold in metres, must be positive
+    std::size_t query_count = 10;      // 0 = use every trajectory in the query pool
+    double eps_m = 500.0;              // join threshold in metres, must be positive
+    JoinMode mode = JoinMode::HeldOut; // Self ignores query_count and the query pool
 };
 
 struct JoinQuery {
@@ -20,16 +23,23 @@ struct JoinQuery {
 };
 
 struct JoinWorkload {
+    // In Self mode this stores original endpoints/IDs for validation, not query inputs.
     core::TrajectoryDb queries;
     std::vector<JoinQuery> entries;
     double eps_m = 0.0;
+    JoinMode mode = JoinMode::HeldOut;
+    // Self entries contain only indices j > i; both operands are evaluated compressed.
 };
 
 // Samples query_count trajectories from query_pool (the held-out split) and stores their join
-// result in original as the reference answer
+// result in original as the reference answer. Self mode delegates to generate_self_join.
 JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
                                    const core::TrajectoryDb &query_pool,
                                    const JoinConfig &config = {}, std::uint64_t seed = 42);
+
+// All unordered database pairs, endpoint-pruned, with reference truth on originals.
+// No held-out queries or sampling. Nonempty trajectories must retain their endpoints/IDs/order.
+JoinWorkload generate_self_join(const core::TrajectoryDb &original, double eps_m = 500.0);
 
 std::vector<std::size_t> join(const core::TrajectoryDb &trajectories,
                               const core::TrajectoryView &query, double eps);
