@@ -35,7 +35,8 @@ core::TrajectoryDb make_random_db(const std::vector<std::size_t> &sizes) {
 }
 
 constexpr selection::AlgorithmType kAlgorithms[] = {selection::AlgorithmType::RDP,
-                                                    selection::AlgorithmType::SED};
+                                                    selection::AlgorithmType::SED,
+                                                    selection::AlgorithmType::UNIFORM};
 
 } // namespace
 

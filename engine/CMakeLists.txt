@@ -19,6 +19,7 @@ add_library(engine
     src/pipeline/pipeline.cpp
     src/selection/rdp.cpp
     src/selection/sed.cpp
+    src/selection/uniform.cpp
     src/selection/selector.cpp
     src/split/split.cpp
     src/allocation/budget_allocator.cpp
