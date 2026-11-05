@@ -13,6 +13,7 @@ namespace evaluator {
 
 struct RangeEvaluation {
     double recall = std::numeric_limits<double>::quiet_NaN();
+    double f1 = std::numeric_limits<double>::quiet_NaN();
     std::vector<std::vector<std::int32_t>> answers;
 };
 
@@ -25,5 +26,8 @@ namespace evaluator::range {
 
 // Share of original that also appears in simplified. NaN if original is empty.
 double recall(const std::vector<std::size_t> &original, const std::vector<std::size_t> &simplified);
+
+// F1 over trajectory membership; NaN when both result sets are empty.
+double f1(const std::vector<std::size_t> &original, const std::vector<std::size_t> &simplified);
 
 } // namespace evaluator::range

@@ -26,7 +26,8 @@ EvaluationResult Evaluator::evaluate() const {
     return {.scores = {.knn = knn.scores,
                        .range_recall = range.recall,
                        .where_at = get_where_at_scores(),
-                       .join = get_join_scores()},
+                       .join = get_join_scores(),
+                       .range_f1 = range.f1},
             .knn = std::move(knn.answers),
             .range = std::move(range.answers)};
 }
@@ -37,6 +38,10 @@ KnnScores Evaluator::get_knn_scores() const {
 
 double Evaluator::get_range_recall() const {
     return evaluate_range(m_simplified, m_workloads.range).recall;
+}
+
+double Evaluator::get_range_f1() const {
+    return evaluate_range(m_simplified, m_workloads.range).f1;
 }
 
 WhereAtScores Evaluator::get_where_at_scores() const {

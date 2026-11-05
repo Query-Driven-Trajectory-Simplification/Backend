@@ -35,16 +35,16 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
     result.knn_kendalls_tau_topk =
         normalize(scores.knn.kendalls_tau_topk, floor.knn.kendalls_tau_topk);
     result.range_recall = normalize(scores.range_recall, floor.range_recall);
+    result.range_f1 = normalize(scores.range_f1, floor.range_f1);
     result.where_at_within_radius =
         normalize(scores.where_at.within_radius, floor.where_at.within_radius);
     result.where_at_average_hit =
         normalize(scores.where_at.average_hit, floor.where_at.average_hit);
     result.join_f1 = normalize(scores.join.f1, floor.join.f1);
 
-    result.knn = mean_ignoring_nan({result.knn_recall_at_k, result.knn_kendalls_tau_topk});
-    result.range = result.range_recall;
-    result.where_at =
-        mean_ignoring_nan({result.where_at_within_radius, result.where_at_average_hit});
+    result.knn = result.knn_recall_at_k;
+    result.range = result.range_f1;
+    result.where_at = result.where_at_within_radius;
     result.join = result.join_f1;
 
     result.combined = mean_ignoring_nan({result.knn, result.range, result.where_at, result.join});

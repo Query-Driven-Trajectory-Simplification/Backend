@@ -157,3 +157,15 @@ TEST(Config, ExportDirectoryDoesNotEnableExport) {
                      R"({"data_path":"data.parquet","export_results":true,"export_dir":""})")),
                  std::invalid_argument);
 }
+
+TEST(Config, SelfJoinModeIsExplicitAndDefaultsToHeldOut) {
+    EXPECT_EQ(pipeline::Config{}.join.mode, query::JoinMode::HeldOut);
+    const auto config = pipeline::load_config(write_config("self_join.json", R"({
+        "data_path": "data.parquet", "join": {"mode": "Self", "eps_m": 500}
+    })"));
+    EXPECT_EQ(config.join.mode, query::JoinMode::Self);
+    EXPECT_THROW(pipeline::load_config(write_config("bad_join_mode.json", R"({
+        "data_path": "data.parquet", "join": {"mode": "typo"}
+    })")),
+                 std::invalid_argument);
+}
