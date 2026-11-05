@@ -4,6 +4,7 @@
     "export_dir": "data/output/geolife",
     "seed": 42,
     "budget_shares": [0.0025, 0.005, 0.01, 0.02],
+    "allocation_alphas": [1.0, 0.25, 0.0],
     "split": {
         "type": "Random",
         "query_percentage": 0.15

@@ -10,11 +10,11 @@ namespace allocation {
 
 std::vector<std::size_t> create_trajectory_budgets(const core::TrajectoryDb &trajectories,
                                                    AllocatorType allocator,
-                                                   std::size_t total_budget) {
+                                                   std::size_t total_budget, double alpha) {
 
     switch (allocator) {
     case AllocatorType::SizeProportional:
-        return allocation::proportional_budget(trajectories, total_budget);
+        return allocation::proportional_budget(trajectories, total_budget, alpha);
     }
     throw std::invalid_argument("create_trajectory_budgets: unknown allocator");
 }

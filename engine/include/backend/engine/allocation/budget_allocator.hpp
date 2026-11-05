@@ -8,5 +8,6 @@ enum class AllocatorType { SizeProportional };
 
 std::vector<std::size_t> create_trajectory_budgets(const core::TrajectoryDb &trajectories,
                                                    AllocatorType allocator,
-                                                   std::size_t total_budget);
+                                                   std::size_t total_budget, double alpha = 1.0);
+
 } // namespace allocation

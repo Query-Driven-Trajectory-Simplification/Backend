@@ -95,7 +95,8 @@ void parse_join_config(Config &config, const json &join) {
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
-                   "algorithms", "split", "knn", "range", "where_at", "where_at_scoring", "join"},
+                   "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
+                   "where_at_scoring", "join"},
                   "root");
     Config config;
 
@@ -113,6 +114,9 @@ Config parse_config(const json &data) {
         if (!std::isfinite(share) || share < 0.0 || share > 1.0)
             throw std::invalid_argument("config: budget_shares must be finite and between 0 and 1");
     }
+    config.allocation_alphas = data.value("allocation_alphas", config.allocation_alphas);
+    if (config.allocation_alphas.empty())
+        throw std::invalid_argument("config: allocation_alphas must not be empty");
     config.seed = data.value("seed", config.seed);
     if (data.contains("algorithms")) {
         config.algorithms.clear();
