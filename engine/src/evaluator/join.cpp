@@ -53,7 +53,12 @@ JoinScores evaluate_join(const core::TrajectoryDb &compressed,
     const std::size_t n = workload.entries.size();
     std::vector<Counts> totals(n);
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    std::vector<double> f1(n, nan), precision(n, nan), recall(n, nan);
+    std::vector<double> f1, precision, recall;
+    if (!self) {
+        f1.assign(n, nan);
+        precision.assign(n, nan);
+        recall.assign(n, nan);
+    }
 
     core::parallel_for(n, [&](std::size_t i) {
         const auto &entry = workload.entries[i];
@@ -71,6 +76,8 @@ JoinScores evaluate_join(const core::TrajectoryDb &compressed,
         }
 
         totals[i] = counts;
+        if (self)
+            return;
         const auto hits = static_cast<double>(counts.hits);
         const auto found = static_cast<double>(counts.found);
         const auto truth = static_cast<double>(entry.reference.size());
@@ -82,9 +89,9 @@ JoinScores evaluate_join(const core::TrajectoryDb &compressed,
             f1[i] = 2.0 * hits / (found + truth);
     });
 
-    JoinScores result{.f1 = average(f1),
-                      .precision = average(precision),
-                      .recall = average(recall),
+    JoinScores result{.f1 = self ? nan : average(f1),
+                      .precision = self ? nan : average(precision),
+                      .recall = self ? nan : average(recall),
                       .eps_m = workload.eps_m,
                       .query_count = self ? 0 : n,
                       .mode = workload.mode};
