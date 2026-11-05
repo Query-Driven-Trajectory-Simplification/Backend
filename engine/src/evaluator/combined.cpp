@@ -51,4 +51,4 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
     return result;
 }
 
-}
+} // namespace evaluator

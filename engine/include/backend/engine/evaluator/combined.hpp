@@ -31,4 +31,4 @@ double normalize(double score, double floor);
 
 NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &floor);
 
-}
+} // namespace evaluator
