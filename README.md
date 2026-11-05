@@ -75,7 +75,7 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | `seed` | Seed for all random sampling |
 | `budget_shares` | Point budgets to test, as a share of all points (`0.01` = 1%) |
 | `split` | `type` (`Random` or `Time`) and `query_percentage` held out for queries |
-| `algorithms` | Simplification algorithms to run: `RDP`, `SED` |
+| `algorithms` | Simplification algorithms to run: `RDP`, `SED`, `UNIFORM` |
 | `knn` | `k` and `query_count` (`0` = every trajectory in the query split) |
 | `range` | Box size (m), time window (s) and sampling limits for range queries |
 | `where_at` | Probes per trajectory and max time gap (s) between points to probe |
@@ -101,7 +101,7 @@ engine/                 Simplification and evaluation
 ├── core/               Trajectory database, projection, interpolation
 ├── io/                 Parquet loading
 ├── split/              Train/query split
-├── selection/          Simplification algorithms (RDP, SED)
+├── selection/          Simplification algorithms (RDP, SED, UNIFORM)
 ├── allocation/         Distributing the point budget across trajectories
 ├── query/              Query workload generation (kNN, range, where-at)
 ├── evaluator/          Scoring simplified data against the original

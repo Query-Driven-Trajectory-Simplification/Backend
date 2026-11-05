@@ -3,6 +3,7 @@
 #include "backend/engine/core/parallel.hpp"
 #include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/sed.hpp"
+#include "backend/engine/selection/uniform.hpp"
 
 #include <stdexcept>
 #include <vector>
@@ -17,6 +18,8 @@ std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &traject
         return rdp::simplify(trajectory, points_to_keep);
     case AlgorithmType::SED:
         return sed::simplify(trajectory, points_to_keep);
+    case AlgorithmType::UNIFORM:
+        return uniform::simplify(trajectory, points_to_keep);
     }
 
     throw std::invalid_argument("simplify_trajectory: unknown algorithm");
