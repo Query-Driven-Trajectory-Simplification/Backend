@@ -122,26 +122,34 @@ void run(const Config &config) {
     print_scores(floor);
 
     for (const double share : config.budget_shares) {
-        const auto budgets = allocation::create_trajectory_budgets(
-            database, allocation::AllocatorType::SizeProportional, total_budget(database, share));
+        for (const double alpha : config.allocation_alphas) {
+            const auto budgets = allocation::create_trajectory_budgets(
+                database, allocation::AllocatorType::SizeProportional,
+                total_budget(database, share), alpha);
 
-        for (const auto algorithm : config.algorithms) {
-            const auto simplification = selection::simplify_database(database, algorithm, budgets);
-            const auto compressed = core::materialize(database, simplification);
-            std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm) << ": ";
-            print_size("compressed", compressed);
+            for (const auto algorithm : config.algorithms) {
+                const auto simplification =
+                    selection::simplify_database(database, algorithm, budgets);
+                const auto compressed = core::materialize(database, simplification);
+                std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm)
+                          << " alpha=" << alpha << ": ";
+                print_size("compressed", compressed);
 
-            const evaluator::Evaluator evaluator(database, compressed, workloads,
-                                                 config.where_at_scoring);
-            const auto evaluation = evaluator.evaluate();
-            print_scores(evaluation.scores);
-            print_normalized(evaluator::normalize_scores(evaluation.scores, floor));
+                const evaluator::Evaluator evaluator(database, compressed, workloads,
+                                                     config.where_at_scoring);
+                const auto evaluation = evaluator.evaluate();
+                print_scores(evaluation.scores);
+                print_normalized(evaluator::normalize_scores(evaluation.scores, floor));
 
-            if (config.export_results) {
-                const std::string name =
-                    std::format("{}_{:g}pct", magic_enum::enum_name(algorithm), share * 100);
-                io::export_trajectories(config.export_dir, name, compressed);
-                io::export_results(config.export_dir, name, evaluation);
+                if (config.export_results) {
+                    std::string name =
+                        std::format("{}_{:g}pct", magic_enum::enum_name(algorithm), share * 100);
+                    // alpha = 1 keeps the old name, which the Travis frontend expects
+                    if (alpha != 1.0)
+                        name += std::format("_a{:g}", alpha);
+                    io::export_trajectories(config.export_dir, name, compressed);
+                    io::export_results(config.export_dir, name, evaluation);
+                }
             }
         }
     }

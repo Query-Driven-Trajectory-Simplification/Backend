@@ -80,6 +80,7 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | `range` | Box size (m), time window (s) and sampling limits for range queries |
 | `where_at` | Probes per trajectory and max time gap (s) between points to probe |
 | `where_at_scoring` | Hit radius and tolerance range (m) for scoring where-at queries |
+| `allocation_alphas` | Allocation exponents to test: budgets follow size^α (`1` = size-proportional, `0` = equal). Exports for α ≠ 1 get an `_a<α>` suffix |
 
 ## Tests
 

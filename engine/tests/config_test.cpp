@@ -27,6 +27,7 @@ TEST(Config, MissingKeysKeepDefaults) {
     EXPECT_DOUBLE_EQ(config.split.query_percentage, defaults.split.query_percentage);
     EXPECT_EQ(config.seed, 42u);
     EXPECT_EQ(config.budget_shares, defaults.budget_shares);
+    EXPECT_EQ(config.allocation_alphas, defaults.allocation_alphas);
     EXPECT_EQ(config.algorithms, defaults.algorithms);
     EXPECT_EQ(config.knn.k, defaults.knn.k);
     EXPECT_EQ(config.range.query_count, defaults.range.query_count);
@@ -167,5 +168,17 @@ TEST(Config, SelfJoinModeIsExplicitAndDefaultsToHeldOut) {
     EXPECT_THROW(pipeline::load_config(write_config("bad_join_mode.json", R"({
         "data_path": "data.parquet", "join": {"mode": "typo"}
     })")),
+                 std::invalid_argument);
+}
+
+TEST(Config, ReadsAllocationAlphas) {
+    const auto config = pipeline::load_config(write_config(
+        "alphas.json", R"({"data_path": "d", "allocation_alphas": [1.0, 0.25, 0.0]})"));
+    EXPECT_EQ(config.allocation_alphas, (std::vector<double>{1.0, 0.25, 0.0}));
+}
+
+TEST(Config, RejectsEmptyAllocationAlphas) {
+    EXPECT_THROW(pipeline::load_config(write_config(
+                     "no_alphas.json", R"({"data_path": "d", "allocation_alphas": []})")),
                  std::invalid_argument);
 }

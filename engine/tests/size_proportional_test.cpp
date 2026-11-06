@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
@@ -91,24 +92,48 @@ TEST(ProportionalBudget, ThrowsWhenTrajectoryHasTooFewPoints) {
 
 TEST(ProportionalBudget, RandomInputsSatisfyInvariants) {
     std::mt19937 rng(42);
-    for (int iteration = 0; iteration < 2000; ++iteration) {
-        const std::size_t num_trajectories = 1 + rng() % 20;
-        std::vector<std::size_t> sizes(num_trajectories);
-        std::size_t num_points = 0;
-        for (std::size_t &size : sizes) {
-            size = allocation::kMinPointsPerTrajectory + rng() % 500;
-            num_points += size;
-        }
-        const std::size_t min_budget = allocation::kMinPointsPerTrajectory * num_trajectories;
-        const std::size_t budget = min_budget + rng() % (num_points - min_budget + 1);
+    for (const double alpha : {-0.5, 0.0, 0.25, 0.5, 1.0}) {
+        for (int iteration = 0; iteration < 2000; ++iteration) {
+            const std::size_t num_trajectories = 1 + rng() % 20;
+            std::vector<std::size_t> sizes(num_trajectories);
+            std::size_t num_points = 0;
+            for (std::size_t &size : sizes) {
+                size = allocation::kMinPointsPerTrajectory + rng() % 500;
+                num_points += size;
+            }
+            const std::size_t min_budget = allocation::kMinPointsPerTrajectory * num_trajectories;
+            const std::size_t budget = min_budget + rng() % (num_points - min_budget + 1);
 
-        const auto budgets = allocation::proportional_budget(MakeDb(sizes), budget);
+            const auto budgets = allocation::proportional_budget(MakeDb(sizes), budget, alpha);
 
-        ASSERT_EQ(budgets.size(), num_trajectories);
-        EXPECT_EQ(Sum(budgets), budget);
-        for (std::size_t i = 0; i < num_trajectories; ++i) {
-            EXPECT_GE(budgets[i], allocation::kMinPointsPerTrajectory);
-            EXPECT_LE(budgets[i], sizes[i]);
+            ASSERT_EQ(budgets.size(), num_trajectories);
+            EXPECT_EQ(Sum(budgets), budget);
+            for (std::size_t i = 0; i < num_trajectories; ++i) {
+                EXPECT_GE(budgets[i], allocation::kMinPointsPerTrajectory);
+                EXPECT_LE(budgets[i], sizes[i]);
+            }
         }
     }
+}
+
+TEST(ProportionalBudget, AlphaZeroGivesEqualBudgets) {
+    const std::vector<std::size_t> expected = {5, 5, 5};
+    EXPECT_EQ(allocation::proportional_budget(MakeDb({10, 20, 30}), 15, 0.0), expected);
+}
+
+TEST(ProportionalBudget, AlphaHalfFollowsSquareRootOfSize) {
+    // Weights are sqrt(16) = 4 and sqrt(64) = 8
+    const std::vector<std::size_t> expected = {4, 8};
+    EXPECT_EQ(allocation::proportional_budget(MakeDb({16, 64}), 12, 0.5), expected);
+}
+
+TEST(ProportionalBudget, NegativeAlphaCapsShortTrajectoryAndMovesTheRest) {
+    // The short trajectory's share is 19 but it only has 10 points, the rest goes to the long one
+    const std::vector<std::size_t> expected = {10, 10};
+    EXPECT_EQ(allocation::proportional_budget(MakeDb({10, 1000}), 20, -1.0), expected);
+}
+
+TEST(ProportionalBudget, ThrowsOnNonFiniteAlpha) {
+    EXPECT_THROW(allocation::proportional_budget(MakeDb({10, 10}), 5, std::nan("")),
+                 std::invalid_argument);
 }
