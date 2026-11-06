@@ -116,7 +116,7 @@ std::vector<std::size_t> proportional_budget(const core::TrajectoryDb &trajector
     std::vector<std::size_t> budgets(num_trajectories);
     std::size_t allocated = 0;
     for (std::size_t i = 0; i < num_trajectories; ++i) {
-        // Multiply before dividing: with alpha 1: every value if an exact integer, so the floor
+        // Multiply before dividing: with alpha 1: every value is an exact integer, so the floor
         // equals the old sizes[i] * total_budget / num_points
         const auto share =
             static_cast<std::size_t>(static_cast<double>(total_budget) * weights[i] / weight_sum);
