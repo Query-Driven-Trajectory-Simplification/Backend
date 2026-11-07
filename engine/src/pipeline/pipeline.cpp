@@ -9,6 +9,7 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
+#include "backend/engine/query/route_clustering.hpp"
 #include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
@@ -59,12 +60,18 @@ void print_scores(const evaluator::Scoretable &scores) {
     std::cout << "  range F1: " << scores.range_f1 << ", recall: " << scores.range_recall << '\n';
     std::cout << "  join F1: " << scores.join.f1 << ", precision: " << scores.join.precision
               << ", recall: " << scores.join.recall << '\n';
+    if (!std::isnan(scores.clustering.score) || scores.clustering.reference_clusters != 0)
+        std::cout << "  route clustering: " << scores.clustering.score << " ("
+                  << scores.clustering.predicted_clusters << " clusters, "
+                  << scores.clustering.predicted_covered << " trajectories)\n";
 }
 
 void print_normalized(const evaluator::NormalizedScores &scores) {
     std::cout << "  normalized: knn=" << scores.knn << ", range=" << scores.range
-              << ", where-at=" << scores.where_at << ", join=" << scores.join
-              << ", combined=" << scores.combined << '\n';
+              << ", where-at=" << scores.where_at << ", join=" << scores.join;
+    if (!std::isnan(scores.clustering))
+        std::cout << ", clustering=" << scores.clustering;
+    std::cout << ", combined=" << scores.combined << '\n';
 }
 
 core::Simplification endpoints_only(const core::TrajectoryDb &trajectories) {
@@ -105,13 +112,28 @@ void run(const Config &config) {
                                                      : " queries, eps=")
               << join.eps_m << " m, " << join_pairs << " matching pairs\n";
 
+    query::RouteClusteringWorkload clustering;
+    if (config.clustering.enabled) {
+        clustering = query::generate_route_clustering(database, config.clustering, &join);
+        std::size_t covered = 0;
+        for (const auto &members : clustering.reference.members)
+            covered += members.size();
+        std::cout << "route clustering: " << clustering.reference.members.size()
+                  << " clusters covering " << covered << " trajectories, eps=" << clustering.eps_m
+                  << " m, min size " << clustering.min_size << '\n';
+    }
+
     if (config.export_results) {
         io::export_workloads(config.export_dir, database, range.queries, knn_workload);
         std::cout << "workloads written to " << config.export_dir.string() << '\n';
     }
 
-    const evaluator::Workloads workloads{
-        .knn = &knn_workload, .where_at = where_at.queries, .range = range.queries, .join = &join};
+    const evaluator::Workloads workloads{.knn = &knn_workload,
+                                         .where_at = where_at.queries,
+                                         .range = range.queries,
+                                         .join = &join,
+                                         .clustering =
+                                             config.clustering.enabled ? &clustering : nullptr};
 
     const auto floor_db = core::materialize(database, endpoints_only(database));
     std::cout << "floor, endpoints only: ";

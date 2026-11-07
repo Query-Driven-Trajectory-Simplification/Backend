@@ -27,7 +27,8 @@ EvaluationResult Evaluator::evaluate() const {
                        .range_recall = range.recall,
                        .where_at = get_where_at_scores(),
                        .join = get_join_scores(),
-                       .range_f1 = range.f1},
+                       .range_f1 = range.f1,
+                       .clustering = get_clustering_scores()},
             .knn = std::move(knn.answers),
             .range = std::move(range.answers)};
 }
@@ -50,6 +51,11 @@ WhereAtScores Evaluator::get_where_at_scores() const {
 
 JoinScores Evaluator::get_join_scores() const {
     return m_workloads.join ? evaluate_join(m_simplified, *m_workloads.join) : JoinScores{};
+}
+
+RouteClusteringScores Evaluator::get_clustering_scores() const {
+    return m_workloads.clustering ? evaluate_route_clustering(m_simplified, *m_workloads.clustering)
+                                  : RouteClusteringScores{};
 }
 
 } // namespace evaluator

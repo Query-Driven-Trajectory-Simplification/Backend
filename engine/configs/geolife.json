@@ -34,5 +34,10 @@
     "join": {
         "mode": "Self",
         "eps_m": 500.0
+    },
+    "clustering": {
+        "enabled": false,
+        "eps_m": 150.0,
+        "min_size": 5
     }
 }

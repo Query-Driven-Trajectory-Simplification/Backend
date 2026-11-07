@@ -182,3 +182,28 @@ TEST(Config, RejectsEmptyAllocationAlphas) {
                      "no_alphas.json", R"({"data_path": "d", "allocation_alphas": []})")),
                  std::invalid_argument);
 }
+
+TEST(Config, ReadsClusteringKeys) {
+    const auto config = pipeline::load_config(write_config("clustering.json", R"({
+        "data_path": "d", "clustering": {"enabled": true, "eps_m": 250.0, "min_size": 4}
+    })"));
+    EXPECT_TRUE(config.clustering.enabled);
+    EXPECT_DOUBLE_EQ(config.clustering.eps_m, 250.0);
+    EXPECT_EQ(config.clustering.min_size, 4u);
+}
+
+TEST(Config, RejectsInvalidClustering) {
+    EXPECT_THROW(
+        pipeline::load_config(write_config("clustering_small.json",
+                                           R"({"data_path": "d", "clustering": {"min_size": 1}})")),
+        std::invalid_argument);
+    EXPECT_THROW(pipeline::load_config(write_config(
+                     "clustering_key.json", R"({"data_path": "d", "clustering": {"minsize": 5}})")),
+                 std::invalid_argument);
+    for (const char *value : {"-1", "2.5", "\"5\""})
+        EXPECT_THROW(
+            pipeline::load_config(write_config(
+                "clustering_bad.json",
+                std::string(R"({"data_path": "d", "clustering": {"min_size": )") + value + "}}")),
+            std::invalid_argument);
+}

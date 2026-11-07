@@ -41,13 +41,16 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
     result.where_at_average_hit =
         normalize(scores.where_at.average_hit, floor.where_at.average_hit);
     result.join_f1 = normalize(scores.join.f1, floor.join.f1);
+    result.clustering_score = normalize(scores.clustering.score, floor.clustering.score);
 
     result.knn = result.knn_recall_at_k;
     result.range = result.range_f1;
     result.where_at = result.where_at_within_radius;
     result.join = result.join_f1;
+    result.clustering = result.clustering_score;
 
-    result.combined = mean_ignoring_nan({result.knn, result.range, result.where_at, result.join});
+    result.combined = mean_ignoring_nan(
+        {result.knn, result.range, result.where_at, result.join, result.clustering});
     return result;
 }
 
