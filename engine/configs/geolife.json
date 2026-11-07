@@ -1,5 +1,5 @@
 {
-    "data_path": "data/geolife_gap60.parquet",
+    "data_path": "data/geolife.parquet",
     "export_results": true,
     "export_dir": "data/output/geolife",
     "seed": 42,
