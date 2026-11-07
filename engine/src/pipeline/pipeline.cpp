@@ -55,11 +55,12 @@ void print_scores(const evaluator::Scoretable &scores) {
     std::cout << "  knn top-k tau: " << scores.knn.kendalls_tau_topk
               << ", recall@k: " << scores.knn.recall_at_k << " (" << scores.knn.query_count
               << " queries)\n";
-    std::cout << "  where-at: within radius=" << scores.where_at.within_radius
-              << ", average hit=" << scores.where_at.average_hit << '\n';
+    std::cout << "  where-at: average hit=" << scores.where_at.average_hit
+              << ", within radius=" << scores.where_at.within_radius << '\n';
     std::cout << "  range F1: " << scores.range_f1 << ", recall: " << scores.range_recall << '\n';
     std::cout << "  join F1: " << scores.join.f1 << ", precision: " << scores.join.precision
-              << ", recall: " << scores.join.recall << '\n';
+              << ", recall: " << scores.join.recall << ", micro F1: " << scores.join.micro_f1
+              << '\n';
     if (!std::isnan(scores.clustering.score) || scores.clustering.reference_clusters != 0)
         std::cout << "  route clustering: " << scores.clustering.score << " ("
                   << scores.clustering.predicted_clusters << " clusters, "

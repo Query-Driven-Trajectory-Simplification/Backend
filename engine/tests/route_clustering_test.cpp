@@ -242,7 +242,7 @@ TEST(RouteClustering, CombinedIncludesClustering) {
     evaluator::Scoretable floor{};
     floor.knn.recall_at_k = 0.0;
     floor.range_f1 = 0.0;
-    floor.where_at.within_radius = 0.0;
+    floor.where_at.average_hit = 0.0;
     floor.join.f1 = 0.0;
     floor.clustering.score = 0.5;
     auto scores = floor;

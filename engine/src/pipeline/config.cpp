@@ -82,6 +82,11 @@ void parse_where_at_scoring_config(Config &config, const json &scoring) {
         scoring.value("min_tolerance_m", config.where_at_scoring.min_tolerance_m);
     config.where_at_scoring.max_tolerance_m =
         scoring.value("max_tolerance_m", config.where_at_scoring.max_tolerance_m);
+    const auto &s = config.where_at_scoring;
+    if (!(s.hit_radius_m > 0.0) || !std::isfinite(s.hit_radius_m) || !(s.min_tolerance_m >= 0.0) ||
+        !std::isfinite(s.max_tolerance_m) || !(s.min_tolerance_m < s.max_tolerance_m))
+        throw std::invalid_argument("config: where_at_scoring needs a finite positive hit radius "
+                                    "and 0 <= min_tolerance_m < max_tolerance_m");
 }
 
 void parse_join_config(Config &config, const json &join) {

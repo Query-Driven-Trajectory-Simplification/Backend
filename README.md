@@ -1,4 +1,4 @@
-# Query-Driven Trajectory Simplification — Backend
+# Query-Driven Trajectory Simplification
 
 C++ backend for simplifying GPS trajectories under a point budget and measuring how well the
 simplified data still answers kNN, range and where-at-time queries.
@@ -79,7 +79,7 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | `knn` | `k` and `query_count` (`0` = every trajectory in the query split) |
 | `range` | Box size (m), time window (s) and sampling limits for range queries |
 | `where_at` | Probes per trajectory and max time gap (s) between points to probe |
-| `where_at_scoring` | Hit radius and tolerance range (m) for scoring where-at queries |
+| `where_at_scoring` | Tolerance range (m) for the primary average-hit score, and the hit radius (m) for the within-radius diagnostic |
 | `frechet` | Fréchet variant for kNN, join and clustering: `Discrete` (kept vertices only, the default) or `Continuous` (polyline distance, unaffected by adding a vertex on an edge) |
 | `clustering` | Route clustering metric: `enabled`, neighbour threshold `eps_m` (m) and `min_size` per cluster. Reuses the self join when `join.mode` is `Self` with the same eps |
 | `allocation_alphas` | Allocation exponents to test: budgets follow size^α (`1` = size-proportional, `0` = equal). Exports for α ≠ 1 get an `_a<α>` suffix |

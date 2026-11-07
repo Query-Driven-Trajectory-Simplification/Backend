@@ -190,6 +190,30 @@ TEST(JoinEvaluator, SimplifiedScoresMatchBruteForceJoin) {
     EXPECT_LT(scores.f1, 1.0);
 }
 
+TEST(JoinEvaluator, FilteredHeldOutWorkloadIsScoredPerEntry) {
+    std::mt19937_64 rng(29);
+    const auto db = make_db(random_tracks(rng, 60));
+    const auto pool = make_db(random_tracks(rng, 6));
+    auto workload = query::generate_join_queries(db, pool, {.query_count = 0});
+    const std::vector<std::size_t> budgets(db.size(), 3);
+    const auto compressed = core::materialize(
+        db, selection::simplify_database(db, selection::AlgorithmType::SED, budgets));
+    const auto full = evaluator::evaluate_join(compressed, workload);
+    // Keep only the last query, whose index is past the size of the filtered workload
+    workload.entries.erase(workload.entries.begin(), workload.entries.end() - 1);
+    const auto kept = evaluator::evaluate_join(compressed, workload);
+    EXPECT_EQ(kept.query_count, 1u);
+    const auto &entry = workload.entries.front();
+    const auto found =
+        query::join(compressed, workload.queries.trajectory(entry.query_index), workload.eps_m);
+    std::vector<std::size_t> hits;
+    std::ranges::set_intersection(entry.reference, found, std::back_inserter(hits));
+    if (!found.empty() || !entry.reference.empty())
+        EXPECT_DOUBLE_EQ(kept.f1, 2.0 * static_cast<double>(hits.size()) /
+                                      static_cast<double>(found.size() + entry.reference.size()));
+    EXPECT_EQ(full.query_count, pool.size());
+}
+
 TEST(JoinEvaluator, EmptyWorkloadIsNaN) {
     const auto db = make_db({{{39.9, 116.3}, {39.91, 116.3}}});
     const query::JoinWorkload workload{core::subset(db, {}), {}, 100.0};
@@ -218,11 +242,11 @@ TEST(SelfJoin, BothOperandsAreSimplifiedAndPairsAreUnordered) {
     EXPECT_EQ(scores.reference_pairs, 1u);
     EXPECT_EQ(scores.predicted_pairs, 1u);
     EXPECT_EQ(scores.true_positive_pairs, 1u);
-    EXPECT_EQ(scores.query_count, 0u);
+    EXPECT_EQ(scores.query_count, 2u);
     EXPECT_EQ(scores.mode, query::JoinMode::Self);
 }
 
-TEST(SelfJoin, CountsFalsePositivesAndUsesMicroRatherThanRowMean) {
+TEST(SelfJoin, CountsFalsePositivesPerTrajectory) {
     const Track up{{39.9, 116.3}, {39.92, 116.3}, {39.9, 116.31}};
     const Track down{{39.9, 116.3}, {39.88, 116.3}, {39.9, 116.31}};
     const auto db = make_db({up, up, down});
@@ -236,9 +260,35 @@ TEST(SelfJoin, CountsFalsePositivesAndUsesMicroRatherThanRowMean) {
     EXPECT_EQ(scores.reference_pairs, 1u);
     EXPECT_EQ(scores.predicted_pairs, 3u);
     EXPECT_EQ(scores.true_positive_pairs, 1u);
+    // Trajectories 0 and 1 find their true partner plus a false one, F1 2/3 each. Trajectory 2
+    // has no true partner but finds two, F1 0.
+    EXPECT_DOUBLE_EQ(scores.f1, 4.0 / 9);
     EXPECT_DOUBLE_EQ(scores.precision, 1.0 / 3);
     EXPECT_DOUBLE_EQ(scores.recall, 1);
-    EXPECT_DOUBLE_EQ(scores.f1, 0.5);
+    EXPECT_DOUBLE_EQ(scores.micro_f1, 0.5);
+    EXPECT_DOUBLE_EQ(scores.micro_precision, 1.0 / 3);
+    EXPECT_DOUBLE_EQ(scores.micro_recall, 1);
+}
+
+TEST(SelfJoin, EveryTrajectoryWeighsTheSameHoweverManyPartnersItHas) {
+    // Four copies of a straight line keep all 6 of their pairs, while a bend loses its only
+    // partner. Pooling pairs hides the loss; averaging over trajectories does not.
+    const Track bend{{39.9, 116.3}, {39.92, 116.3}, {39.9, 116.31}};
+    const Track line{{40.5, 116.3}, {40.5, 116.31}};
+    const auto db = make_db({bend, bend, line, line, line, line});
+    const auto workload = query::generate_self_join(db, 500);
+    core::Simplification s;
+    s.add_trajectory(std::vector<std::size_t>{0, 2});
+    s.add_trajectory(std::vector<std::size_t>{0, 1, 2});
+    for (int i = 0; i < 4; ++i)
+        s.add_trajectory(std::vector<std::size_t>{0, 1});
+    const auto scores = evaluator::evaluate_join(core::materialize(db, s), workload);
+    EXPECT_EQ(scores.reference_pairs, 7u);
+    EXPECT_EQ(scores.true_positive_pairs, 6u);
+    EXPECT_DOUBLE_EQ(scores.micro_f1, 12.0 / 13);
+    EXPECT_DOUBLE_EQ(scores.f1, 4.0 / 6);
+    EXPECT_DOUBLE_EQ(scores.recall, 4.0 / 6);
+    EXPECT_DOUBLE_EQ(scores.precision, 1);
 }
 
 TEST(SelfJoin, MatchesIndependentFullGridOnAllOriginalAndCompressedPairs) {
@@ -277,7 +327,30 @@ TEST(SelfJoin, MatchesIndependentFullGridOnAllOriginalAndCompressedPairs) {
         EXPECT_EQ(scores.predicted_pairs, predicted);
         EXPECT_EQ(scores.true_positive_pairs, hits);
         if (truth + predicted)
-            EXPECT_DOUBLE_EQ(scores.f1, 2.0 * hits / (truth + predicted));
+            EXPECT_DOUBLE_EQ(scores.micro_f1, 2.0 * hits / (truth + predicted));
+        else
+            EXPECT_TRUE(std::isnan(scores.micro_f1));
+        // Every trajectory as a query over all others
+        double f1_sum = 0.0;
+        std::size_t counted = 0;
+        for (std::size_t i = 0; i < db.size(); ++i) {
+            std::size_t ref = 0, pred = 0, both = 0;
+            for (std::size_t j = 0; j < db.size(); ++j) {
+                if (j == i)
+                    continue;
+                const bool r = frechet(db.trajectory(i), db.trajectory(j)) <= eps;
+                const bool p = frechet(compressed.trajectory(i), compressed.trajectory(j)) <= eps;
+                ref += r;
+                pred += p;
+                both += r && p;
+            }
+            if (ref + pred) {
+                f1_sum += 2.0 * static_cast<double>(both) / static_cast<double>(ref + pred);
+                ++counted;
+            }
+        }
+        if (counted)
+            EXPECT_NEAR(scores.f1, f1_sum / static_cast<double>(counted), 1e-12);
         else
             EXPECT_TRUE(std::isnan(scores.f1));
         if (truth)
@@ -312,6 +385,7 @@ TEST(SelfJoin, EmptyPairSetsAreUndefinedAndInvalidInputsAreRejected) {
         EXPECT_TRUE(std::isnan(scores.f1));
         EXPECT_TRUE(std::isnan(scores.precision));
         EXPECT_TRUE(std::isnan(scores.recall));
+        EXPECT_TRUE(std::isnan(scores.micro_f1));
     }
     const auto db = make_db({{{39.9, 116.3}}, {{39.9, 116.3}}});
     for (double eps : {0., -1., std::numeric_limits<double>::infinity(),

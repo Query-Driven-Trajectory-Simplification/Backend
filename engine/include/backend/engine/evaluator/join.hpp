@@ -8,17 +8,20 @@
 
 namespace evaluator {
 
-// HeldOut mode averages over queries. Self mode uses global unordered-pair micro scores.
-// Self precision/recall are NaN for empty prediction/reference respectively; F1 is NaN
-// only when both pair sets are empty, otherwise 2*TP/(predicted+reference).
-// HeldOut: averages over queries. Precision skips queries with an empty simplified result, recall
-// those with an empty reference, F1 those where both are empty. NaN if no query counts.
+// Averages over queries, so every trajectory weighs the same however many partners it has.
+// In Self mode every database trajectory is a query, and a pair counts for both of its
+// trajectories. Precision skips queries with an empty simplified result, recall those with an
+// empty reference, F1 those where both are empty. NaN if no query counts.
+// The micro scores pool all pairs instead, a diagnostic that busy routes dominate.
 struct JoinScores {
     double f1 = std::numeric_limits<double>::quiet_NaN();
     double precision = std::numeric_limits<double>::quiet_NaN();
     double recall = std::numeric_limits<double>::quiet_NaN();
+    double micro_f1 = std::numeric_limits<double>::quiet_NaN();
+    double micro_precision = std::numeric_limits<double>::quiet_NaN();
+    double micro_recall = std::numeric_limits<double>::quiet_NaN();
     double eps_m = std::numeric_limits<double>::quiet_NaN();
-    std::size_t query_count = 0; // held-out queries only; zero for Self
+    std::size_t query_count = 0; // Self: database trajectories
     query::JoinMode mode = query::JoinMode::HeldOut;
     std::size_t candidate_pairs = 0;
     std::size_t reference_pairs = 0;
