@@ -51,65 +51,71 @@ JoinScores evaluate_join(const core::TrajectoryDb &compressed,
         }
     }
     const std::size_t n = workload.entries.size();
-    std::vector<Counts> totals(n);
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    std::vector<double> f1, precision, recall;
-    if (!self) {
-        f1.assign(n, nan);
-        precision.assign(n, nan);
-        recall.assign(n, nan);
-    }
 
+    // Simplification keeps endpoints, so the original candidates cover every possible match
+    std::vector<std::vector<std::size_t>> matched(n);
     core::parallel_for(n, [&](std::size_t i) {
         const auto &entry = workload.entries[i];
         const auto query = self ? compressed.trajectory(entry.query_index)
                                 : workload.queries.trajectory(entry.query_index);
-
-        // Simplification keeps endpoints, so the original candidates cover every possible match
-        Counts counts;
         for (const auto j : entry.candidates) {
-            if (!query::frechet_within(query, compressed.trajectory(j), workload.eps_m,
-                                       workload.frechet))
-                continue;
-            ++counts.found;
-            if (std::ranges::binary_search(entry.reference, j))
-                ++counts.hits;
+            if (query::frechet_within(query, compressed.trajectory(j), workload.eps_m,
+                                      workload.frechet))
+                matched[i].push_back(j);
         }
-
-        totals[i] = counts;
-        if (self)
-            return;
-        const auto hits = static_cast<double>(counts.hits);
-        const auto found = static_cast<double>(counts.found);
-        const auto truth = static_cast<double>(entry.reference.size());
-        if (counts.found != 0)
-            precision[i] = hits / found;
-        if (!entry.reference.empty())
-            recall[i] = hits / truth;
-        if (counts.found != 0 || !entry.reference.empty())
-            f1[i] = 2.0 * hits / (found + truth);
     });
 
-    JoinScores result{.f1 = self ? nan : average(f1),
-                      .precision = self ? nan : average(precision),
-                      .recall = self ? nan : average(recall),
-                      .eps_m = workload.eps_m,
-                      .query_count = self ? 0 : n,
-                      .mode = workload.mode};
+    // In Self mode every trajectory is a query, and each pair counts for both of its trajectories
+    const std::size_t queries = self ? compressed.size() : n;
+    std::vector<Counts> counts(queries);
+    std::vector<std::size_t> truth(queries, 0);
+    JoinScores result{.eps_m = workload.eps_m, .query_count = queries, .mode = workload.mode};
     for (std::size_t i = 0; i < n; ++i) {
-        result.candidate_pairs += workload.entries[i].candidates.size();
-        result.reference_pairs += workload.entries[i].reference.size();
-        result.predicted_pairs += totals[i].found;
-        result.true_positive_pairs += totals[i].hits;
+        const auto &entry = workload.entries[i];
+        const auto q = self ? entry.query_index : i;
+        for (const auto j : matched[i]) {
+            const bool hit = std::ranges::binary_search(entry.reference, j);
+            ++counts[q].found;
+            counts[q].hits += hit;
+            if (self) {
+                ++counts[j].found;
+                counts[j].hits += hit;
+            }
+            result.true_positive_pairs += hit;
+        }
+        truth[q] += entry.reference.size();
+        if (self) {
+            for (const auto j : entry.reference)
+                ++truth[j];
+        }
+        result.candidate_pairs += entry.candidates.size();
+        result.reference_pairs += entry.reference.size();
+        result.predicted_pairs += matched[i].size();
     }
-    if (self) {
-        const double hits = static_cast<double>(result.true_positive_pairs);
-        const double found = static_cast<double>(result.predicted_pairs);
-        const double truth = static_cast<double>(result.reference_pairs);
-        result.precision = found == 0 ? nan : hits / found;
-        result.recall = truth == 0 ? nan : hits / truth;
-        result.f1 = found + truth == 0 ? nan : 2.0 * hits / (found + truth);
+
+    std::vector<double> f1(queries, nan), precision(queries, nan), recall(queries, nan);
+    for (std::size_t q = 0; q < queries; ++q) {
+        const auto hits = static_cast<double>(counts[q].hits);
+        const auto found = static_cast<double>(counts[q].found);
+        const auto expected = static_cast<double>(truth[q]);
+        if (counts[q].found != 0)
+            precision[q] = hits / found;
+        if (truth[q] != 0)
+            recall[q] = hits / expected;
+        if (counts[q].found != 0 || truth[q] != 0)
+            f1[q] = 2.0 * hits / (found + expected);
     }
+    result.f1 = average(f1);
+    result.precision = average(precision);
+    result.recall = average(recall);
+
+    const auto hits = static_cast<double>(result.true_positive_pairs);
+    const auto found = static_cast<double>(result.predicted_pairs);
+    const auto expected = static_cast<double>(result.reference_pairs);
+    result.micro_precision = found == 0 ? nan : hits / found;
+    result.micro_recall = expected == 0 ? nan : hits / expected;
+    result.micro_f1 = found + expected == 0 ? nan : 2.0 * hits / (found + expected);
     return result;
 }
 

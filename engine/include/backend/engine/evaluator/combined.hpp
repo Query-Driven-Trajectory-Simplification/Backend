@@ -7,11 +7,11 @@
 namespace evaluator {
 
 // 0 = the floor (endpoints only), 1 = perfect, without clipping. Combined averages
-// one primary score per type: recall@k, range F1, where-at within-radius hit rate, join F1
-// and route clustering.
-// Missing primaries are skipped, never replaced with a diagnostic score.
-// The radius is configured by hit_radius_m (100 m for the research protocol).
-// Average-hit remains a diagnostic and does not contribute to the combined score.
+// one primary score per type: recall@k, range F1, where-at average-hit, join F1 and route
+// clustering. Missing primaries are skipped, never replaced with a diagnostic score.
+// Average-hit is the hit rate averaged over a tolerance drawn uniformly from
+// [min_tolerance_m, max_tolerance_m]. The within-radius hit rate at hit_radius_m is a
+// diagnostic and does not contribute to the combined score.
 struct NormalizedScores {
     static constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 

@@ -68,7 +68,7 @@ TEST(NormalizeScores, SkipsMissingQueryTypes) {
     auto scores = all_scores(0.75);
     floor.join.f1 = missing;
     scores.join.f1 = missing;
-    scores.where_at.within_radius = missing;
+    scores.where_at.average_hit = missing;
     const auto normalized = evaluator::normalize_scores(scores, floor);
     EXPECT_TRUE(std::isnan(normalized.join));
     EXPECT_TRUE(std::isnan(normalized.where_at));
@@ -86,20 +86,21 @@ TEST(NormalizeScores, DiagnosticsNeverChangePrimaryScores) {
     auto scores = all_scores(0.5);
     scores.knn.kendalls_tau_topk = -1.0;
     scores.range_recall = 0.0;
-    scores.where_at.average_hit = 1.0;
+    scores.where_at.within_radius = 1.0;
+    scores.join.micro_f1 = 0.0;
     const auto normalized = evaluator::normalize_scores(scores, floor);
     EXPECT_DOUBLE_EQ(normalized.combined, 0.5);
     EXPECT_DOUBLE_EQ(normalized.knn_kendalls_tau_topk, -1.0);
     EXPECT_DOUBLE_EQ(normalized.range_recall, 0.0);
-    EXPECT_DOUBLE_EQ(normalized.where_at_average_hit, 1.0);
+    EXPECT_DOUBLE_EQ(normalized.where_at_within_radius, 1.0);
     scores.knn.recall_at_k = missing;
     scores.range_f1 = missing;
-    scores.where_at.within_radius = missing;
+    scores.where_at.average_hit = missing;
     scores.join.f1 = missing;
     EXPECT_TRUE(std::isnan(evaluator::normalize_scores(scores, floor).combined));
 }
 
-TEST(NormalizeScores, WhereAtUsesHitRateAndItsOwnEndpointFloor) {
+TEST(NormalizeScores, WhereAtUsesAverageHitAndItsOwnEndpointFloor) {
     auto floor = all_scores(0.0);
     auto scores = all_scores(0.0);
     floor.where_at.within_radius = 0.2;
@@ -107,7 +108,7 @@ TEST(NormalizeScores, WhereAtUsesHitRateAndItsOwnEndpointFloor) {
     floor.where_at.average_hit = 0.4;
     scores.where_at.average_hit = 1.0;
     const auto normalized = evaluator::normalize_scores(scores, floor);
-    EXPECT_DOUBLE_EQ(normalized.where_at, 0.5);
-    EXPECT_DOUBLE_EQ(normalized.where_at_average_hit, 1.0);
-    EXPECT_DOUBLE_EQ(normalized.combined, 0.125);
+    EXPECT_DOUBLE_EQ(normalized.where_at, 1.0);
+    EXPECT_DOUBLE_EQ(normalized.where_at_within_radius, 0.5);
+    EXPECT_DOUBLE_EQ(normalized.combined, 0.25);
 }

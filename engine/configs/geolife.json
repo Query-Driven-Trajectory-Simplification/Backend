@@ -27,7 +27,7 @@
         "max_gap_seconds": 60.0
     },
     "where_at_scoring": {
-        "hit_radius_m": 150.0,
+        "hit_radius_m": 100.0,
         "min_tolerance_m": 25.0,
         "max_tolerance_m": 500.0
     },
