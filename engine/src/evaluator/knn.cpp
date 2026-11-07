@@ -102,7 +102,7 @@ KnnEvaluation evaluate_knn(const core::TrajectoryDb &compressed,
     core::parallel_for(workload.entries.size(), [&](std::size_t i) {
         const auto &query = workload.entries[i];
         const auto trajectory = workload.queries.trajectory(query.query_index);
-        const auto simplified = query::knn(compressed, trajectory, workload.k);
+        const auto simplified = query::knn(compressed, trajectory, workload.k, workload.frechet);
         auto &answer = result.answers[i];
         answer.query_trajectory_id = trajectory.trajectory_id;
         answer.neighbors.reserve(simplified.size());

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/query/frechet_helper.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,7 @@ struct KnnConfig {
     std::size_t k = 5;
     std::size_t query_count = 10; // 0 = use every trajectory in the query pool
     double p = 0.5; // top-k tau penalty for a pair one list holds neither of, in [0, 1]
+    FrechetVariant frechet = FrechetVariant::Discrete;
 };
 
 struct KnnWorkload {
@@ -24,6 +26,7 @@ struct KnnWorkload {
     std::vector<KnnQuery> entries;
     std::size_t k;
     double p = 0.5;
+    FrechetVariant frechet = FrechetVariant::Discrete;
 };
 
 // Samples query_count trajectories from query_pool (the held-out split) and stores their k
@@ -32,9 +35,11 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
                                  const core::TrajectoryDb &query_pool, const KnnConfig &config = {},
                                  std::uint64_t seed = 42);
 
-// Indices into trajectories of the k trajectories closest to query by discrete Fréchet
-// distance, closest first. Equal distances are ordered by database index.
+// Indices into trajectories of the k trajectories closest to query by Fréchet distance, closest
+// first. Equal distances are ordered by database index; continuous distances within 1 mm count
+// as equal.
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectories,
-                             const core::TrajectoryView &query, std::size_t k);
+                             const core::TrajectoryView &query, std::size_t k,
+                             FrechetVariant variant = FrechetVariant::Discrete);
 
 } // namespace query

@@ -207,3 +207,17 @@ TEST(Config, RejectsInvalidClustering) {
                 std::string(R"({"data_path": "d", "clustering": {"min_size": )") + value + "}}")),
             std::invalid_argument);
 }
+
+TEST(Config, FrechetVariantAppliesToEveryFrechetQuery) {
+    const auto config = pipeline::load_config(
+        write_config("frechet.json", R"({"data_path": "d", "frechet": "Continuous"})"));
+    EXPECT_EQ(config.knn.frechet, query::FrechetVariant::Continuous);
+    EXPECT_EQ(config.join.frechet, query::FrechetVariant::Continuous);
+    EXPECT_EQ(config.clustering.frechet, query::FrechetVariant::Continuous);
+    const auto defaults =
+        pipeline::load_config(write_config("frechet_default.json", R"({"data_path": "d"})"));
+    EXPECT_EQ(defaults.join.frechet, query::FrechetVariant::Discrete);
+    EXPECT_THROW(pipeline::load_config(
+                     write_config("frechet_bad.json", R"({"data_path": "d", "frechet": "Weak"})")),
+                 std::invalid_argument);
+}

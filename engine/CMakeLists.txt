@@ -31,6 +31,7 @@ add_library(engine
     src/evaluator/knn.cpp
     src/query/knn.cpp
     src/query/frechet_helper.cpp
+    src/query/continuous_frechet.cpp
     src/evaluator/where_at.cpp
     src/query/range_query.cpp
     src/evaluator/range.cpp
@@ -72,6 +73,7 @@ add_executable(engine_tests
     tests/join_test.cpp
     tests/combined_test.cpp
     tests/route_clustering_test.cpp
+    tests/continuous_frechet_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
 gtest_discover_tests(engine_tests)

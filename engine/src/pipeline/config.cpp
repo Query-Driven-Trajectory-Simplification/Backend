@@ -109,7 +109,7 @@ Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
                    "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
-                   "where_at_scoring", "join", "clustering"},
+                   "where_at_scoring", "join", "clustering", "frechet"},
                   "root");
     Config config;
 
@@ -144,6 +144,13 @@ Config parse_config(const json &data) {
     parse_where_at_scoring_config(config, data.value("where_at_scoring", json::object()));
     parse_join_config(config, data.value("join", json::object()));
     parse_clustering_config(config, data.value("clustering", json::object()));
+    // One distance for every Fréchet-based query, so both sides of each comparison agree
+    if (data.contains("frechet")) {
+        const auto variant = parse_enum<query::FrechetVariant>(data["frechet"]);
+        config.knn.frechet = variant;
+        config.join.frechet = variant;
+        config.clustering.frechet = variant;
+    }
 
     return config;
 }
