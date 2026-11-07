@@ -92,11 +92,24 @@ void parse_join_config(Config &config, const json &join) {
     config.join.eps_m = join.value("eps_m", config.join.eps_m);
 }
 
+void parse_clustering_config(Config &config, const json &clustering) {
+    validate_keys(clustering, {"enabled", "eps_m", "min_size"}, "clustering");
+    config.clustering.enabled = clustering.value("enabled", config.clustering.enabled);
+    config.clustering.eps_m = clustering.value("eps_m", config.clustering.eps_m);
+    if (clustering.contains("min_size")) {
+        // Checked before conversion, since a negative value would wrap around in size_t
+        const auto &min_size = clustering["min_size"];
+        if (!min_size.is_number_unsigned() || min_size.get<std::size_t>() < 2)
+            throw std::invalid_argument("config: clustering.min_size must be an integer >= 2");
+        config.clustering.min_size = min_size.get<std::size_t>();
+    }
+}
+
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
                    "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
-                   "where_at_scoring", "join"},
+                   "where_at_scoring", "join", "clustering"},
                   "root");
     Config config;
 
@@ -130,6 +143,7 @@ Config parse_config(const json &data) {
     parse_where_at_config(config, data.value("where_at", json::object()));
     parse_where_at_scoring_config(config, data.value("where_at_scoring", json::object()));
     parse_join_config(config, data.value("join", json::object()));
+    parse_clustering_config(config, data.value("clustering", json::object()));
 
     return config;
 }

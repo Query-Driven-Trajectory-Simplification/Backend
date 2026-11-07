@@ -4,6 +4,7 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
+#include "backend/engine/query/route_clustering.hpp"
 #include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
@@ -29,6 +30,7 @@ struct Config {
     query::WhereAtConfig where_at;
     evaluator::WhereAtScoringConfig where_at_scoring;
     query::JoinConfig join;
+    query::RouteClusteringConfig clustering;
 };
 
 // Reads a JSON config. Only data_path is required, a missing key keeps its default.

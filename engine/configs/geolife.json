@@ -1,5 +1,5 @@
 {
-    "data_path": "data/geolife.parquet",
+    "data_path": "data/geolife_gap60.parquet",
     "export_results": true,
     "export_dir": "data/output/geolife",
     "seed": 42,
@@ -34,5 +34,10 @@
     "join": {
         "mode": "Self",
         "eps_m": 500.0
+    },
+    "clustering": {
+        "enabled": false,
+        "eps_m": 150.0,
+        "min_size": 5
     }
 }
