@@ -87,6 +87,7 @@ RouteClusteringWorkload generate_route_clustering(const core::TrajectoryDb &orig
     RouteClusteringWorkload workload;
     workload.eps_m = config.eps_m;
     workload.min_size = config.min_size;
+    workload.frechet = config.frechet;
     workload.originals.reserve(original.size());
     for (std::size_t i = 0; i < original.size(); ++i)
         workload.originals.push_back(endpoints_of(original.trajectory(i)));
@@ -105,7 +106,8 @@ RouteClusteringWorkload generate_route_clustering(const core::TrajectoryDb &orig
     };
     std::vector<TrajectoryPair> reference;
     const bool reuse = self_join && self_join->mode == JoinMode::Self &&
-                       self_join->eps_m == config.eps_m && same_database();
+                       self_join->eps_m == config.eps_m && self_join->frechet == config.frechet &&
+                       same_database();
     if (reuse) {
         for (const auto &entry : self_join->entries) {
             for (const auto j : entry.candidates)
@@ -114,7 +116,7 @@ RouteClusteringWorkload generate_route_clustering(const core::TrajectoryDb &orig
                 reference.emplace_back(entry.query_index, j);
         }
     } else {
-        const auto join = generate_self_join(original, config.eps_m);
+        const auto join = generate_self_join(original, config.eps_m, config.frechet);
         return generate_route_clustering(original, config, &join);
     }
     workload.reference = cluster_routes(original, reference, config.min_size);

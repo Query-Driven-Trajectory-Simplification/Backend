@@ -33,11 +33,12 @@
     },
     "join": {
         "mode": "Self",
-        "eps_m": 500.0
+        "eps_m": 150.0
     },
     "clustering": {
-        "enabled": false,
+        "enabled": true,
         "eps_m": 150.0,
         "min_size": 5
-    }
+    },
+    "frechet": "Continuous"
 }

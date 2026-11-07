@@ -68,7 +68,8 @@ JoinScores evaluate_join(const core::TrajectoryDb &compressed,
         // Simplification keeps endpoints, so the original candidates cover every possible match
         Counts counts;
         for (const auto j : entry.candidates) {
-            if (!query::frechet_within(query, compressed.trajectory(j), workload.eps_m))
+            if (!query::frechet_within(query, compressed.trajectory(j), workload.eps_m,
+                                       workload.frechet))
                 continue;
             ++counts.found;
             if (std::ranges::binary_search(entry.reference, j))

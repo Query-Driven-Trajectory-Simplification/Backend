@@ -56,7 +56,7 @@ query::RouteClusters compressed_route_clusters(const core::TrajectoryDb &compres
     core::parallel_for(workload.candidates.size(), [&](std::size_t k) {
         const auto [i, j] = workload.candidates[k];
         matched[k] = query::frechet_within(compressed.trajectory(i), compressed.trajectory(j),
-                                           workload.eps_m);
+                                           workload.eps_m, workload.frechet);
     });
     std::vector<query::TrajectoryPair> neighbours;
     for (std::size_t k = 0; k < matched.size(); ++k) {
