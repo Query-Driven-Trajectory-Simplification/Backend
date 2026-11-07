@@ -255,7 +255,8 @@ TEST(ContinuousFrechet, LongSegmentWithAVertexOnItIsAtDistanceZeroExactCoordinat
 
 TEST(ContinuousFrechet, LongSegmentWithAVertexOnItIsAtDistanceZero) {
     // Built in projected coordinates, so the inserted vertex lies on the segment
-    const auto ends = make_db({{{0, 0}, {-81677.87045, -85151.97823}}}).trajectory(0);
+    const auto ends_db = make_db({{{0, 0}, {-81677.87045, -85151.97823}}});
+    const auto ends = ends_db.trajectory(0);
     const double ax = ends.x[0], ay = ends.y[0], bx = ends.x[1], by = ends.y[1];
     for (const double f : {0.75641311848, 0.5, 0.1, 0.999}) {
         const auto db = make_db(
