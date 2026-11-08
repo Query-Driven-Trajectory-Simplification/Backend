@@ -45,7 +45,7 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
 
     result.knn = result.knn_recall_at_k;
     result.range = result.range_f1;
-    result.where_at = result.where_at_within_radius;
+    result.where_at = result.where_at_average_hit;
     result.join = result.join_f1;
     result.clustering = result.clustering_score;
 

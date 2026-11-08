@@ -221,3 +221,13 @@ TEST(Config, FrechetVariantAppliesToEveryFrechetQuery) {
                      write_config("frechet_bad.json", R"({"data_path": "d", "frechet": "Weak"})")),
                  std::invalid_argument);
 }
+
+TEST(Config, RejectsInvalidWhereAtScoring) {
+    for (const char *scoring : {R"({"min_tolerance_m": 500.0, "max_tolerance_m": 25.0})",
+                                R"({"hit_radius_m": 0.0})", R"({"min_tolerance_m": -1.0})"})
+        EXPECT_THROW(
+            pipeline::load_config(write_config(
+                "where_at_scoring_bad.json",
+                std::string(R"({"data_path": "d", "where_at_scoring": )") + scoring + "}")),
+            std::invalid_argument);
+}
