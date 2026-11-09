@@ -19,3 +19,4 @@ enable_testing()
 
 add_subdirectory(data_processing)
 add_subdirectory(engine)
+add_subdirectory(teacher)

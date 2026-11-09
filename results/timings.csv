@@ -1,0 +1,5 @@
+seed,step,seconds
+42,caches,2755.20
+42,teacher,0.00
+42,baselines,3.17
+42,test_workloads,388.75
