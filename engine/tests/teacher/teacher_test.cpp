@@ -160,7 +160,7 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto result = model.run(budget, arms);
 
     ASSERT_EQ(result.size(), arms.size());
-    double teacher_jt = 0, br_jt = 0, gate_jt = 0, br_a0_jt = 0;
+    double gate_jt = 0, br_a0_jt = 0;
     for (const auto &arm : result) {
         SCOPED_TRACE(arm.name);
         ASSERT_EQ(arm.simplification.size(), db.size());
@@ -173,20 +173,16 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
             EXPECT_TRUE(std::ranges::is_sorted(kept));
             EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
         }
-        if (arm.name == "TEACHER")
-            teacher_jt = arm.objective;
-        if (arm.name == "BR_TEACHER")
-            br_jt = arm.objective;
         if (arm.name == "GATE_a0")
             gate_jt = arm.objective;
         if (arm.name == "BR_a0")
             br_a0_jt = arm.objective;
     }
-    EXPECT_GE(br_jt, teacher_jt - 1e-12);
     EXPECT_GE(br_a0_jt, gate_jt - 1e-12);
 }
 
 TEST(Teacher, RejectsUnknownArms) {
-    EXPECT_TRUE(teacher::is_arm("TEACHER"));
-    EXPECT_FALSE(teacher::is_arm("teacher"));
+    EXPECT_TRUE(teacher::is_arm("GATE_a0"));
+    EXPECT_FALSE(teacher::is_arm("gate_a0"));
+    EXPECT_FALSE(teacher::is_arm("TEACHER")); // allocation arms are not built for now
 }

@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <format>
 #include <iostream>
 #include <map>
@@ -69,20 +68,16 @@ Methods independent_choice(const core::TrajectoryDb &db, const Objective &object
     return method;
 }
 
-// Value curves up to cap points, never more than a trajectory has: the best candidate's value and
-// RDP's alone. Scored independently, partners fixed at the given reference state
-struct Curves {
-    std::vector<Curve> best, rdp;
-};
-
-Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
-                    const KeptSets &partners, std::size_t cap) {
-    Curves curves{std::vector<Curve>(db.size()), std::vector<Curve>(db.size())};
+// Value curves from 2 up to max_budget[i] points: the best candidate's value and method at each
+// budget. Scored independently, partners fixed at the given reference state
+std::vector<Curve> build_curves(const core::TrajectoryDb &db, const Objective &objective,
+                                const KeptSets &partners,
+                                const std::vector<std::size_t> &max_budget) {
+    std::vector<Curve> curves(db.size());
     core::parallel_for(db.size(), [&](std::size_t i) {
         const auto trajectory = db.trajectory(i);
-        const std::size_t max_b = std::min(cap, trajectory.size());
-        auto &best = curves.best[i];
-        auto &rdp = curves.rdp[i];
+        const std::size_t max_b = std::min(max_budget[i], trajectory.size());
+        auto &best = curves[i];
         for (std::size_t b = 2; b <= max_b; ++b) {
             double best_value = 0;
             std::uint8_t best_method = 0;
@@ -92,8 +87,6 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
                     break;
                 const auto kept = selection::simplify_trajectory(trajectory, kCandidates[c], b);
                 const double v = objective.independent_value(i, kept, &partners);
-                if (c == 0)
-                    rdp.value.push_back(v);
                 if (c == 0 || v > best_value) {
                     best_value = v;
                     best_method = static_cast<std::uint8_t>(c);
@@ -101,7 +94,6 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
             }
             best.value.push_back(best_value);
             best.method.push_back(best_method);
-            rdp.method.push_back(0);
         }
     });
     return curves;
@@ -227,47 +219,18 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         timed("GATEORIG_a0");
     }
 
-    if (wants(arms, {"GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER"})) {
-        // Curves up to about four times the mean interior budget, at least 6 interior points.
-        // Partners are fixed at RDP with equal budgets, so each trajectory is scored on its own
-        const double mean_interior = static_cast<double>(total_budget - 2 * db.size()) /
-                                     static_cast<double>(db.size());
-        const auto cap =
-            2 + static_cast<std::size_t>(std::ceil(std::max(6.0, 4.0 * mean_interior)));
-        const auto curves = build_curves(db, objective, candidates[kRdp], cap);
-        timed(std::format("value curves up to {} points", cap));
+    if (wants(arms, {"GATE_a0", "BR_a0"})) {
+        // Partners are fixed at RDP with equal budgets, so each trajectory is scored on its own.
+        // The curves run up to each trajectory's budget; selection reads them there
+        const auto curves = build_curves(db, objective, candidates[kRdp], equal);
+        timed("value curves");
 
-        const auto gate = curve_methods(curves.best, equal);
+        const auto gate = curve_methods(curves, equal);
         if (wants(arms, {"GATE_a0"}))
             keep("GATE_a0", candidates, gate);
         if (wants(arms, {"BR_a0"})) {
             keep("BR_a0", candidates, best_response(db, objective, candidates, gate, m_seed));
             timed("BR_a0");
-        }
-
-        if (wants(arms, {"TEACHER_RDP"})) {
-            AllocationStats stats;
-            const auto budgets = allocate(curves.rdp, total_budget, &stats);
-            std::cout << std::format("teacher: RDP allocation, curve sum {:.4f} -> {:.4f}, {} "
-                                     "exchanges\n",
-                                     stats.greedy_value, stats.final_value, stats.exchanges);
-            keep("TEACHER_RDP", make_candidates(db, budgets), Methods(db.size(), kRdp));
-        }
-        if (wants(arms, {"TEACHER", "BR_TEACHER"})) {
-            AllocationStats stats;
-            const auto budgets = allocate(curves.best, total_budget, &stats);
-            std::cout << std::format("teacher: allocation, curve sum {:.4f} -> {:.4f}, {} "
-                                     "exchanges\n",
-                                     stats.greedy_value, stats.final_value, stats.exchanges);
-            const auto searched = make_candidates(db, budgets);
-            const auto teacher = curve_methods(curves.best, budgets);
-            if (wants(arms, {"TEACHER"}))
-                keep("TEACHER", searched, teacher);
-            if (wants(arms, {"BR_TEACHER"})) {
-                keep("BR_TEACHER", searched,
-                     best_response(db, objective, searched, teacher, m_seed));
-                timed("BR_TEACHER");
-            }
         }
     }
 
