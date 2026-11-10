@@ -8,6 +8,7 @@
 #include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
+#include "backend/engine/teacher/teacher.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -31,6 +32,7 @@ struct Config {
     evaluator::WhereAtScoringConfig where_at_scoring;
     query::JoinConfig join;
     query::RouteClusteringConfig clustering;
+    teacher::TeacherConfig teacher; // off unless enabled
 };
 
 // Reads a JSON config. Only data_path is required, a missing key keeps its default.

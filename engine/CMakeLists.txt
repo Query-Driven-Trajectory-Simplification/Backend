@@ -40,6 +40,10 @@ add_library(engine
     src/evaluator/combined.cpp
     src/query/route_clustering.cpp
     src/evaluator/route_clustering.cpp
+    src/teacher/workloads.cpp
+    src/teacher/objective.cpp
+    src/teacher/curves.cpp
+    src/teacher/teacher.cpp
 )
 
 target_include_directories(engine PUBLIC include)
@@ -74,6 +78,8 @@ add_executable(engine_tests
     tests/combined_test.cpp
     tests/route_clustering_test.cpp
     tests/continuous_frechet_test.cpp
+    tests/teacher/curves_test.cpp
+    tests/teacher/teacher_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
 gtest_discover_tests(engine_tests)

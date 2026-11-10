@@ -13,6 +13,8 @@
 #include "backend/engine/query/where_at_query.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
+#include "backend/engine/teacher/teacher.hpp"
+#include "backend/engine/teacher/workloads.hpp"
 
 #include <magic_enum/magic_enum.hpp>
 
@@ -20,6 +22,7 @@
 #include <cstddef>
 #include <format>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -144,6 +147,42 @@ void run(const Config &config) {
                            .scores;
     print_scores(floor);
 
+    // Scores one simplification on the held-out workloads, and exports it under name
+    auto evaluate = [&](const std::string &label, const std::string &name,
+                        const core::Simplification &simplification) {
+        const auto compressed = core::materialize(database, simplification);
+        std::cout << label << ": ";
+        print_size("compressed", compressed);
+        const evaluator::Evaluator evaluator(database, compressed, workloads,
+                                             config.where_at_scoring);
+        const auto evaluation = evaluator.evaluate();
+        print_scores(evaluation.scores);
+        print_normalized(evaluator::normalize_scores(evaluation.scores, floor));
+        if (config.export_results) {
+            io::export_trajectories(config.export_dir, name, compressed);
+            io::export_results(config.export_dir, name, evaluation);
+        }
+    };
+
+    // The teacher sees the database only, with its own workloads (kNN and join from the cache)
+    std::optional<teacher::Teacher> teacher_model;
+    if (config.teacher.enabled) {
+        auto teacher_range = config.range;
+        teacher_range.query_count = config.teacher.range_query_count;
+        auto teacher_workloads = teacher::load_or_build_workloads(
+            database,
+            {.k = config.knn.k,
+             .join_eps_m = config.join.eps_m,
+             .frechet = config.join.frechet,
+             .range = teacher_range,
+             .where_at = config.where_at},
+            config.seed, config.teacher.cache_dir);
+        teacher_model.emplace(database, std::move(teacher_workloads),
+                        teacher::ObjectiveConfig{config.where_at_scoring.min_tolerance_m,
+                                                 config.where_at_scoring.max_tolerance_m},
+                        config.seed);
+    }
+
     for (const double share : config.budget_shares) {
         for (const double alpha : config.allocation_alphas) {
             const auto budgets = allocation::create_trajectory_budgets(
@@ -151,29 +190,22 @@ void run(const Config &config) {
                 total_budget(database, share), alpha);
 
             for (const auto algorithm : config.algorithms) {
-                const auto simplification =
-                    selection::simplify_database(database, algorithm, budgets);
-                const auto compressed = core::materialize(database, simplification);
-                std::cout << share * 100 << "% " << magic_enum::enum_name(algorithm)
-                          << " alpha=" << alpha << ": ";
-                print_size("compressed", compressed);
-
-                const evaluator::Evaluator evaluator(database, compressed, workloads,
-                                                     config.where_at_scoring);
-                const auto evaluation = evaluator.evaluate();
-                print_scores(evaluation.scores);
-                print_normalized(evaluator::normalize_scores(evaluation.scores, floor));
-
-                if (config.export_results) {
-                    std::string name =
-                        std::format("{}_{:g}pct", magic_enum::enum_name(algorithm), share * 100);
-                    // alpha = 1 keeps the old name, which the Travis frontend expects
-                    if (alpha != 1.0)
-                        name += std::format("_a{:g}", alpha);
-                    io::export_trajectories(config.export_dir, name, compressed);
-                    io::export_results(config.export_dir, name, evaluation);
-                }
+                std::string name =
+                    std::format("{}_{:g}pct", magic_enum::enum_name(algorithm), share * 100);
+                // alpha = 1 keeps the old name, which the Travis frontend expects
+                if (alpha != 1.0)
+                    name += std::format("_a{:g}", alpha);
+                evaluate(std::format("{}% {} alpha={}", share * 100,
+                                     magic_enum::enum_name(algorithm), alpha),
+                         name, selection::simplify_database(database, algorithm, budgets));
             }
+        }
+
+        if (teacher_model) {
+            std::cout << "teacher at " << share * 100 << "%\n";
+            for (const auto &arm : teacher_model->run(total_budget(database, share), config.teacher.arms))
+                evaluate(std::format("{}% {} (J_T {:.4f})", share * 100, arm.name, arm.objective),
+                         std::format("{}_{:g}pct", arm.name, share * 100), arm.simplification);
         }
     }
 }

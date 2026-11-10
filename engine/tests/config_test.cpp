@@ -231,3 +231,35 @@ TEST(Config, RejectsInvalidWhereAtScoring) {
                 std::string(R"({"data_path": "d", "where_at_scoring": )") + scoring + "}")),
             std::invalid_argument);
 }
+
+TEST(Config, TeacherIsOffByDefault) {
+    const auto config =
+        pipeline::load_config(write_config("teacher_default.json", R"({"data_path": "d"})"));
+    EXPECT_FALSE(config.teacher.enabled);
+    EXPECT_EQ(config.teacher.cache_dir, "cache");
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"TEACHER", "BR_TEACHER"}));
+}
+
+TEST(Config, ReadsTheTeacherSection) {
+    const auto config = pipeline::load_config(write_config("teacher.json", R"({
+        "data_path": "d",
+        "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["GATE_a0", "TEACHER"],
+                    "range_query_count": 1000}
+    })"));
+    EXPECT_TRUE(config.teacher.enabled);
+    EXPECT_EQ(config.teacher.cache_dir, "my_cache");
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"GATE_a0", "TEACHER"}));
+    EXPECT_EQ(config.teacher.range_query_count, 1000u);
+}
+
+TEST(Config, RejectsBadTeacherSections) {
+    for (const auto &section :
+         {R"({"enabled": true, "arms": ["DP"]})", R"({"enabled": true, "arms": []})",
+          R"({"arms": ["TEACHER", "TEACHER"]})", R"({"cache_dir": ""})",
+          R"({"range_query_count": 0})", R"({"seed": 7})"}) {
+        SCOPED_TRACE(section);
+        const auto contents = std::string(R"({"data_path": "d", "teacher": )") + section + "}";
+        EXPECT_THROW(pipeline::load_config(write_config("bad_teacher.json", contents)),
+                     std::invalid_argument);
+    }
+}
