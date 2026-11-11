@@ -416,3 +416,22 @@ TEST(SelfJoin, EmptyReferenceWithFalsePositivesScoresZero) {
     EXPECT_DOUBLE_EQ(scores.precision, 0);
     EXPECT_TRUE(std::isnan(scores.recall));
 }
+
+TEST(JoinEvaluator, RunJoinReturnsMatchedPairsAsIds) {
+    std::mt19937_64 rng(31);
+    const auto db = make_db(random_tracks(rng, 80));
+    const auto workload = query::generate_self_join(db);
+    const auto evaluation = evaluator::run_join(db, workload);
+    EXPECT_EQ(evaluation.pairs.size(), evaluation.scores.predicted_pairs);
+
+    std::vector<std::pair<std::int32_t, std::int32_t>> expected, found;
+    for (const auto &entry : workload.entries) {
+        for (const auto j : entry.reference)
+            expected.emplace_back(db.trajectory(entry.query_index).trajectory_id,
+                                  db.trajectory(j).trajectory_id);
+    }
+    for (const auto &pair : evaluation.pairs)
+        found.emplace_back(pair.first, pair.second);
+    ASSERT_FALSE(expected.empty());
+    EXPECT_EQ(found, expected);
+}

@@ -125,7 +125,8 @@ void run(const Config &config) {
     }
 
     if (config.export_results) {
-        io::export_workloads(config.export_dir, database, range.queries, knn_workload);
+        io::export_workloads(config.export_dir, database, range.queries, knn_workload, join,
+                             config.clustering.enabled ? &clustering : nullptr);
         std::cout << "workloads written to " << config.export_dir.string() << '\n';
     }
 
@@ -171,7 +172,8 @@ void run(const Config &config) {
                     if (alpha != 1.0)
                         name += std::format("_a{:g}", alpha);
                     io::export_trajectories(config.export_dir, name, compressed);
-                    io::export_results(config.export_dir, name, evaluation);
+                    io::export_results(config.export_dir, name, evaluation,
+                                       config.clustering.enabled);
                 }
             }
         }

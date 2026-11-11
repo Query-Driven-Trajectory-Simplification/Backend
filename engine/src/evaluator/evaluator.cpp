@@ -23,14 +23,32 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
 EvaluationResult Evaluator::evaluate() const {
     auto knn = m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnEvaluation{};
     auto range = evaluate_range(m_simplified, m_workloads.range);
+    auto join = m_workloads.join ? run_join(m_simplified, *m_workloads.join) : JoinEvaluation{};
+
+    RouteClusteringScores clustering;
+    std::vector<std::vector<std::int32_t>> clusters;
+    if (m_workloads.clustering) {
+        const auto predicted = compressed_route_clusters(m_simplified, *m_workloads.clustering);
+        clustering = compare_route_clusters(m_workloads.clustering->reference, predicted);
+        clusters.reserve(predicted.members.size());
+        for (const auto &members : predicted.members) {
+            auto &ids = clusters.emplace_back();
+            ids.reserve(members.size());
+            for (const auto i : members)
+                ids.push_back(m_simplified.trajectory(i).trajectory_id);
+        }
+    }
+
     return {.scores = {.knn = knn.scores,
                        .range_recall = range.recall,
                        .where_at = get_where_at_scores(),
-                       .join = get_join_scores(),
+                       .join = join.scores,
                        .range_f1 = range.f1,
-                       .clustering = get_clustering_scores()},
+                       .clustering = clustering},
             .knn = std::move(knn.answers),
-            .range = std::move(range.answers)};
+            .range = std::move(range.answers),
+            .join = std::move(join.pairs),
+            .clusters = std::move(clusters)};
 }
 
 KnnScores Evaluator::get_knn_scores() const {

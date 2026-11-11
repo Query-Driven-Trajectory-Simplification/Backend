@@ -4,7 +4,9 @@
 #include "backend/engine/query/join.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace evaluator {
 
@@ -28,6 +30,18 @@ struct JoinScores {
     std::size_t predicted_pairs = 0;
     std::size_t true_positive_pairs = 0;
 };
+
+struct JoinPair {
+    std::int32_t first;
+    std::int32_t second;
+};
+
+struct JoinEvaluation {
+    JoinScores scores;
+    std::vector<JoinPair> pairs;
+};
+
+JoinEvaluation run_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload);
 
 JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload);
 

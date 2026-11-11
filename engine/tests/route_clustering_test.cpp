@@ -15,6 +15,7 @@
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/evaluator/combined.hpp"
+#include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/route_clustering.hpp"
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/route_clustering.hpp"
@@ -253,4 +254,24 @@ TEST(RouteClustering, CombinedIncludesClustering) {
     EXPECT_DOUBLE_EQ(normalized.combined, 1.5 / 5.0);
     scores.clustering.score = std::numeric_limits<double>::quiet_NaN();
     EXPECT_DOUBLE_EQ(evaluator::normalize_scores(scores, floor).combined, 0.25);
+}
+
+TEST(RouteClustering, EvaluatorReturnsClustersAsIds) {
+    std::mt19937_64 rng(13);
+    const auto tracks = route_tracks(rng, 4, 6);
+    std::vector<std::int32_t> ids(tracks.size());
+    std::iota(ids.begin(), ids.end(), 100);
+    const auto db = make_db(tracks, ids);
+    const auto workload = query::generate_route_clustering(db, {.enabled = true, .min_size = 3});
+    ASSERT_FALSE(workload.reference.members.empty());
+
+    const auto result = evaluator::Evaluator(db, db, {.clustering = &workload}).evaluate();
+    ASSERT_EQ(result.clusters.size(), workload.reference.members.size());
+    for (std::size_t c = 0; c < result.clusters.size(); ++c) {
+        const auto &members = workload.reference.members[c];
+        ASSERT_EQ(result.clusters[c].size(), members.size());
+        for (std::size_t i = 0; i < members.size(); ++i)
+            EXPECT_EQ(result.clusters[c][i], ids[members[i]]);
+    }
+    EXPECT_DOUBLE_EQ(result.scores.clustering.score, 1.0);
 }
