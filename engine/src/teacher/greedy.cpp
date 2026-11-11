@@ -138,7 +138,7 @@ std::vector<std::size_t> Greedy::sequence(std::size_t limit, std::span<const std
     for (const auto j : seed)
         if (count < b)
             keep(j);
-    if (!m_probe_t.empty())
+    if (!m_probe_t.empty() && count < b)
         for (auto it = order.begin(); std::next(it) != order.end(); ++it)
             refresh(*it, *std::next(it));
 
@@ -153,7 +153,7 @@ std::vector<std::size_t> Greedy::sequence(std::size_t limit, std::span<const std
         if (pick == n)
             break;
         keep(pick);
-        if (!m_probe_t.empty()) {
+        if (!m_probe_t.empty() && count < b) {
             const auto it = order.find(pick);
             refresh(*std::prev(it), pick);
             refresh(pick, *std::next(it));

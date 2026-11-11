@@ -107,24 +107,20 @@ void split_seen(std::vector<JoinPair> &pairs, std::uint64_t seed) {
 
 // Positives and negatives from one self-join, each split into seen and unseen halves
 void build_pairs(const core::TrajectoryDb &db, const WorkloadConfig &config, std::uint64_t seed,
-                 std::vector<JoinPair> *positives, std::vector<JoinPair> &negatives) {
+                 std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
     const auto join = query::generate_self_join(db, config.join_eps_m, config.frechet);
-    if (positives)
-        positives->clear();
+    positives.clear();
     negatives.clear();
     for (const auto &entry : join.entries)
         for (const auto j : entry.candidates) {
             const JoinPair pair{static_cast<std::uint32_t>(entry.query_index),
                                 static_cast<std::uint32_t>(j), false};
-            if (std::ranges::binary_search(entry.reference, j)) {
-                if (positives)
-                    positives->push_back(pair);
-            } else {
+            if (std::ranges::binary_search(entry.reference, j))
+                positives.push_back(pair);
+            else
                 negatives.push_back(pair);
-            }
         }
-    if (positives)
-        split_seen(*positives, seed + kPairSplitSeedOffset);
+    split_seen(positives, seed + kPairSplitSeedOffset);
     split_seen(negatives, seed + kNegativeSeedOffset);
 }
 
@@ -226,7 +222,7 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
         w.knn = build_knn(db, config);
         std::cout << std::format("teacher: kNN {:.1f} s\n", seconds_since(start));
         start = std::chrono::steady_clock::now();
-        build_pairs(db, config, seed, &w.positives, w.negatives);
+        build_pairs(db, config, seed, w.positives, w.negatives);
         std::cout << std::format("teacher: self-join pairs {:.1f} s\n", seconds_since(start));
         save(file, seed, print, w);
         std::cout << "teacher: cache saved to " << file.string() << '\n';

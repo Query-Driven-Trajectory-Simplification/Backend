@@ -319,9 +319,11 @@ trajectory can't have a point in a box the original had none in.
 - **Computation:** copies `t`, `x` and `y` at the kept indices into its own vectors and points a
   `TrajectoryView` at them. `lat` and `lon` stay empty, because the Fréchet and interpolation code
   only read `t`, `x` and `y`.
-- **Output:** `view()`, valid while the object lives. Bounds are rebuilt from retained points.
+- **Output:** `view()`, valid while the object lives and is unmodified. `assign` replaces the
+  retained points and rebuilds bounds while reusing coordinate storage between budgets.
   `PreparedTrajectories` owns a whole set and provides borrowed views. Fixed partners are prepared
-  once for curve scoring; best response prepares every candidate once and switches view references.
+  once for curve scoring; best response prepares each unique candidate once and shares duplicate
+  views. Trajectories without join links only need their selected candidate prepared.
 
 ### `inside(box, view, p)` and `f1_of(hits, found, expected)` — internal
 
@@ -389,6 +391,10 @@ trajectory can't have a point in a box the original had none in.
 - **Output:** an approximate per-trajectory score. It's approximate because the real join depends
   on partners' actual choices and counts each pair on both sides. That is exactly what
   `best_response` corrects.
+- `prepare_independent` computes the range, where-at, shape and join terms once, together with
+  the upper bound used to order candidates. `independent_value(score, beat)` reuses those terms
+  while checking kNN, so a candidate is not rescored just because its bound was promising. The
+  prepared score borrows its candidate's coordinates and must be used before they change.
 
 ### `match(a, b)` — public
 
@@ -551,12 +557,14 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 - **Input:** the partner reference state (RDP at equal budgets), and how far each curve goes (the
   trajectory's budget, never more than its length).
 - **Computation:** in parallel per trajectory, build the RDP addition sequence and reversed SED
-  removal sequence once, then use sorted prefixes for each budget. Single-budget requests keep
-  using the ordinary selectors. For b = 2 … max:
+  removal sequence once, then use sorted prefixes for each budget. Candidate coordinate buffers
+  are reused between budgets. For b = 2 … max:
   - simplify with every candidate (at b = 2 all keep the endpoints, so only one is scored);
   - score each with `independent_value` against the RDP partners;
   - record the best value and method.
 - **Output:** one `Curve` per trajectory.
+- Runs requesting only `GATE_a0` and/or `BR_a0` score their fixed budgets directly and skip full
+  curve construction.
 - **Why partners as RDP:** a fixed, plausible guess at how partners will look. It still scores each
   trajectory on its own, but it rewards matching how partners will likely be simplified. This took
   J5 from 0.446 (`GATEORIG_a0`) to 0.506 (`GATE_a0`).

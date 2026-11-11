@@ -14,7 +14,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -297,6 +299,67 @@ TEST_F(TeacherTest, ShapeKnnTermNeverCreditsMoreThanTheQueryTerm) {
     EXPECT_GT(by_shape.metrics(every_point(db))[teacher::Objective::Knn], 0.0);
 }
 
+TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) {
+    const auto db = random_db(2, 24, 20);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    std::mt19937_64 rng(74);
+    for (const bool knn_by_shape : {false, true}) {
+        for (const double shape_weight : {0.0, 0.25}) {
+            const teacher::Objective objective(
+                db, workloads, {.knn_by_shape = knn_by_shape, .shape_weight = shape_weight});
+            std::size_t with_truth = 0;
+            for (std::size_t i = 0; i < db.size(); ++i)
+                with_truth += objective.truth(i) != 0;
+            for (int trial = 0; trial < 4; ++trial) {
+                auto kept = endpoints(db);
+                if (trial == 1)
+                    kept = every_point(db);
+                else if (trial > 1)
+                    for (std::size_t i = 0; i < db.size(); ++i) {
+                        for (std::size_t k = 1; k + 1 < db.trajectory(i).size(); ++k)
+                            if (rng() % 4 == 0)
+                                kept[i].push_back(k);
+                        std::ranges::sort(kept[i]);
+                    }
+                const teacher::PreparedTrajectories prepared(db, kept);
+                const auto views = prepared.views();
+                for (const bool original_partners : {false, true}) {
+                    const std::span<const core::TrajectoryView> partners =
+                        original_partners ? std::span<const core::TrajectoryView>{} : views;
+                    for (std::size_t i = 0; i < db.size(); ++i) {
+                        std::size_t hits = 0, found = 0;
+                        for (const auto &link : objective.links(i)) {
+                            const auto other =
+                                original_partners ? db.trajectory(link.other) : views[link.other];
+                            const bool matched = objective.match(views[i], other);
+                            found += matched;
+                            hits += matched && link.positive;
+                        }
+                        const double f1 = found + objective.truth(i)
+                                              ? 2.0 * static_cast<double>(hits) /
+                                                    static_cast<double>(found + objective.truth(i))
+                                              : 0.0;
+                        const double join = with_truth ? objective.scale(teacher::Objective::Join) *
+                                                             f1 / static_cast<double>(with_truth)
+                                                       : 0.0;
+                        const double expected = objective.separable(i, views[i]) + join;
+                        const auto score = objective.prepare_independent(i, views[i], partners);
+                        EXPECT_GE(score.bound + 1e-12, expected);
+                        EXPECT_DOUBLE_EQ(objective.independent_value(score, expected - 1e-6),
+                                         expected);
+                        EXPECT_LE(objective.independent_value(
+                                      score, std::numeric_limits<double>::infinity()),
+                                  expected + 1e-12);
+                        EXPECT_DOUBLE_EQ(objective.independent_value(score), expected);
+                        EXPECT_DOUBLE_EQ(objective.independent_value(i, views[i], partners),
+                                         expected);
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto db = random_db(3, 30, 25);
     auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
@@ -362,6 +425,31 @@ TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {
     }
 }
 
+TEST_F(TeacherTest, ExtremeBudgetsKeepEndpointsOrEveryPointForEveryArm) {
+    const auto db = random_db(3, 30, 25);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
+    const teacher::Teacher model(db, std::move(workloads), {}, 11);
+    const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
+    for (const std::size_t budget : {2 * db.size(), db.num_points()}) {
+        SCOPED_TRACE(budget);
+        const auto result = model.run(budget, arms);
+        ASSERT_EQ(result.size(), arms.size());
+        for (const auto &arm : result) {
+            SCOPED_TRACE(arm.name);
+            EXPECT_EQ(arm.simplification.num_points(), budget);
+            for (std::size_t i = 0; i < db.size(); ++i) {
+                const auto n = db.trajectory(i).size();
+                std::vector<std::size_t> expected{0};
+                if (budget == db.num_points())
+                    for (std::size_t k = 1; k + 1 < n; ++k)
+                        expected.push_back(k);
+                expected.push_back(n - 1);
+                EXPECT_TRUE(std::ranges::equal(arm.simplification.trajectory(i), expected));
+            }
+        }
+    }
+}
+
 TEST(Teacher, RejectsUnknownArms) {
     EXPECT_TRUE(teacher::is_arm("GATE_a0"));
     EXPECT_FALSE(teacher::is_arm("gate_a0"));
@@ -393,13 +481,13 @@ TEST_F(TeacherTest, IndividualArmsMatchCombinedRun) {
     }
 }
 
-TEST(PreparedTrajectory, OwnsCoordinatesAndRebuildsBoundsAfterCopyAndMove) {
-    const auto db = random_db(4, 1, 30);
+TEST(PreparedTrajectory, OwnsCoordinatesAndRebuildsBoundsAfterCopyMoveAndAssign) {
+    const auto db = random_db(4, 2, 30);
     const auto original = db.trajectory(0);
     const std::vector<std::size_t> kept{3, 8, 12};
     const teacher::PreparedTrajectory prepared(original, kept);
     auto copied = prepared;
-    const auto moved = std::move(copied);
+    auto moved = std::move(copied);
     const auto view = moved.view();
     EXPECT_NE(view.x.data(), prepared.view().x.data());
     EXPECT_TRUE(view.lat.empty());
@@ -413,4 +501,22 @@ TEST(PreparedTrajectory, OwnsCoordinatesAndRebuildsBoundsAfterCopyAndMove) {
     EXPECT_EQ(view.bbox.x_max, std::ranges::max(view.x));
     EXPECT_EQ(view.bbox.y_min, std::ranges::min(view.y));
     EXPECT_EQ(view.bbox.y_max, std::ranges::max(view.y));
+
+    const auto replacement = db.trajectory(1);
+    for (const auto &indices :
+         {std::vector<std::size_t>{1, 29}, std::vector<std::size_t>{0, 4, 8, 16, 29}}) {
+        moved.assign(replacement, indices);
+        const auto updated = moved.view();
+        EXPECT_EQ(updated.trajectory_id, replacement.trajectory_id);
+        ASSERT_EQ(updated.size(), indices.size());
+        for (std::size_t k = 0; k < indices.size(); ++k) {
+            EXPECT_EQ(updated.t[k], replacement.t[indices[k]]);
+            EXPECT_EQ(updated.x[k], replacement.x[indices[k]]);
+            EXPECT_EQ(updated.y[k], replacement.y[indices[k]]);
+        }
+        EXPECT_EQ(updated.bbox.x_min, std::ranges::min(updated.x));
+        EXPECT_EQ(updated.bbox.x_max, std::ranges::max(updated.x));
+        EXPECT_EQ(updated.bbox.y_min, std::ranges::min(updated.y));
+        EXPECT_EQ(updated.bbox.y_max, std::ranges::max(updated.y));
+    }
 }

@@ -17,6 +17,12 @@ namespace teacher {
 PreparedTrajectory::PreparedTrajectory(const core::TrajectoryView &original,
                                        std::span<const std::size_t> kept)
     : m_id(original.trajectory_id) {
+    assign(original, kept);
+}
+
+void PreparedTrajectory::assign(const core::TrajectoryView &original,
+                                std::span<const std::size_t> kept) {
+    m_id = original.trajectory_id;
     m_t.resize(kept.size());
     m_x.resize(kept.size());
     m_y.resize(kept.size());
@@ -265,7 +271,16 @@ double Objective::separable(std::size_t i, const core::TrajectoryView &candidate
 double Objective::independent_value(std::size_t i, const core::TrajectoryView &candidate,
                                     std::span<const core::TrajectoryView> partners,
                                     double beat) const {
-    auto t = raw_separable(i, candidate, false);
+    return independent_value(prepare_independent(i, candidate, partners), beat);
+}
+
+Objective::IndependentScore
+Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candidate,
+                               std::span<const core::TrajectoryView> partners) const {
+    IndependentScore score;
+    score.trajectory = i;
+    score.candidate = candidate;
+    score.terms = raw_separable(i, candidate, m_config.knn_by_shape);
     std::size_t hits = 0, found = 0;
     for (const auto &link : m_links[i]) {
         const bool matched =
@@ -273,22 +288,29 @@ double Objective::independent_value(std::size_t i, const core::TrajectoryView &c
         found += matched;
         hits += matched && link.positive;
     }
-    const double join =
+    score.join =
         found + m_truth[i] != 0 && m_with_truth != 0
             ? m_scale[Join] * f1_of(hits, found, m_truth[i]) / static_cast<double>(m_with_truth)
             : 0.0;
-    const double shape_part =
-        m_shape_scale > 0 ? m_shape_scale * (shape(i, candidate) - m_shape0[i]) : 0.0;
-    // Same sums in the same order as separable, so the value is identical to the last bit
-    auto value = [&] {
-        return m_scale[Knn] * t[Knn] + m_scale[Range] * t[Range] + m_scale[WhereAt] * t[WhereAt] -
-               m_v0[i] + shape_part + join;
-    };
+    score.shape = m_shape_scale > 0 ? m_shape_scale * (shape(i, candidate) - m_shape0[i]) : 0.0;
+    score.bound = independent_sum(score, score.terms[Knn]) +
+                  m_scale[Knn] * m_knn_weight * static_cast<double>(m_knn[i].size());
+    return score;
+}
 
-    if (m_config.knn_by_shape) {
-        t[Knn] = raw_separable(i, candidate)[Knn];
+double Objective::independent_sum(const IndependentScore &score, double knn) const {
+    // Same sums in the same order as separable, so the value is identical to the last bit
+    return m_scale[Knn] * knn + m_scale[Range] * score.terms[Range] +
+           m_scale[WhereAt] * score.terms[WhereAt] - m_v0[score.trajectory] + score.shape +
+           score.join;
+}
+
+double Objective::independent_value(const IndependentScore &score, double beat) const {
+    const auto i = score.trajectory;
+    double knn = score.terms[Knn];
+    auto value = [&] { return independent_sum(score, knn); };
+    if (m_config.knn_by_shape)
         return value();
-    }
     // Each check can add at most one hit. Stop once even all of the rest cannot beat beat; the
     // slack keeps rounding from cutting a candidate that would just win
     const double per_hit = m_scale[Knn] * m_knn_weight;
@@ -297,18 +319,16 @@ double Objective::independent_value(std::size_t i, const core::TrajectoryView &c
         if (value() + per_hit * static_cast<double>(left) < beat - 1e-15)
             return value();
         --left;
-        if (query::frechet_within(m_db.trajectory(m.query), candidate, m.cutoff,
+        if (query::frechet_within(m_db.trajectory(m.query), score.candidate, m.cutoff,
                                   m_workloads.frechet))
-            t[Knn] += m_knn_weight;
+            knn += m_knn_weight;
     }
     return value();
 }
 
 double Objective::independent_bound(std::size_t i, const core::TrajectoryView &candidate,
                                     std::span<const core::TrajectoryView> partners) const {
-    // With an unbeatable beat, independent_value stops before its first kNN check
-    return independent_value(i, candidate, partners, std::numeric_limits<double>::infinity()) +
-           m_scale[Knn] * m_knn_weight * static_cast<double>(m_knn[i].size());
+    return prepare_independent(i, candidate, partners).bound;
 }
 
 double Objective::join_metric(std::span<const core::TrajectoryView> state) const {

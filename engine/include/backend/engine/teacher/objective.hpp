@@ -20,6 +20,8 @@ using KeptSets = std::vector<std::vector<std::size_t>>;
 class PreparedTrajectory {
   public:
     PreparedTrajectory(const core::TrajectoryView &original, std::span<const std::size_t> kept);
+    // Reuses coordinate storage. Acquire new views after assigning different retained points.
+    void assign(const core::TrajectoryView &original, std::span<const std::size_t> kept);
     core::TrajectoryView view() const { return {m_id, m_t, {}, {}, m_x, m_y, m_box}; }
 
   private:
@@ -105,6 +107,23 @@ class Objective {
     double independent_bound(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners) const;
 
+    // Reuse the range, where-at, shape and join terms when a bound is followed by scoring.
+    // Borrows candidate's coordinates; use with this objective while those coordinates live.
+    struct IndependentScore {
+        double bound = 0.0;
+
+      private:
+        friend class Objective;
+        std::size_t trajectory = 0;
+        core::TrajectoryView candidate{};
+        Terms terms{};
+        double shape = 0.0, join = 0.0;
+    };
+    IndependentScore prepare_independent(std::size_t i, const core::TrajectoryView &candidate,
+                                         std::span<const core::TrajectoryView> partners) const;
+    double independent_value(const IndependentScore &score,
+                             double beat = -std::numeric_limits<double>::infinity()) const;
+
     // Exact J_T, partners compressed as in kept. 0 with endpoints only
     double total(const KeptSets &kept) const;
 
@@ -141,6 +160,7 @@ class Objective {
     Terms raw_separable(std::size_t i, std::span<const std::size_t> kept) const;
     Terms raw_separable(std::size_t i, const core::TrajectoryView &candidate,
                         bool knn = true) const;
+    double independent_sum(const IndependentScore &score, double knn) const;
     double join_metric(std::span<const core::TrajectoryView> state) const;
 
     const core::TrajectoryDb &m_db;
