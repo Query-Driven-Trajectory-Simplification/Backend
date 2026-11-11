@@ -225,11 +225,9 @@ not. They matter because the join metric is F1: simplification can make negative
 - **Input:** the database, the settings, the seed, and the directory to look in for a cache.
 - **Computation:**
   1. Fingerprints the database (`fingerprint`) and looks for `cache_dir/teacher_cache_seed<seed>.bin`.
-  2. Calls `load`. If the file matches the fingerprint, seed, `k`, `join_eps_m` and `frechet`, it
-     uses the cached kNN entries and pairs.
-     - An older cache file (format 2, from the `init-t1` harness) has no negatives. They are
-       recomputed with `build_pairs` (about 10 s). The file isn't rewritten, so the old harness can
-       still read it.
+  2. Calls `load`. If the file matches the current workload version, fingerprint, seed, `k`,
+     `join_eps_m` and `frechet`, it uses the cached kNN entries and pairs. Older cache versions
+     are rebuilt once because their metadata-only fingerprints cannot verify the point contents.
   3. Otherwise, it builds everything with `build_knn` and `build_pairs`, then `save`s it.
   4. Always regenerates the range boxes and where-at probes. They are fast, and use their own seeds
      (`seed + 7001` and `seed + 7002`).
@@ -240,8 +238,9 @@ not. They matter because the join metric is F1: simplification can make negative
 - **Why:** a cache is only valid for the exact same database. A different split or data file must
   not reuse it.
 - **Input:** the database.
-- **Computation:** an FNV-1a hash over the trajectory count, the point count, and each
-  trajectory's ID, length, and first and last timestamps.
+- **Computation:** an FNV-1a hash over the trajectory count, the point count, each trajectory's ID
+  and length, and every point's timestamp, latitude, longitude and projected x/y coordinates.
+  Including the projected coordinates also invalidates the cache when the projection changes.
 - **Output:** a 64-bit number, stored in the cache header.
 
 ### `build_knn(db, config)` — internal
@@ -262,8 +261,7 @@ not. They matter because the join metric is F1: simplification can make negative
 
 - **Why:** this gives the join term its training pairs: what should match (positives) and what
   shouldn't (negatives).
-- **Input:** the database, the settings, the seed, and output vectors. Passing `positives = nullptr`
-  builds negatives only, for old cache files.
+- **Input:** the database, the settings, the seed, and output vectors.
 - **Computation:** runs the engine's `query::generate_self_join`. For every candidate pair of each
   entry, a pair in `reference` is a positive and any other pair is a negative. Each list then goes
   through `split_seen`.
@@ -279,10 +277,10 @@ not. They matter because the join metric is F1: simplification can make negative
 ### `save` / `load` / `write_pairs` / `read_pairs` / `put` / `get` — internal
 
 - **Why:** the cache file format.
-- **Format 3** (written): a header (magic number, seed, fingerprint, k, eps, variant), then the kNN
-  entries, positives and negatives.
-- **Format 2** (read only): no settings in the header (implicitly k = 10, 150 m, continuous) and
-  no negatives.
+- **Version 4** (read and written): a header (magic number, seed, full-content fingerprint, k,
+  eps, variant), then the kNN entries, positives and negatives. The version covers both file
+  layout and cached workload generation and must be bumped when either changes.
+- **Versions 2 and 3** are rejected because they used metadata-only fingerprints.
 - `save` writes to a `.tmp` file and renames it, so a crash never leaves a half-written cache.
 - `load` returns false on any mismatch, which triggers a rebuild.
 

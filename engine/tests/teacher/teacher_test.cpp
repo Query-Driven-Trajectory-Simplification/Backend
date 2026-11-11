@@ -8,11 +8,15 @@
 #include "backend/engine/teacher/workloads.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -86,29 +90,112 @@ teacher::KeptSets every_point(const core::TrajectoryDb &db) {
     return kept;
 }
 
+std::string read_cache(const std::filesystem::path &file) {
+    std::ifstream in(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+void expect_same_cached_workloads(const teacher::TeacherWorkloads &a,
+                                  const teacher::TeacherWorkloads &b) {
+    ASSERT_EQ(a.knn.size(), b.knn.size());
+    for (std::size_t i = 0; i < a.knn.size(); ++i) {
+        EXPECT_EQ(a.knn[i].valid, b.knn[i].valid);
+        EXPECT_EQ(a.knn[i].top, b.knn[i].top);
+        EXPECT_DOUBLE_EQ(a.knn[i].cutoff, b.knn[i].cutoff);
+    }
+    auto same_pairs = [](const auto &x, const auto &y) {
+        return std::ranges::equal(x, y, [](const auto &p, const auto &q) {
+            return p.i == q.i && p.j == q.j && p.seen == q.seen;
+        });
+    };
+    EXPECT_TRUE(same_pairs(a.positives, b.positives));
+    EXPECT_TRUE(same_pairs(a.negatives, b.negatives));
+}
+
 } // namespace
 
 TEST_F(TeacherTest, CacheIsWrittenThenReadBack) {
     const auto db = random_db(1, 24, 20);
     const auto built = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
-    ASSERT_TRUE(std::filesystem::exists(m_dir / "teacher_cache_seed5.bin"));
+    const auto file = m_dir / "teacher_cache_seed5.bin";
+    ASSERT_TRUE(std::filesystem::exists(file));
+    // A cache hit must reuse the file, rather than silently recomputing identical results.
+    const auto marker = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+    std::filesystem::last_write_time(file, marker);
+    const auto before = std::filesystem::last_write_time(file);
     const auto loaded = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
 
-    ASSERT_EQ(built.knn.size(), loaded.knn.size());
-    for (std::size_t e = 0; e < built.knn.size(); ++e) {
-        EXPECT_EQ(built.knn[e].valid, loaded.knn[e].valid);
-        EXPECT_EQ(built.knn[e].top, loaded.knn[e].top);
-        EXPECT_DOUBLE_EQ(built.knn[e].cutoff, loaded.knn[e].cutoff);
-    }
-    auto same = [](const std::vector<teacher::JoinPair> &a,
-                   const std::vector<teacher::JoinPair> &b) {
-        return std::ranges::equal(a, b, [](const auto &x, const auto &y) {
-            return x.i == y.i && x.j == y.j && x.seen == y.seen;
-        });
-    };
-    EXPECT_TRUE(same(built.positives, loaded.positives));
-    EXPECT_TRUE(same(built.negatives, loaded.negatives));
+    EXPECT_EQ(std::filesystem::last_write_time(file), before);
+    expect_same_cached_workloads(built, loaded);
     EXPECT_FALSE(built.positives.empty());
+}
+
+TEST_F(TeacherTest, CacheForChangedInteriorPointsIsRebuilt) {
+    const auto source = random_db(1, 24, 20);
+    auto make_db = [&](std::string_view change) {
+        std::vector<std::uint64_t> offsets{0};
+        std::vector<std::int32_t> ids;
+        std::vector<std::int64_t> t;
+        std::vector<double> lat, lon;
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            const auto v = source.trajectory(i);
+            ids.push_back(v.trajectory_id);
+            for (std::size_t k = 0; k < v.size(); ++k) {
+                t.push_back(2 * v.t[k]);
+                lat.push_back(v.lat[k]);
+                lon.push_back(v.lon[k]);
+                if (i == 0 && k == v.size() / 2) {
+                    if (change == "latitude")
+                        lat.back() += 0.01;
+                    if (change == "longitude")
+                        lon.back() += 0.01;
+                    if (change == "timestamp")
+                        ++t.back();
+                }
+            }
+            offsets.push_back(t.size());
+        }
+        return core::TrajectoryDb(std::move(offsets), std::move(ids), std::move(t), std::move(lat),
+                                  std::move(lon));
+    };
+    const auto original = make_db("");
+    for (const auto change : {"latitude", "longitude", "timestamp"}) {
+        SCOPED_TRACE(change);
+        const auto dir = m_dir / change;
+        teacher::load_or_build_workloads(original, small_config(), 5, dir);
+        const auto file = dir / "teacher_cache_seed5.bin";
+        const auto before = read_cache(file);
+        ASSERT_FALSE(before.empty());
+
+        // IDs, lengths, endpoints and endpoint timestamps all stay unchanged.
+        const auto changed = make_db(change);
+        const auto rebuilt = teacher::load_or_build_workloads(changed, small_config(), 5, dir);
+        EXPECT_NE(read_cache(file), before);
+        const auto fresh =
+            teacher::load_or_build_workloads(changed, small_config(), 5, dir / "fresh");
+        expect_same_cached_workloads(rebuilt, fresh);
+    }
+}
+
+TEST_F(TeacherTest, CacheWithLegacyFingerprintIsRebuilt) {
+    const auto db = random_db(1, 24, 20);
+    const auto built = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
+    const auto file = m_dir / "teacher_cache_seed5.bin";
+    const auto current = read_cache(file);
+    ASSERT_FALSE(current.empty());
+    for (const std::uint64_t legacy : {0x5431'4341'4348'4532ull, 0x5431'4341'4348'4533ull}) {
+        SCOPED_TRACE(legacy);
+        {
+            std::fstream out(file, std::ios::binary | std::ios::in | std::ios::out);
+            out.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
+            ASSERT_TRUE(out);
+        }
+        // Even with matching settings and contents, an obsolete workload version is rejected.
+        ASSERT_NE(read_cache(file), current);
+        const auto rebuilt = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
+        EXPECT_EQ(read_cache(file), current);
+        expect_same_cached_workloads(built, rebuilt);
+    }
 }
 
 TEST_F(TeacherTest, CacheForOtherSettingsIsRebuilt) {

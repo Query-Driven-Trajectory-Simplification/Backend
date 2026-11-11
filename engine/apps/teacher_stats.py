@@ -91,7 +91,8 @@ def main():
             seeds = set.intersection(*(set(v) for v in j.values()))
             inter = {s: j["TEACHER"][s] - j["GATE_a0"][s] - j["TEACHER_RDP"][s] + j["RDP_a0"][s] for s in seeds}
             out.append(f"| Interaction (TEACHER − GATE_a0 − TEACHER_RDP + RDP_a0) | {fmt(paired(inter, {s: 0.0 for s in seeds}))} |")
-        for a, b in [("BR_TEACHER", "TEACHER"), ("BR_a0", "GATE_a0"), ("BR_TEACHER", "BR_SHUFFLED")]:
+        for a, b in [("BR_TEACHER", "TEACHER"), ("ITER_TEACHER", "BR_TEACHER"), ("ITER_TEACHER", "TEACHER"),
+                     ("BR_a0", "GATE_a0"), ("BR_TEACHER", "BR_SHUFFLED")]:
             if a in arms and b in arms:
                 out.append(f"| {a} − {b} | {fmt(paired(arms[a]['J5'], arms[b]['J5']))} |")
         out.append("")

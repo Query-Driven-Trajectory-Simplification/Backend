@@ -47,8 +47,9 @@ struct TeacherWorkloads {
 };
 
 // Loads the kNN and join part from cache_dir/teacher_cache_seed<seed>.bin if it matches the
-// database, seed and settings, otherwise builds it (the slow part, minutes to an hour) and saves
-// it. Range and where-at are regenerated every time
+// full database contents, seed, settings and workload version, otherwise builds it (the slow
+// part, minutes to an hour) and saves it. Older cache versions are rebuilt once. Range and
+// where-at are regenerated every time
 TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const WorkloadConfig &config,
                                          std::uint64_t seed,
                                          const std::filesystem::path &cache_dir);

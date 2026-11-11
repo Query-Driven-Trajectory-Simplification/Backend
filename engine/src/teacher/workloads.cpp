@@ -5,6 +5,7 @@
 #include "backend/engine/query/knn.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -17,21 +18,25 @@ namespace teacher {
 
 namespace {
 
-// Format 2 (init-t1 harness): k = 10, 150 m, continuous, no negatives. Format 3 stores the
-// settings and the negatives. Both are read, only 3 is written
-constexpr std::uint64_t kMagicV2 = 0x5431'4341'4348'4532ull;
-constexpr std::uint64_t kMagicV3 = 0x5431'4341'4348'4533ull;
+// Versions cover both the layout and cached workload generation; bump when either changes.
+// Version 4 fingerprints every point. Older caches have only a metadata fingerprint and must
+// be rebuilt, since their kNN entries and pair truth cannot be verified against the geometry.
+constexpr std::uint64_t kMagicV4 = 0x5431'4341'4348'4534ull;
 constexpr std::uint64_t kRangeSeedOffset = 7001;
 constexpr std::uint64_t kWhereAtSeedOffset = 7002;
 constexpr std::uint64_t kPairSplitSeedOffset = 7003;
 constexpr std::uint64_t kNegativeSeedOffset = 7005;
 
-// Changes when the database does
+// FNV-1a over trajectory boundaries, IDs and every point's time and coordinates. Include the
+// projected coordinates too, so changing the projection invalidates cached spatial queries.
 std::uint64_t fingerprint(const core::TrajectoryDb &db) {
-    std::uint64_t h = 1469598103934665603ull;
+    std::uint64_t h = 14695981039346656037ull;
     auto mix = [&](std::uint64_t v) {
-        h ^= v;
-        h *= 1099511628211ull;
+        for (unsigned int byte = 0; byte < 8; ++byte) {
+            h ^= v & 0xff;
+            h *= 1099511628211ull;
+            v >>= 8;
+        }
     };
     mix(db.size());
     mix(db.num_points());
@@ -39,8 +44,13 @@ std::uint64_t fingerprint(const core::TrajectoryDb &db) {
         const auto v = db.trajectory(i);
         mix(static_cast<std::uint64_t>(v.trajectory_id));
         mix(v.size());
-        mix(static_cast<std::uint64_t>(v.t.front()));
-        mix(static_cast<std::uint64_t>(v.t.back()));
+        for (std::size_t k = 0; k < v.size(); ++k) {
+            mix(static_cast<std::uint64_t>(v.t[k]));
+            mix(std::bit_cast<std::uint64_t>(v.lat[k]));
+            mix(std::bit_cast<std::uint64_t>(v.lon[k]));
+            mix(std::bit_cast<std::uint64_t>(v.x[k]));
+            mix(std::bit_cast<std::uint64_t>(v.y[k]));
+        }
     }
     return h;
 }
@@ -143,7 +153,7 @@ void save(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t p
     const auto tmp = file.string() + ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary);
-        put(out, kMagicV3);
+        put(out, kMagicV4);
         put(out, seed);
         put(out, print);
         put<std::uint64_t>(out, w.k);
@@ -164,25 +174,18 @@ void save(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t p
     std::filesystem::rename(tmp, file);
 }
 
-// Reads a cache that matches the database, seed and settings. A format 2 file has no negatives;
-// sets needs_negatives then
+// Reads only the current workload version, matching all point contents, seed and settings.
 bool load(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t print,
-          const WorkloadConfig &config, TeacherWorkloads &w, bool &needs_negatives) {
+          const WorkloadConfig &config, TeacherWorkloads &w) {
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return false;
-    const auto magic = get<std::uint64_t>(in);
-    if ((magic != kMagicV2 && magic != kMagicV3) || get<std::uint64_t>(in) != seed ||
+    if (get<std::uint64_t>(in) != kMagicV4 || get<std::uint64_t>(in) != seed ||
         get<std::uint64_t>(in) != print)
         return false;
-    std::size_t k = 10;
-    double eps = 150.0;
-    auto variant = query::FrechetVariant::Continuous;
-    if (magic == kMagicV3) {
-        k = get<std::uint64_t>(in);
-        eps = get<double>(in);
-        variant = static_cast<query::FrechetVariant>(get<std::uint8_t>(in));
-    }
+    const auto k = get<std::uint64_t>(in);
+    const auto eps = get<double>(in);
+    const auto variant = static_cast<query::FrechetVariant>(get<std::uint8_t>(in));
     if (k != config.k || eps != config.join_eps_m || variant != config.frechet)
         return false;
     w.knn.resize(get<std::uint64_t>(in));
@@ -196,16 +199,14 @@ bool load(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t p
             q.top.clear();
     }
     read_pairs(in, w.positives);
-    needs_negatives = magic == kMagicV2;
-    if (!needs_negatives)
-        read_pairs(in, w.negatives);
+    read_pairs(in, w.negatives);
     return static_cast<bool>(in);
 }
 
 } // namespace
 
-TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db,
-                                         const WorkloadConfig &config, std::uint64_t seed,
+TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const WorkloadConfig &config,
+                                         std::uint64_t seed,
                                          const std::filesystem::path &cache_dir) {
     if (config.k == 0)
         throw std::invalid_argument("teacher workloads: k must be positive");
@@ -216,15 +217,8 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db,
     const auto print = fingerprint(db);
     const auto file = cache_dir / std::format("teacher_cache_seed{}.bin", seed);
 
-    bool needs_negatives = false;
-    if (load(file, seed, print, config, w, needs_negatives) && w.knn.size() == db.size()) {
+    if (load(file, seed, print, config, w) && w.knn.size() == db.size()) {
         std::cout << "teacher: cache loaded from " << file.string() << '\n';
-        if (needs_negatives) {
-            // An older cache; the negatives take seconds, so it is not rewritten
-            const auto start = std::chrono::steady_clock::now();
-            build_pairs(db, config, seed, nullptr, w.negatives);
-            std::cout << std::format("teacher: negative pairs {:.1f} s\n", seconds_since(start));
-        }
     } else {
         std::cout << "teacher: no matching cache at " << file.string()
                   << ", building it (database-as-query kNN takes a while)\n";
