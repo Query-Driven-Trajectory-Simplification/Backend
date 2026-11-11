@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <limits>
+#include <utility>
+#include <vector>
 
 namespace evaluator {
 
@@ -29,6 +31,8 @@ struct JoinScores {
     std::size_t true_positive_pairs = 0;
 };
 
-JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload);
+// Optionally returns matching (query index, database index) pairs for reuse by clustering.
+JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload,
+                         std::vector<std::pair<std::size_t, std::size_t>> *matched_pairs = nullptr);
 
 } // namespace evaluator

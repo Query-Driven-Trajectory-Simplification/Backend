@@ -87,24 +87,25 @@ bool accept(std::size_t results, const RangeConfig &config, std::mt19937_64 &rng
 
 } // namespace
 
+bool intersects(const core::TrajectoryView &trajectory, const RangeBox &box) {
+    if (trajectory.size() == 0 || disjoint(trajectory, box))
+        return false;
+    if (contained(trajectory, box))
+        return true;
+    const auto first = std::ranges::lower_bound(trajectory.t, box.t_min) - trajectory.t.begin();
+    for (auto j = static_cast<std::size_t>(first);
+         j < trajectory.size() && trajectory.t[j] <= box.t_max; ++j) {
+        if (in_box(box, trajectory.t[j], trajectory.x[j], trajectory.y[j]))
+            return true;
+    }
+    return false;
+}
+
 std::vector<std::size_t> range(const core::TrajectoryDb &trajectories, const RangeBox &box) {
     std::vector<std::size_t> matches;
-    for (std::size_t i = 0; i < trajectories.size(); i++) {
-        const auto trajectory = trajectories.trajectory(i);
-        if (trajectory.size() == 0 || disjoint(trajectory, box))
-            continue;
-        if (contained(trajectory, box)) {
+    for (std::size_t i = 0; i < trajectories.size(); ++i) {
+        if (intersects(trajectories.trajectory(i), box))
             matches.push_back(i);
-            continue;
-        }
-        const auto first = std::ranges::lower_bound(trajectory.t, box.t_min) - trajectory.t.begin();
-        for (auto j = static_cast<std::size_t>(first);
-             j < trajectory.size() && trajectory.t[j] <= box.t_max; j++) {
-            if (in_box(box, trajectory.t[j], trajectory.x[j], trajectory.y[j])) {
-                matches.push_back(i);
-                break;
-            }
-        }
     }
     return matches;
 }

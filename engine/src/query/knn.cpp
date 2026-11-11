@@ -24,22 +24,6 @@ double squared_dist_to_box(double x, double y, const core::BoundingBox &box) {
     return dx * dx + dy * dy;
 }
 
-double squared_box_extent_lower_bound(const core::TrajectoryView &query,
-                                      const core::TrajectoryView &reference) {
-    if (query.size() == 0 || reference.size() == 0) {
-        return std::numeric_limits<double>::infinity();
-    }
-    const core::BoundingBox &a = query.bbox;
-    const core::BoundingBox &b = reference.bbox;
-    // Every extreme coordinate in either trajectory must be matched to a point
-    // in the other. This remains useful even when their boxes overlap.
-    const double dx = std::max(std::abs(a.x_min - b.x_min), std::abs(a.x_max - b.x_max));
-    const double dy = std::max(std::abs(a.y_min - b.y_min), std::abs(a.y_max - b.y_max));
-    if (!std::isfinite(dx) || !std::isfinite(dy))
-        return 0.0; // Views without a cached box use unbounded defaults.
-    return std::max(dx * dx, dy * dy);
-}
-
 double squared_points_to_box_lower_bound(const core::TrajectoryView &query,
                                          const core::TrajectoryView &reference, double cutoff) {
     if (query.size() == 0 || reference.size() == 0) {
@@ -337,9 +321,11 @@ std::vector<std::size_t> continuous_knn(const core::TrajectoryDb &trajectory_db,
         const auto reference = trajectory_db.trajectory(candidate.idx);
         if (squared_points_to_box_lower_bound(query, reference, squared_limit) > squared_limit)
             continue;
+        const double forward = squared_directed_hausdorff(query, reference, squared_limit);
+        if (forward > squared_limit)
+            continue;
         const double squared_hausdorff =
-            std::max(squared_directed_hausdorff(query, reference, squared_limit),
-                     squared_directed_hausdorff(reference, query, squared_limit));
+            std::max(forward, squared_directed_hausdorff(reference, query, squared_limit));
         if (squared_hausdorff > squared_limit)
             continue;
         // The discrete distance bounds the continuous one from above
