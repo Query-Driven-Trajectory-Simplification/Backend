@@ -96,3 +96,48 @@ TEST(Materialize, ThrowsWhenSizesDiffer) {
 
     EXPECT_THROW(core::materialize(db, simplification), std::invalid_argument);
 }
+
+TEST(Materialize, RebuildsBoundsAfterRemovingExtrema) {
+    const core::TrajectoryDb db({0, 4}, {10}, {0, 1, 2, 3}, {39.9, 39.8, 40.1, 40.0},
+                                {116.3, 116.2, 116.6, 116.4});
+    const auto result = core::materialize(db, make_simplification({{0, 3}}));
+    const auto source = db.trajectory(0);
+    const auto compressed = result.trajectory(0);
+    EXPECT_EQ(compressed.bbox.x_min, std::min(source.x[0], source.x[3]));
+    EXPECT_EQ(compressed.bbox.x_max, std::max(source.x[0], source.x[3]));
+    EXPECT_EQ(compressed.bbox.y_min, std::min(source.y[0], source.y[3]));
+    EXPECT_EQ(compressed.bbox.y_max, std::max(source.y[0], source.y[3]));
+    EXPECT_GT(compressed.bbox.x_min, source.bbox.x_min);
+    EXPECT_LT(compressed.bbox.x_max, source.bbox.x_max);
+    EXPECT_GT(compressed.bbox.y_min, source.bbox.y_min);
+    EXPECT_LT(compressed.bbox.y_max, source.bbox.y_max);
+}
+
+TEST(Materialize, PreservesEmptyAndSinglePointTrajectories) {
+    const auto db = make_db({{}, {0, 1}, {2}});
+    const auto result = core::materialize(db, make_simplification({{}, {}, {0}}));
+    ASSERT_EQ(result.size(), 3u);
+    EXPECT_EQ(result.num_points(), 1u);
+    EXPECT_EQ(result.trajectory(0).size(), 0u);
+    EXPECT_EQ(result.trajectory(1).size(), 0u);
+    const auto empty_box = db.trajectory(0).bbox;
+    EXPECT_EQ(result.trajectory(1).bbox.x_min, empty_box.x_min);
+    EXPECT_EQ(result.trajectory(1).bbox.x_max, empty_box.x_max);
+    EXPECT_EQ(result.trajectory(1).bbox.y_min, empty_box.y_min);
+    EXPECT_EQ(result.trajectory(1).bbox.y_max, empty_box.y_max);
+    const auto single = result.trajectory(2);
+    EXPECT_EQ(single.bbox.x_min, single.x[0]);
+    EXPECT_EQ(single.bbox.x_max, single.x[0]);
+    EXPECT_EQ(single.bbox.y_min, single.y[0]);
+    EXPECT_EQ(single.bbox.y_max, single.y[0]);
+    const auto empty = core::materialize(make_db({}), make_simplification({}));
+    EXPECT_EQ(empty.size(), 0u);
+    EXPECT_EQ(empty.num_points(), 0u);
+}
+
+TEST(Materialize, RejectsInvalidKeptIndices) {
+    const auto db = make_db({{0, 1, 2}});
+    EXPECT_THROW(core::materialize(db, make_simplification({{0, 3}})), std::out_of_range);
+    EXPECT_THROW(core::materialize(db, make_simplification({{0, 0}})), std::invalid_argument);
+    EXPECT_THROW(core::materialize(db, make_simplification({{2, 1}})), std::invalid_argument);
+}

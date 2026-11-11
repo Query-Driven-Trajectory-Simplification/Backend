@@ -43,7 +43,9 @@ class Simplification {
     std::vector<std::size_t> m_kept;
 };
 
-// Builds a database holding only the kept points, with the same trajectories in the same order
+// Builds a database holding only the kept points, with the same trajectories in the same order.
+// Copies projected coordinates and rebuilds bounding boxes from the retained points.
+// Kept indices must be in range and strictly increasing within each trajectory.
 TrajectoryDb materialize(const TrajectoryDb &trajectories, const Simplification &simplification);
 
 } // namespace core
