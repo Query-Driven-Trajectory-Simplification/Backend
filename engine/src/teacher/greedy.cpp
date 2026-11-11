@@ -116,12 +116,15 @@ std::vector<std::size_t> Greedy::sequence(std::size_t limit, std::span<const std
         }
     };
     // Where-at gain of every point strictly between kept neighbours a and c
+    std::vector<double> current_scores(m_probe_t.size());
     auto refresh = [&](std::size_t a, std::size_t c) {
         const auto [lo, hi] = probes_between(a, c);
+        for (std::size_t p = lo; p < hi; ++p)
+            current_scores[p] = score_on(p, a, c);
         for (std::size_t j = a + 1; j < c; ++j) {
             double gain = 0;
             for (std::size_t p = lo; p < hi; ++p) {
-                const double now = score_on(p, a, c);
+                const double now = current_scores[p];
                 const double then = m_probe_t[p] < static_cast<double>(v.t[j]) ? score_on(p, a, j)
                                                                                : score_on(p, j, c);
                 gain += then - now;

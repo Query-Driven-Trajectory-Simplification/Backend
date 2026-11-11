@@ -100,7 +100,8 @@ TEST_F(TeacherTest, CacheIsWrittenThenReadBack) {
         EXPECT_EQ(built.knn[e].top, loaded.knn[e].top);
         EXPECT_DOUBLE_EQ(built.knn[e].cutoff, loaded.knn[e].cutoff);
     }
-    auto same = [](const std::vector<teacher::JoinPair> &a, const std::vector<teacher::JoinPair> &b) {
+    auto same = [](const std::vector<teacher::JoinPair> &a,
+                   const std::vector<teacher::JoinPair> &b) {
         return std::ranges::equal(a, b, [](const auto &x, const auto &y) {
             return x.i == y.i && x.j == y.j && x.seen == y.seen;
         });
@@ -136,20 +137,56 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
     // Switch random trajectories between endpoints and every point; the tracked join metric
     // must equal a full recompute after each switch
     auto state = floor;
-    teacher::JoinState join(objective, state);
+    const teacher::PreparedTrajectories prepared_floor(db, state);
+    auto views = prepared_floor.views();
+    teacher::JoinState join(objective, views);
     const auto full = every_point(db);
+    const teacher::PreparedTrajectories prepared_full(db, full);
+    const auto full_views = prepared_full.views();
+    const auto floor_views = prepared_floor.views();
     std::mt19937_64 rng(4);
     for (int step = 0; step < 40; ++step) {
         const std::size_t i = rng() % db.size();
         const auto &next = state[i].size() == 2 ? full[i] : floor[i];
         const double before = objective.total(state);
-        const double predicted = join.delta(i, next, state);
+        const auto next_view = state[i].size() == 2 ? full_views[i] : floor_views[i];
+        const double old_metric = join.metric();
+        const auto proposal = join.propose(i, next_view, views);
+        // Evaluating an alternative must neither change the state nor overwrite this proposal.
+        const auto stay = join.propose(i, views[i], views);
+        EXPECT_DOUBLE_EQ(stay.gain, 0.0);
+        EXPECT_DOUBLE_EQ(join.metric(), old_metric);
+        const double predicted = proposal.gain;
         const double separable = objective.separable(i, next) - objective.separable(i, state[i]);
         state[i] = next;
-        join.apply(i, state);
+        views[i] = next_view;
+        join.apply(proposal);
         EXPECT_NEAR(join.metric(), objective.metrics(state)[teacher::Objective::Join], 1e-12);
         EXPECT_NEAR(objective.total(state) - before, predicted + separable, 1e-9);
     }
+}
+
+TEST_F(TeacherTest, ShapeKnnTermNeverCreditsMoreThanTheQueryTerm) {
+    const auto db = random_db(5, 24, 30);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 15, m_dir);
+    const teacher::Objective by_shape(db, workloads, {.knn_by_shape = true});
+    const teacher::Objective by_query(db, workloads);
+    // The shape condition implies the query one, so it can only credit fewer hits
+    std::mt19937_64 rng(6);
+    for (int trial = 0; trial < 20; ++trial) {
+        teacher::KeptSets kept(db.size());
+        for (std::size_t i = 0; i < db.size(); ++i) {
+            const std::size_t n = db.trajectory(i).size();
+            kept[i] = {0, n - 1};
+            for (std::size_t k = 1; k + 1 < n; ++k)
+                if (rng() % 4 == 0)
+                    kept[i].push_back(k);
+            std::ranges::sort(kept[i]);
+        }
+        EXPECT_LE(by_shape.metrics(kept)[teacher::Objective::Knn],
+                  by_query.metrics(kept)[teacher::Objective::Knn] + 1e-12);
+    }
+    EXPECT_GT(by_shape.metrics(every_point(db))[teacher::Objective::Knn], 0.0);
 }
 
 TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
@@ -200,9 +237,9 @@ TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {
             fill[k] = n - 1 - k;
         for (const std::size_t b : {2u, 3u, 6u, 12u, 40u}) {
             SCOPED_TRACE(std::to_string(i) + " at " + std::to_string(b));
-            const auto kept = greedy.run(b, b > 2 ? std::span<const std::size_t>(seed)
-                                                  : std::span<const std::size_t>(),
-                                         fill);
+            const auto kept = greedy.run(
+                b, b > 2 ? std::span<const std::size_t>(seed) : std::span<const std::size_t>(),
+                fill);
             ASSERT_EQ(kept.size(), std::min(b, n));
             EXPECT_EQ(kept.front(), 0u);
             EXPECT_EQ(kept.back(), n - 1);
@@ -219,4 +256,50 @@ TEST(Teacher, RejectsUnknownArms) {
     EXPECT_FALSE(teacher::is_arm("gate_a0"));
     EXPECT_TRUE(teacher::is_arm("TEACHER"));
     EXPECT_FALSE(teacher::is_arm("TEACHER_A0"));
+}
+
+TEST_F(TeacherTest, IndividualArmsMatchCombinedRun) {
+    const auto db = random_db(3, 30, 25);
+    for (const auto variant :
+         {query::FrechetVariant::Discrete, query::FrechetVariant::Continuous}) {
+        auto config = small_config();
+        config.frechet = variant;
+        auto workloads = teacher::load_or_build_workloads(db, config, 11, m_dir);
+        const teacher::Teacher model(db, std::move(workloads), {}, 11);
+        const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
+        const std::size_t budget = 2 * db.size() + 40;
+        const auto combined = model.run(budget, arms);
+        for (std::size_t a = 0; a < arms.size(); ++a) {
+            SCOPED_TRACE(arms[a]);
+            const std::vector<std::string> requested{arms[a]};
+            const auto alone = model.run(budget, requested);
+            ASSERT_EQ(alone.size(), 1u);
+            EXPECT_DOUBLE_EQ(alone[0].objective, combined[a].objective);
+            for (std::size_t i = 0; i < db.size(); ++i)
+                EXPECT_TRUE(std::ranges::equal(alone[0].simplification.trajectory(i),
+                                               combined[a].simplification.trajectory(i)));
+        }
+    }
+}
+
+TEST(PreparedTrajectory, OwnsCoordinatesAndRebuildsBoundsAfterCopyAndMove) {
+    const auto db = random_db(4, 1, 30);
+    const auto original = db.trajectory(0);
+    const std::vector<std::size_t> kept{3, 8, 12};
+    const teacher::PreparedTrajectory prepared(original, kept);
+    auto copied = prepared;
+    const auto moved = std::move(copied);
+    const auto view = moved.view();
+    EXPECT_NE(view.x.data(), prepared.view().x.data());
+    EXPECT_TRUE(view.lat.empty());
+    EXPECT_TRUE(view.lon.empty());
+    for (std::size_t k = 0; k < kept.size(); ++k) {
+        EXPECT_EQ(view.t[k], original.t[kept[k]]);
+        EXPECT_EQ(view.x[k], original.x[kept[k]]);
+        EXPECT_EQ(view.y[k], original.y[kept[k]]);
+    }
+    EXPECT_EQ(view.bbox.x_min, std::ranges::min(view.x));
+    EXPECT_EQ(view.bbox.x_max, std::ranges::max(view.x));
+    EXPECT_EQ(view.bbox.y_min, std::ranges::min(view.y));
+    EXPECT_EQ(view.bbox.y_max, std::ranges::max(view.y));
 }

@@ -2,6 +2,8 @@
 
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/parallel.hpp"
+#include "backend/engine/selection/rdp.hpp"
+#include "backend/engine/selection/sed.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/teacher/curves.hpp"
 #include "backend/engine/teacher/greedy.hpp"
@@ -11,7 +13,9 @@
 #include <cmath>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <map>
+#include <optional>
 #include <random>
 #include <stdexcept>
 
@@ -47,14 +51,10 @@ std::vector<std::size_t> interior(const std::vector<std::size_t> &kept) {
 // serves the whole curve
 class CandidateMaker {
   public:
-    CandidateMaker(const Objective &objective, std::size_t i, std::size_t cap)
+    CandidateMaker(const Objective &objective, std::size_t i, std::size_t cap,
+                   bool all_budgets = false)
         : m_v(objective.db().trajectory(i)), m_cap(std::min(cap, m_v.size())),
-          m_greedy(objective, i) {
-        for (const auto type : {AlgorithmType::SED, AlgorithmType::RDP, AlgorithmType::UNIFORM}) {
-            const auto from = simplify(type, m_cap);
-            m_fill.insert(m_fill.end(), from.begin(), from.end());
-        }
-    }
+          m_objective(objective), m_index(i), m_all_budgets(all_budgets) {}
 
     std::vector<std::size_t> make(std::size_t c, std::size_t b) {
         b = std::min(b, m_v.size());
@@ -80,8 +80,14 @@ class CandidateMaker {
     }
 
   private:
-    std::vector<std::size_t> simplify(AlgorithmType type, std::size_t b) const {
-        return selection::simplify_trajectory(m_v, type, b);
+    std::vector<std::size_t> simplify(AlgorithmType type, std::size_t b) {
+        if (!m_all_budgets || type == AlgorithmType::UNIFORM)
+            return selection::simplify_trajectory(m_v, type, b);
+        auto &cached = type == AlgorithmType::RDP ? m_rdp : m_sed;
+        if (!cached)
+            cached = type == AlgorithmType::RDP ? selection::rdp::sequence(m_v, m_cap)
+                                                : selection::sed::sequence(m_v, m_cap);
+        return prefix(*cached, b);
     }
     static std::vector<std::size_t> prefix(const std::vector<std::size_t> &sequence,
                                            std::size_t b) {
@@ -93,32 +99,51 @@ class CandidateMaker {
     // The greedy sequence of candidate c seeded with the best seed_size interior points of from
     const std::vector<std::size_t> &sequence(std::size_t c, std::size_t seed_size,
                                              AlgorithmType from) {
+        // Classic-only requests do not need the greedy workload index or its fill candidates.
+        if (!m_greedy) {
+            m_greedy.emplace(m_objective, m_index);
+            for (const auto type :
+                 {AlgorithmType::SED, AlgorithmType::RDP, AlgorithmType::UNIFORM}) {
+                const auto from = simplify(type, m_cap);
+                m_fill.insert(m_fill.end(), from.begin(), from.end());
+            }
+        }
         auto &cached = m_sequences[{c, seed_size}];
         if (cached.empty()) {
             const auto seed =
                 seed_size ? interior(simplify(from, 2 + seed_size)) : std::vector<std::size_t>{};
-            cached = m_greedy.sequence(m_cap, seed, m_fill);
+            cached = m_greedy->sequence(m_cap, seed, m_fill);
         }
         return cached;
     }
 
     core::TrajectoryView m_v;
     std::size_t m_cap;
-    Greedy m_greedy;
+    const Objective &m_objective;
+    std::size_t m_index;
+    bool m_all_budgets;
+    std::optional<Greedy> m_greedy;
+    std::optional<std::vector<std::size_t>> m_rdp, m_sed;
     std::vector<std::size_t> m_fill;
     std::map<std::pair<std::size_t, std::size_t>, std::vector<std::size_t>> m_sequences;
 };
 
-// Each trajectory's candidates at its budget
+// Each trajectory's candidates at its budget, or only its selected method when supplied
 Candidates make_candidates(const Objective &objective, const std::vector<std::size_t> &budgets,
-                           const std::vector<std::size_t> &caps) {
+                           const std::vector<std::size_t> &caps,
+                           const Methods *selected = nullptr) {
     Candidates candidates;
     for (auto &kept : candidates)
         kept.resize(budgets.size());
     core::parallel_for(budgets.size(), [&](std::size_t i) {
         CandidateMaker maker(objective, i, caps[i]);
-        for (std::size_t c = 0; c < kCandidates.size(); ++c)
+        if (selected) {
+            const auto c = (*selected)[i];
             candidates[c][i] = maker.make(c, budgets[i]);
+        } else {
+            for (std::size_t c = 0; c < kCandidates.size(); ++c)
+                candidates[c][i] = maker.make(c, budgets[i]);
+        }
     });
     return candidates;
 }
@@ -132,18 +157,54 @@ KeptSets assemble(const Candidates &candidates, const Methods &method) {
 
 // Every trajectory picks its best candidate against the same fixed partner state. Ties go to the
 // earlier candidate, so RDP wins when nothing differs
+// The best of one trajectory's candidates by independent_value, ties to the lower index. RDP,
+// index 0 and always among them, is scored exactly; the rest go best bound first, so the bound
+// in independent_value skips most of the losers' kNN checks
+struct Pick {
+    std::size_t method;
+    double value, rdp;
+};
+
+Pick pick(const Objective &objective, std::size_t i,
+          std::span<const std::pair<std::size_t, core::TrajectoryView>> options,
+          std::span<const core::TrajectoryView> partners) {
+    const double rdp = objective.independent_value(i, options[0].second, partners);
+    Pick best{options[0].first, rdp, rdp};
+    std::vector<std::pair<double, std::size_t>> order; // bound, position in options
+    for (std::size_t k = 1; k < options.size(); ++k)
+        order.push_back({objective.independent_bound(i, options[k].second, partners), k});
+    std::ranges::sort(order, std::greater{});
+    for (const auto &[bound, k] : order) {
+        if (bound < best.value - 1e-15)
+            break;
+        const auto &[c, view] = options[k];
+        const double v = objective.independent_value(i, view, partners, best.value);
+        if (v > best.value || (v == best.value && c < best.method)) {
+            best.value = v;
+            best.method = c;
+        }
+    }
+    return best;
+}
+
 Methods independent_choice(const core::TrajectoryDb &db, const Objective &objective,
                            const Candidates &candidates, const KeptSets *partners) {
     Methods method(db.size());
+    std::optional<PreparedTrajectories> prepared;
+    std::vector<core::TrajectoryView> partner_views;
+    if (partners) {
+        prepared.emplace(db, *partners);
+        partner_views = prepared->views();
+    }
     core::parallel_for(db.size(), [&](std::size_t i) {
-        double best = 0;
+        std::vector<PreparedTrajectory> owned;
+        std::vector<std::pair<std::size_t, core::TrajectoryView>> options;
+        owned.reserve(kCandidates.size());
         for (std::size_t c = 0; c < kCandidates.size(); ++c) {
-            const double v = objective.independent_value(i, candidates[c][i], partners);
-            if (c == 0 || v > best) {
-                best = v;
-                method[i] = c;
-            }
+            owned.emplace_back(db.trajectory(i), candidates[c][i]);
+            options.push_back({c, owned.back().view()});
         }
+        method[i] = pick(objective, i, options, partner_views).method;
     });
     return method;
 }
@@ -155,34 +216,34 @@ struct Curves {
 };
 
 Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
-                    const KeptSets &partners, const std::vector<std::size_t> &caps) {
+                    const KeptSets &partners, const std::vector<std::size_t> &caps, bool rdp_only) {
     Curves curves{std::vector<Curve>(db.size()), std::vector<Curve>(db.size())};
+    const PreparedTrajectories prepared(db, partners);
+    const auto partner_views = prepared.views();
     core::parallel_for(db.size(), [&](std::size_t i) {
-        CandidateMaker maker(objective, i, caps[i]);
+        CandidateMaker maker(objective, i, caps[i], true);
         const std::size_t max_b = std::min(caps[i], db.trajectory(i).size());
         auto &best = curves.best[i];
         auto &rdp = curves.rdp[i];
         for (std::size_t b = 2; b <= max_b; ++b) {
             std::vector<std::vector<std::size_t>> seen;
-            double best_value = 0;
-            std::uint8_t best_method = 0;
-            for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+            std::vector<PreparedTrajectory> owned;
+            std::vector<std::pair<std::size_t, core::TrajectoryView>> options;
+            owned.reserve(kCandidates.size());
+            for (std::size_t c = 0; c < (rdp_only ? 1 : kCandidates.size()); ++c) {
                 auto kept = maker.make(c, b);
                 // A copy of an earlier candidate scores the same, and ties go to the earlier one
                 if (std::ranges::find(seen, kept) != seen.end())
                     continue;
-                const double v = objective.independent_value(i, kept, &partners);
-                if (c == 0)
-                    rdp.value.push_back(v);
-                if (c == 0 || v > best_value) {
-                    best_value = v;
-                    best_method = static_cast<std::uint8_t>(c);
-                }
+                owned.emplace_back(db.trajectory(i), kept);
+                options.push_back({c, owned.back().view()});
                 seen.push_back(std::move(kept));
             }
-            best.value.push_back(best_value);
-            best.method.push_back(best_method);
+            const auto chosen = pick(objective, i, options, partner_views);
+            rdp.value.push_back(chosen.rdp);
             rdp.method.push_back(0);
+            best.value.push_back(chosen.value);
+            best.method.push_back(static_cast<std::uint8_t>(chosen.method));
         }
     });
     return curves;
@@ -208,32 +269,49 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
     for (std::size_t i = 0; i < db.size(); ++i)
         if (!objective.links(i).empty())
             order.push_back(i);
+    std::array<std::optional<PreparedTrajectories>, kCandidates.size()> prepared;
+    std::array<std::vector<core::TrajectoryView>, kCandidates.size()> views;
+    for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+        prepared[c].emplace(db, candidates[c]);
+        views[c] = prepared[c]->views();
+    }
+    // These terms depend only on the candidate, never on the partners' current choices.
+    std::vector<std::array<double, kCandidates.size()>> separable(db.size());
+    core::parallel_for(order.size(), [&](std::size_t j) {
+        const auto i = order[j];
+        for (std::size_t c = 0; c < kCandidates.size(); ++c)
+            separable[i][c] = objective.separable(i, views[c][i]);
+    });
     std::mt19937_64 rng(seed + kOrderSeedOffset);
-    auto state = assemble(candidates, method);
+    std::vector<core::TrajectoryView> state(db.size());
+    for (std::size_t i = 0; i < db.size(); ++i)
+        state[i] = views[method[i]][i];
     JoinState join(objective, state);
 
     for (std::size_t pass = 1; pass <= kMaxPasses; ++pass) {
         std::ranges::shuffle(order, rng);
         std::size_t switches = 0;
         for (const auto i : order) {
-            const double here = objective.separable(i, state[i]);
+            const double here = separable[i][method[i]];
             std::size_t best = method[i];
+            JoinState::Proposal best_proposal;
             double best_gain = 1e-12; // strict gains only, so ties cannot cycle
             for (std::size_t c = 0; c < kCandidates.size(); ++c) {
                 if (c == method[i])
                     continue;
-                const double gain = objective.separable(i, candidates[c][i]) - here +
-                                    join.delta(i, candidates[c][i], state);
+                auto proposal = join.propose(i, views[c][i], state);
+                const double gain = separable[i][c] - here + proposal.gain;
                 if (gain > best_gain) {
                     best = c;
                     best_gain = gain;
+                    best_proposal = std::move(proposal);
                 }
             }
             if (best == method[i])
                 continue;
             method[i] = best;
-            state[i] = candidates[best][i];
-            join.apply(i, state);
+            state[i] = views[best][i];
+            join.apply(best_proposal);
             ++switches;
         }
         std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}\n", pass,
@@ -312,7 +390,10 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         std::cout << std::format("teacher: {} {:.1f} s\n", step, seconds_since(start));
         start = std::chrono::steady_clock::now();
     };
-    const auto candidates = make_candidates(objective, equal, caps);
+    const Methods rdp_methods(db.size(), kRdp);
+    const bool equal_alternatives = wants(arms, {"GATEORIG_a0", "GATE_a0", "BR_a0"});
+    const auto candidates =
+        make_candidates(objective, equal, caps, equal_alternatives ? nullptr : &rdp_methods);
     timed("candidates");
 
     if (wants(arms, {"GATEORIG_a0"})) {
@@ -322,7 +403,8 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
 
     if (wants(arms, {"GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER"})) {
         // Partners are fixed at RDP with equal budgets, so each trajectory is scored on its own
-        const auto curves = build_curves(db, objective, candidates[kRdp], caps);
+        const bool rdp_only = !wants(arms, {"GATE_a0", "TEACHER", "BR_a0", "BR_TEACHER"});
+        const auto curves = build_curves(db, objective, candidates[kRdp], caps, rdp_only);
         timed(std::format("value curves up to {} points", cap));
 
         const auto gate = curve_methods(curves.best, equal);
@@ -347,15 +429,16 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             AllocationStats stats;
             const auto budgets = allocate(curves.rdp, total_budget, &stats);
             report("RDP allocation", stats, budgets);
-            keep("TEACHER_RDP", make_candidates(objective, budgets, caps),
-                 Methods(db.size(), kRdp));
+            keep("TEACHER_RDP", make_candidates(objective, budgets, caps, &rdp_methods),
+                 rdp_methods);
         }
         if (wants(arms, {"TEACHER", "BR_TEACHER"})) {
             AllocationStats stats;
             const auto budgets = allocate(curves.best, total_budget, &stats);
             report("allocation", stats, budgets);
-            const auto searched = make_candidates(objective, budgets, caps);
             const auto teacher = curve_methods(curves.best, budgets);
+            const auto searched = make_candidates(objective, budgets, caps,
+                                                  wants(arms, {"BR_TEACHER"}) ? nullptr : &teacher);
             if (wants(arms, {"TEACHER"}))
                 keep("TEACHER", searched, teacher);
             if (wants(arms, {"BR_TEACHER"})) {

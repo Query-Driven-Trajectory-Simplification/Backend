@@ -129,10 +129,10 @@ repeat until nobody wants to switch.
 
    ```
    gain(c) = [separable(i, c) − separable(i, current)]   change in i's kNN, range, where-at
-           + join.delta(i, c)                            exact change in the join F1
+           + join.propose(i, c, state).gain              exact change in the join F1
    ```
 
-   `join.delta` rescores **all** of i's pairs against the partners' current kept points, and
+   `join.propose` rescores **all** of i's pairs against the partners' current kept points, and
    updates the F1 of i and of every partner whose pair flips.
 
    **It switches when the best gain is positive** (above 1e-12). The two parts can pull in
@@ -310,7 +310,7 @@ on both sides' simplifications.
 Why range has no false positives: kept points are a subset of the original points, so a simplified
 trajectory can't have a point in a box the original had none in.
 
-### `SimplifiedView` — internal class
+### `PreparedTrajectory` and `PreparedTrajectories` — public class
 
 - **Why:** the checks need trajectory i with only its kept points, in the shape the engine's
   Fréchet and interpolation code expect. Building a full simplified database for every candidate
@@ -319,7 +319,9 @@ trajectory can't have a point in a box the original had none in.
 - **Computation:** copies `t`, `x` and `y` at the kept indices into its own vectors and points a
   `TrajectoryView` at them. `lat` and `lon` stay empty, because the Fréchet and interpolation code
   only read `t`, `x` and `y`.
-- **Output:** `view()`, valid while the object lives.
+- **Output:** `view()`, valid while the object lives. Bounds are rebuilt from retained points.
+  `PreparedTrajectories` owns a whole set and provides borrowed views. Fixed partners are prepared
+  once for curve scoring; best response prepares every candidate once and switches view references.
 
 ### `inside(box, view, p)` and `f1_of(hits, found, expected)` — internal
 
@@ -374,28 +376,28 @@ trajectory can't have a point in a box the original had none in.
 - **Output:** i's part of J_T from the three separable terms, 0 at endpoints only. Summed over all
   trajectories, this equals those terms' share of J_T exactly.
 
-### `independent_value(i, kept, partners)` — public
+### `independent_value(i, candidate, partners)` — public
 
 - **Why:** the value curves need one number per (trajectory, candidate), computed without knowing
   what the other trajectories will choose.
-- **Input:** trajectory index, kept set, and a fixed partner state. `nullptr` means original
-  partners (the `GATEORIG_a0` arm); otherwise the partners' kept sets (RDP at equal budgets, for
-  `GATE_a0`).
-- **Computation:** `separable(i, kept)` plus i's own join F1 against those fixed partners: count
-  `found` and `hits` over i's links using `match` or `match_original`, then add
+- **Input:** trajectory index, a prepared candidate view, and fixed partner views. An empty
+  partner span means original partners (the `GATEORIG_a0` arm); otherwise the views contain RDP
+  at equal budgets for `GATE_a0`.
+- **Computation:** `separable(i, candidate)` plus i's own join F1 against those fixed partners: count
+  `found` and `hits` over i's links using `match`, then add
   `m_scale[Join] · F1_i / (trajectories with truth)`.
 - **Output:** an approximate per-trajectory score. It's approximate because the real join depends
   on partners' actual choices and counts each pair on both sides. That is exactly what
   `best_response` corrects.
 
-### `match(a, kept_a, b, kept_b)` and `match_original(a, kept_a, b)` — public
+### `match(a, b)` — public
 
-- **Input:** two trajectories and their kept sets (or b original).
+- **Input:** two prepared trajectory views (or an original view).
 - **Computation:** `query::frechet_within` on the simplified views, with the workload's threshold
   and Fréchet variant.
 - **Output:** whether the pair would be reported by the join.
 
-### `join_metric(kept)` — private
+### `join_metric(state)` — private
 
 - **Input:** a whole simplified database.
 - **Computation:**
@@ -408,8 +410,8 @@ trajectory can't have a point in a box the original had none in.
 ### `metrics(kept)` — public
 
 - **Input:** a whole simplified database.
-- **Computation:** sums `raw_separable` over all trajectories (in parallel), and calls
-  `join_metric`.
+- **Computation:** prepares the trajectories once, sums `raw_separable` over their views (in
+  parallel), and reuses those views in `join_metric`.
 - **Output:** the four raw metric values. Used for the floors, and in tests.
 
 ### `total(kept)` — public
@@ -436,24 +438,26 @@ The result is exact, not approximate: the tests check it against a full recomput
   and `m_counted`.
 - **Output:** a state whose `metric()` equals `join_metric(state)`.
 
-#### `delta(i, kept, state)`
+#### `propose(i, candidate, state)`
 
 - **Why:** "how much would J_T's join term change if i switched to `kept`?", without changing
   anything.
-- **Input:** trajectory, candidate kept set, current state (for the partners' kept sets).
+- **Input:** trajectory index, prepared candidate view, and current partner views.
 - **Computation:**
   1. For each of i's links, compare the pair's current outcome with its outcome under the
      candidate.
   2. For every pair that flips, record the changes to hits and found on both trajectories.
   3. For each affected trajectory, remove its old F1 from the sum and add its new one, adjusting
      the counted trajectories when one starts or stops being counted.
-- **Output:** `m_scale[Join] · (new macro F1 − current macro F1)`. Added to the `separable`
-  difference, this is the exact change in J_T.
+- **Output:** a `Proposal` with the trajectory index, pair outcomes, and
+  `gain = m_scale[Join] · (new macro F1 − current macro F1)`. Added to the cached `separable`
+  difference, this is the exact change in J_T. Proposals remain valid until the next `apply`.
 
-#### `apply(i, state)`
+#### `apply(proposal)`
 
-- **Input:** trajectory i, and the state already holding i's new kept set.
-- **Computation:** the same flips as `delta`, but written into `m_matched`, the counts and the sum.
+- **Input:** the winning proposal evaluated against the current state.
+- **Computation:** writes its saved outcomes into `m_matched`, the counts and the sum, without
+  repeating Fréchet tests. The caller also switches the current view to the winning candidate.
 - **Output:** nothing; the state now matches the new solution.
 
 #### `metric()`, `counted(t, found)`, `f1(t, hits, found)`
@@ -546,7 +550,9 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 - **Why:** the value curves: for each trajectory and each budget, the best method and its value.
 - **Input:** the partner reference state (RDP at equal budgets), and how far each curve goes (the
   trajectory's budget, never more than its length).
-- **Computation:** in parallel per trajectory, for b = 2 … max:
+- **Computation:** in parallel per trajectory, build the RDP addition sequence and reversed SED
+  removal sequence once, then use sorted prefixes for each budget. Single-budget requests keep
+  using the ordinary selectors. For b = 2 … max:
   - simplify with every candidate (at b = 2 all keep the endpoints, so only one is scored);
   - score each with `independent_value` against the RDP partners;
   - record the best value and method.
@@ -570,10 +576,10 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 - **Computation:**
   1. `order` = the trajectories with any seen join link. Only they can gain, since the other terms
      don't depend on anyone else.
-  2. Builds the starting state and a `JoinState`.
+  2. Prepares candidate views, caches their separable scores, and builds the starting `JoinState`.
   3. For up to 10 passes, in a seeded random order:
      - for each trajectory i, and each other method c: gain = `separable(c) − separable(current)`
-       + `join.delta(c)`. That's the exact change in J_T;
+       + `join.propose(c).gain`. That's the exact change in J_T;
      - switches to the best c only if its gain beats 1e-12 (strictly positive, so ties can't
        cycle), and calls `join.apply`.
   4. Stops after a pass with no switches.

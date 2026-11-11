@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -14,9 +15,36 @@ namespace teacher {
 // Kept point indices per trajectory, sorted, endpoints included
 using KeptSets = std::vector<std::vector<std::size_t>>;
 
+// Owns only the coordinates and timestamps needed by scoring. Views are created on demand,
+// so moving or copying the owner never leaves cached spans pointing at another object.
+class PreparedTrajectory {
+  public:
+    PreparedTrajectory(const core::TrajectoryView &original, std::span<const std::size_t> kept);
+    core::TrajectoryView view() const { return {m_id, m_t, {}, {}, m_x, m_y, m_box}; }
+
+  private:
+    std::int32_t m_id;
+    std::vector<std::int64_t> m_t;
+    std::vector<double> m_x, m_y;
+    core::BoundingBox m_box;
+};
+
+class PreparedTrajectories {
+  public:
+    PreparedTrajectories(const core::TrajectoryDb &db, const KeptSets &kept);
+    // The returned views borrow from this owner, which must remain alive and unmodified.
+    std::vector<core::TrajectoryView> views() const;
+
+  private:
+    std::vector<PreparedTrajectory> m_trajectories;
+};
+
 struct ObjectiveConfig {
     double min_tolerance_m = 25.0; // where-at average-hit ramp, same as the evaluator
     double max_tolerance_m = 500.0;
+    // kNN hit when i stays within cutoff(e) - Fréchet(e, original i) of its own original, so it
+    // can't be fitted to the teacher's queries. Off: too strict, it lowered test J5 by .03
+    bool knn_by_shape = false;
 };
 
 // A join candidate of one trajectory
@@ -52,12 +80,19 @@ class Objective {
     // Scaled kNN + range + where-at of trajectory i, 0 with endpoints only. Sums to their part
     // of J_T
     double separable(std::size_t i, std::span<const std::size_t> kept) const;
+    double separable(std::size_t i, const core::TrajectoryView &candidate) const;
 
     // A one-pass score for choosing i's points on their own: separable plus i's join F1 against
-    // a fixed partner state (nullptr = original partners), as if each trajectory carried an
-    // equal share of the join metric. An approximation, unlike JoinState
-    double independent_value(std::size_t i, std::span<const std::size_t> kept,
-                             const KeptSets *partners) const;
+    // a fixed partner state (empty = original partners), as if each trajectory carried an
+    // equal share of the join metric. An approximation, unlike JoinState.
+    // Exact whenever the value is above beat. Otherwise it may return any value at most beat,
+    // skipping the kNN checks that cannot lift it over, the costly part
+    double independent_value(std::size_t i, const core::TrajectoryView &candidate,
+                             std::span<const core::TrajectoryView> partners,
+                             double beat = -std::numeric_limits<double>::infinity()) const;
+    // An upper bound on independent_value without any kNN check: every kNN check a hit
+    double independent_bound(std::size_t i, const core::TrajectoryView &candidate,
+                             std::span<const core::TrajectoryView> partners) const;
 
     // Exact J_T, partners compressed as in kept. 0 with endpoints only
     double total(const KeptSets &kept) const;
@@ -83,20 +118,19 @@ class Objective {
     std::span<const std::uint32_t> probes(std::size_t i) const { return m_probes[i]; } // where-at
     double where_at_weight() const { return m_where_at_weight; }
 
-    // Whether simplified a and simplified b are within the join threshold
-    bool match(std::size_t a, std::span<const std::size_t> kept_a, std::size_t b,
-               std::span<const std::size_t> kept_b) const;
-    // Same, with b original
-    bool match_original(std::size_t a, std::span<const std::size_t> kept_a, std::size_t b) const;
+    bool match(const core::TrajectoryView &a, const core::TrajectoryView &b) const;
 
   private:
     struct KnnMembership {
         std::uint32_t query;
         double cutoff;
+        double margin = 0; // cutoff - Fréchet(e, original i), at least 0
     };
 
     Terms raw_separable(std::size_t i, std::span<const std::size_t> kept) const;
-    double join_metric(const KeptSets &kept) const;
+    Terms raw_separable(std::size_t i, const core::TrajectoryView &candidate,
+                        bool knn = true) const;
+    double join_metric(std::span<const core::TrajectoryView> state) const;
 
     const core::TrajectoryDb &m_db;
     const TeacherWorkloads &m_workloads;
@@ -123,12 +157,19 @@ class Objective {
 // trajectory's hits and found counts, so changing i only rescores i's pairs
 class JoinState {
   public:
-    JoinState(const Objective &objective, const KeptSets &state);
+    JoinState(const Objective &objective, std::span<const core::TrajectoryView> state);
 
-    // Change of the scaled join term of J_T if i switched to kept
-    double delta(std::size_t i, std::span<const std::size_t> kept, const KeptSets &state) const;
-    // Records i's switch; state must already hold i's new kept set
-    void apply(std::size_t i, const KeptSets &state);
+    struct Proposal {
+        std::size_t trajectory;
+        double gain = 0.0;
+        std::vector<char> matched; // outcomes in links(trajectory) order
+    };
+
+    // Evaluate without modifying the state. A proposal remains valid until the next apply().
+    Proposal propose(std::size_t i, const core::TrajectoryView &candidate,
+                     std::span<const core::TrajectoryView> state) const;
+    // Uses the saved outcomes; performs no distance calculations.
+    void apply(const Proposal &proposal);
 
     double metric() const; // macro F1 over the seen pairs
 
