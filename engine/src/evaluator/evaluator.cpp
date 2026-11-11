@@ -8,6 +8,32 @@
 
 namespace evaluator {
 
+namespace {
+
+bool can_reuse_join(const core::TrajectoryDb &db, const query::JoinWorkload &join,
+                    const query::RouteClusteringWorkload &clustering) {
+    if (join.mode != query::JoinMode::Self || join.eps_m != clustering.eps_m ||
+        join.frechet != clustering.frechet || clustering.originals.size() != db.size())
+        return false;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const auto trajectory = db.trajectory(i);
+        if (trajectory.size() == 0 || query::endpoints_of(trajectory) != clustering.originals[i])
+            return false;
+    }
+    // Also require the same candidate pairs: independently supplied workloads may differ.
+    std::size_t k = 0;
+    for (const auto &entry : join.entries) {
+        for (const auto j : entry.candidates) {
+            if (k == clustering.candidates.size() ||
+                clustering.candidates[k++] != query::TrajectoryPair{entry.query_index, j})
+                return false;
+        }
+    }
+    return k == clustering.candidates.size();
+}
+
+} // namespace
+
 Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
                      Workloads workloads, WhereAtScoringConfig where_at_config)
     : m_simplified(simplified), m_workloads(workloads), m_where_at_config(where_at_config) {
@@ -23,12 +49,23 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
 EvaluationResult Evaluator::evaluate() const {
     auto knn = m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnEvaluation{};
     auto range = evaluate_range(m_simplified, m_workloads.range);
+    const bool reuse = m_workloads.join && m_workloads.clustering &&
+                       can_reuse_join(m_simplified, *m_workloads.join, *m_workloads.clustering);
+    std::vector<query::TrajectoryPair> pairs;
+    const auto join = m_workloads.join
+                          ? evaluate_join(m_simplified, *m_workloads.join, reuse ? &pairs : nullptr)
+                          : JoinScores{};
+    const auto clustering =
+        reuse ? compare_route_clusters(
+                    m_workloads.clustering->reference,
+                    query::cluster_routes(m_simplified, pairs, m_workloads.clustering->min_size))
+              : get_clustering_scores();
     return {.scores = {.knn = knn.scores,
                        .range_recall = range.recall,
                        .where_at = get_where_at_scores(),
-                       .join = get_join_scores(),
+                       .join = join,
                        .range_f1 = range.f1,
-                       .clustering = get_clustering_scores()},
+                       .clustering = clustering},
             .knn = std::move(knn.answers),
             .range = std::move(range.answers)};
 }

@@ -24,6 +24,9 @@ double get_squared_frechet_distance(const core::TrajectoryView &query,
                                     const core::TrajectoryView &reference, double max_squared_dist,
                                     std::vector<double> &prev, std::vector<double> &curr);
 
+// Lower bound from bounding-box extrema; valid for discrete and continuous Fréchet.
+double squared_box_extent_lower_bound(const core::TrajectoryView &a, const core::TrajectoryView &b);
+
 double squared_endpoint_lower_bound(const core::TrajectoryView &query,
                                     const core::TrajectoryView &reference);
 

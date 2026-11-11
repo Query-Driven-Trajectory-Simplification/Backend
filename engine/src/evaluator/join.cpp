@@ -33,8 +33,10 @@ double average(const std::vector<double> &values) {
 
 } // namespace
 
-JoinScores evaluate_join(const core::TrajectoryDb &compressed,
-                         const query::JoinWorkload &workload) {
+JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload,
+                         std::vector<std::pair<std::size_t, std::size_t>> *matched_pairs) {
+    if (matched_pairs)
+        matched_pairs->clear();
     const bool self = workload.mode == query::JoinMode::Self;
     if (self) {
         if (compressed.size() != workload.queries.size() ||
@@ -75,6 +77,8 @@ JoinScores evaluate_join(const core::TrajectoryDb &compressed,
         const auto &entry = workload.entries[i];
         const auto q = self ? entry.query_index : i;
         for (const auto j : matched[i]) {
+            if (matched_pairs)
+                matched_pairs->emplace_back(entry.query_index, j);
             const bool hit = std::ranges::binary_search(entry.reference, j);
             ++counts[q].found;
             counts[q].hits += hit;

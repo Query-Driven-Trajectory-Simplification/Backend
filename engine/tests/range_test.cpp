@@ -245,3 +245,35 @@ TEST(RangeF1, ScoresMembershipIncludingEmptySetsAndFalsePositives) {
     EXPECT_DOUBLE_EQ(evaluator::range::f1({}, {1}), 0);
     EXPECT_TRUE(std::isnan(evaluator::range::f1({}, {})));
 }
+
+TEST(RangeEvaluation, ReferenceCandidatesMatchFullScanAfterPointRemoval) {
+    const auto db = make_db({
+        {{0}, {10, 40.0, 117.0}, {20}},
+        {{0, 40.0, 117.0}, {10}, {20, 40.0, 117.0}},
+        {{0}, {10}, {20}},
+        {{100}, {110}, {120}},
+    });
+    core::Simplification kept;
+    for (int i = 0; i < 4; ++i)
+        kept.add_trajectory(std::vector<std::size_t>{0, 2});
+    const auto compressed = core::materialize(db, kept);
+    for (const auto box :
+         {origin_box(0, 20), origin_box(10, 10), origin_box(100, 120), origin_box(200, 300)}) {
+        const auto reference = query::range(db, box);
+        const std::vector<query::RangeQuery> workload{{box, reference}};
+        const auto result = evaluator::evaluate_range(compressed, workload);
+        const auto full = query::range(compressed, box);
+        std::vector<std::int32_t> ids;
+        for (const auto i : full)
+            ids.push_back(compressed.trajectory(i).trajectory_id);
+        ASSERT_EQ(result.answers.size(), 1u);
+        EXPECT_EQ(result.answers[0], ids);
+        if (reference.empty()) {
+            EXPECT_TRUE(std::isnan(result.recall));
+            EXPECT_TRUE(std::isnan(result.f1));
+        } else {
+            EXPECT_DOUBLE_EQ(result.recall, evaluator::range::recall(reference, full));
+            EXPECT_DOUBLE_EQ(result.f1, evaluator::range::f1(reference, full));
+        }
+    }
+}
