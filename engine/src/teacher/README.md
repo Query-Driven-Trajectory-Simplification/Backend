@@ -46,9 +46,11 @@ Files:
 - **J5:** the pipeline's score on the held-out test workloads: the equal mean of five normalised
   metrics (kNN, range, where-at, join, clustering).
 - **J_T:** the teacher's own score on its training workloads. It has the same shape as J5 but
-  leaves clustering out and only uses the seen join pairs.
-- **Seen / unseen pairs:** the self-join pairs are split in half. The teacher only gets the seen
-  half, so the unseen half shows how much of its join gain carries over to pairs it never saw.
+  leaves clustering out.
+- **Join pairs:** the teacher uses every 150 m pair, because whoever compresses the database knows
+  all of it. The pairs are also split in half (seen / unseen); with `all_join_pairs = false` the
+  teacher only gets the seen half, which shows how much of its join gain is fitting those
+  specific pairs. Whether the join gain generalises is tested at other thresholds (100 m, 300 m).
 - **Arm:** one named output of the teacher, e.g. `GATE_a0`.
 
 ---
@@ -120,10 +122,10 @@ possible total, so nothing more is needed in stage 1.
 of its other methods makes the *real* J_T highest, given what everyone else currently uses;
 repeat until nobody wants to switch.
 
-1. **Who is visited:** only trajectories with at least one seen join pair. For the others, the
+1. **Who is visited:** only trajectories with at least one join pair. For the others, the
    score doesn't depend on anyone else, so their stage-1 choice is already their best.
 2. **Starting state:** stage 1's method for every trajectory, plus a `JoinState` holding every
-   seen pair's outcome (match or not) with both sides on their stage-1 methods.
+   pair's outcome (match or not) with both sides on their stage-1 methods.
 3. **One pass:** visit those trajectories in random order. For trajectory i and each of its other
    two methods c:
 
@@ -182,7 +184,7 @@ optimisation terms this is coordinate ascent; in game-theory terms, best-respons
 
 ### Why it is fast
 `JoinState` keeps every pair's outcome and every trajectory's hit and found counts. Testing one
-switch only rescores that trajectory's own pairs (usually a handful) instead of all ~90,000 seen
+switch only rescores that trajectory's own pairs (usually a handful) instead of all
 pairs, and the result is exact: the tests check it against a full recompute.
 
 ### What it shows
@@ -301,7 +303,7 @@ The four terms, each normalised `(metric − floor) / (1 − floor)` and then av
 | kNN | for each query e that has i in its top k: Fréchet(original e, simplified i) ≤ cutoff(e) | recall@k |
 | Range | for each box i is in: does a kept point still lie inside the box? | range F1, as recall (there are no false positives) |
 | Where-at | average-hit ramp over i's probes: `clamp((max − err) / (max − min), 0, 1)` | where-at average-hit |
-| Join | macro F1 over the seen pairs, both sides simplified | join F1, computed the same way |
+| Join | macro F1 over the pairs used, both sides simplified | join F1, computed the same way |
 
 The first three are **separable**: they add up over trajectories, because each check only involves
 trajectory i (the others stay original). Join is **not separable**: whether a pair matches depends
@@ -344,9 +346,9 @@ trajectory can't have a point in a box the original had none in.
   3. **Groups where-at probes** per trajectory in `m_probes[i]`, with
      `m_where_at_weight = 1 / trajectories with probes` (averaged per trajectory, like the
      evaluator).
-  4. **Builds the join links.** Seen positives first, then seen negatives, stored in
+  4. **Builds the join links.** Positives first, then negatives (all, or only the seen half), stored in
      `m_pair_i`/`m_pair_j`. Each pair is linked from both sides in `m_links`. `m_truth[t]` counts
-     t's seen positives.
+     t's positives.
   5. **Floors:** `metrics(endpoints)` gives each metric's floor. If a floor is already 1, it
      throws, because that metric can't be normalised.
   6. **Scales:** `m_scale[m] = 1 / (4 · (1 − floor_m))`. This applies the normalisation and the
@@ -401,11 +403,11 @@ trajectory can't have a point in a box the original had none in.
 
 - **Input:** a whole simplified database.
 - **Computation:**
-  1. In parallel, `match` every seen pair.
+  1. In parallel, `match` every pair used.
   2. For each matched pair, increment `found` on both sides, and `hits` too if it's a positive.
   3. Average `f1_of(hits, found, truth)` over trajectories with any truth or any match. This is the
      same counting rule as the engine's evaluator.
-- **Output:** macro join F1 on the seen pairs.
+- **Output:** macro join F1 on the pairs used.
 
 ### `metrics(kept)` — public
 
@@ -433,7 +435,7 @@ The result is exact, not approximate: the tests check it against a full recomput
 #### `JoinState(objective, state)` — constructor
 
 - **Input:** the objective and a starting simplified database.
-- **Computation:** matches every seen pair once (from its smaller side, in parallel). It fills
+- **Computation:** matches every pair used once (from its smaller side, in parallel). It fills
   `m_matched`, `m_hits[t]` and `m_found[t]`, then sums F1 over counted trajectories into `m_sum`
   and `m_counted`.
 - **Output:** a state whose `metric()` equals `join_metric(state)`.
@@ -501,7 +503,7 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 - **Input:** the database, the workloads (moved in), the where-at tolerances, and the seed.
 - **Computation:** stores the workloads, then builds the `Objective` on them. `m_workloads` is
   declared before `m_objective`, so it is constructed first. That ordering matters because the
-  objective keeps a reference to it. Prints the seen-pair counts and floors.
+  objective keeps a reference to it. Prints the pair counts and floors.
 - **Output:** a ready teacher. It can't be copied, since that would break the reference.
 
 ### `Teacher::run(total_budget, arms)` — public, the main entry
@@ -574,7 +576,7 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
   single change helps.
 - **Input:** candidates, a starting selection (`GATE_a0`), and the seed.
 - **Computation:**
-  1. `order` = the trajectories with any seen join link. Only they can gain, since the other terms
+  1. `order` = the trajectories with any join link. Only they can gain, since the other terms
      don't depend on anyone else.
   2. Prepares candidate views, caches their separable scores, and builds the starting `JoinState`.
   3. For up to 10 passes, in a seeded random order:

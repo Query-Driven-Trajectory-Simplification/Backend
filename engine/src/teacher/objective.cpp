@@ -120,7 +120,7 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     const auto with_probes = std::ranges::count_if(m_probes, [](auto &p) { return !p.empty(); });
     m_where_at_weight = with_probes ? 1.0 / static_cast<double>(with_probes) : 0.0;
 
-    // Join: seen positives, then seen negatives
+    // Join: positives, then negatives
     m_links.resize(n);
     m_truth.assign(n, 0);
     auto add = [&](std::uint32_t i, std::uint32_t j, bool positive) {
@@ -135,11 +135,11 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
         }
     };
     for (const auto &p : workloads.positives)
-        if (p.seen)
+        if (config.all_join_pairs || p.seen)
             add(p.i, p.j, true);
     m_positive_count = m_pair_i.size();
     for (const auto &p : workloads.negatives)
-        if (p.seen)
+        if (config.all_join_pairs || p.seen)
             add(p.i, p.j, false);
     m_with_truth =
         static_cast<std::size_t>(std::ranges::count_if(m_truth, [](auto c) { return c > 0; }));
@@ -160,6 +160,39 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
         for (const auto m : {Knn, Range, WhereAt})
             m_v0[i] += m_scale[m] * t[m];
     });
+    if (config.shape_weight > 0) {
+        m_shape0.assign(n, 0.0);
+        core::parallel_for(n, [&](std::size_t i) {
+            m_shape0[i] = shape(i, PreparedTrajectory(db.trajectory(i), endpoints[i]).view());
+        });
+        const double floor =
+            std::accumulate(m_shape0.begin(), m_shape0.end(), 0.0) / static_cast<double>(n);
+        if (floor >= 1.0)
+            throw std::runtime_error("objective: shape is already perfect with endpoints only");
+        m_shape_scale = config.shape_weight / ((1.0 - floor) * static_cast<double>(n));
+    }
+}
+
+double Objective::shape(std::size_t i, const core::TrajectoryView &s) const {
+    const auto v = m_db.trajectory(i);
+    if (v.size() == 0 || s.size() < 2)
+        return 1.0;
+    double sum = 0;
+    std::size_t seg = 0;
+    for (std::size_t k = 0; k < v.size(); ++k) {
+        while (seg + 2 < s.size() && s.t[seg + 1] <= v.t[k])
+            ++seg;
+        const double ax = s.x[seg], ay = s.y[seg];
+        const double dx = s.x[seg + 1] - ax, dy = s.y[seg + 1] - ay;
+        const double len2 = dx * dx + dy * dy;
+        const double u =
+            len2 > 0 ? std::clamp(((v.x[k] - ax) * dx + (v.y[k] - ay) * dy) / len2, 0.0, 1.0) : 0.0;
+        const double error = std::hypot(ax + u * dx - v.x[k], ay + u * dy - v.y[k]);
+        sum += std::clamp((m_config.max_tolerance_m - error) /
+                              (m_config.max_tolerance_m - m_config.min_tolerance_m),
+                          0.0, 1.0);
+    }
+    return sum / static_cast<double>(v.size());
 }
 
 bool Objective::match(const core::TrajectoryView &a, const core::TrajectoryView &b) const {
@@ -223,8 +256,10 @@ double Objective::separable(std::size_t i, std::span<const std::size_t> kept) co
 
 double Objective::separable(std::size_t i, const core::TrajectoryView &candidate) const {
     const auto t = raw_separable(i, candidate);
+    const double shape_part =
+        m_shape_scale > 0 ? m_shape_scale * (shape(i, candidate) - m_shape0[i]) : 0.0;
     return m_scale[Knn] * t[Knn] + m_scale[Range] * t[Range] + m_scale[WhereAt] * t[WhereAt] -
-           m_v0[i];
+           m_v0[i] + shape_part;
 }
 
 double Objective::independent_value(std::size_t i, const core::TrajectoryView &candidate,
@@ -242,10 +277,12 @@ double Objective::independent_value(std::size_t i, const core::TrajectoryView &c
         found + m_truth[i] != 0 && m_with_truth != 0
             ? m_scale[Join] * f1_of(hits, found, m_truth[i]) / static_cast<double>(m_with_truth)
             : 0.0;
+    const double shape_part =
+        m_shape_scale > 0 ? m_shape_scale * (shape(i, candidate) - m_shape0[i]) : 0.0;
     // Same sums in the same order as separable, so the value is identical to the last bit
     auto value = [&] {
         return m_scale[Knn] * t[Knn] + m_scale[Range] * t[Range] + m_scale[WhereAt] * t[WhereAt] -
-               m_v0[i] + join;
+               m_v0[i] + shape_part + join;
     };
 
     if (m_config.knn_by_shape) {
@@ -319,6 +356,14 @@ double Objective::total(const KeptSets &kept) const {
     double j = 0;
     for (std::size_t k = 0; k < TermCount; ++k)
         j += m_scale[k] * (m[k] - m_floor[k]);
+    if (m_shape_scale > 0) {
+        std::vector<double> gain(kept.size());
+        core::parallel_for(kept.size(), [&](std::size_t i) {
+            gain[i] =
+                shape(i, PreparedTrajectory(m_db.trajectory(i), kept[i]).view()) - m_shape0[i];
+        });
+        j += m_shape_scale * std::accumulate(gain.begin(), gain.end(), 0.0);
+    }
     return j;
 }
 

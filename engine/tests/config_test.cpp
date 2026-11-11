@@ -238,25 +238,28 @@ TEST(Config, TeacherIsOffByDefault) {
     EXPECT_FALSE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "cache");
     EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"TEACHER", "BR_TEACHER"}));
+    EXPECT_TRUE(config.teacher.all_join_pairs);
 }
 
 TEST(Config, ReadsTheTeacherSection) {
     const auto config = pipeline::load_config(write_config("teacher.json", R"({
         "data_path": "d",
         "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["GATEORIG_a0", "BR_a0"],
-                    "range_query_count": 1000}
+                    "range_query_count": 1000, "all_join_pairs": false, "shape_weight": 0.25}
     })"));
     EXPECT_TRUE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "my_cache");
     EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"GATEORIG_a0", "BR_a0"}));
     EXPECT_EQ(config.teacher.range_query_count, 1000u);
+    EXPECT_FALSE(config.teacher.all_join_pairs);
+    EXPECT_DOUBLE_EQ(config.teacher.shape_weight, 0.25);
 }
 
 TEST(Config, RejectsBadTeacherSections) {
     for (const auto &section :
          {R"({"enabled": true, "arms": ["DP"]})", R"({"enabled": true, "arms": []})",
           R"({"arms": ["GATE_a0", "GATE_a0"]})", R"({"cache_dir": ""})",
-          R"({"range_query_count": 0})", R"({"seed": 7})"}) {
+          R"({"range_query_count": 0})", R"({"shape_weight": -1})", R"({"seed": 7})"}) {
         SCOPED_TRACE(section);
         const auto contents = std::string(R"({"data_path": "d", "teacher": )") + section + "}";
         EXPECT_THROW(pipeline::load_config(write_config("bad_teacher.json", contents)),

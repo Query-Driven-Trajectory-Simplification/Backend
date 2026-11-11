@@ -111,12 +111,19 @@ void parse_clustering_config(Config &config, const json &clustering) {
 }
 
 void parse_teacher_config(Config &config, const json &section) {
-    validate_keys(section, {"enabled", "cache_dir", "arms", "range_query_count"}, "teacher");
+    validate_keys(
+        section,
+        {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs", "shape_weight"},
+        "teacher");
     auto &t = config.teacher;
     t.enabled = section.value("enabled", t.enabled);
     t.cache_dir = section.value("cache_dir", t.cache_dir.string());
     t.arms = section.value("arms", t.arms);
     t.range_query_count = section.value("range_query_count", t.range_query_count);
+    t.all_join_pairs = section.value("all_join_pairs", t.all_join_pairs);
+    t.shape_weight = section.value("shape_weight", t.shape_weight);
+    if (t.shape_weight < 0)
+        throw std::invalid_argument("config: teacher.shape_weight must not be negative");
     if (t.cache_dir.empty())
         throw std::invalid_argument("config: teacher.cache_dir must not be empty");
     if (t.enabled && t.arms.empty())
@@ -124,8 +131,8 @@ void parse_teacher_config(Config &config, const json &section) {
     for (std::size_t a = 0; a < t.arms.size(); ++a) {
         if (!teacher::is_arm(t.arms[a]))
             throw std::invalid_argument("config: unknown teacher arm '" + t.arms[a] + "'");
-        if (std::find(t.arms.begin(), t.arms.begin() + static_cast<std::ptrdiff_t>(a),
-                      t.arms[a]) != t.arms.begin() + static_cast<std::ptrdiff_t>(a))
+        if (std::find(t.arms.begin(), t.arms.begin() + static_cast<std::ptrdiff_t>(a), t.arms[a]) !=
+            t.arms.begin() + static_cast<std::ptrdiff_t>(a))
             throw std::invalid_argument("config: teacher arm '" + t.arms[a] + "' listed twice");
     }
     if (t.range_query_count == 0)

@@ -15,8 +15,10 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <random>
+#include <set>
 #include <stdexcept>
 
 namespace teacher {
@@ -31,6 +33,7 @@ constexpr std::array<std::string_view, 7> kCandidates{
 constexpr std::size_t kRdp = 0;
 constexpr std::size_t kMaxPasses = 10;
 constexpr std::uint64_t kOrderSeedOffset = 7004;
+constexpr std::uint64_t kShuffleSeedOffset = 7006;
 
 double seconds_since(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -322,6 +325,47 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
     return method;
 }
 
+// The same workloads with the trajectories in every join pair relabelled at random among
+// trajectories that start and end in the same 1 km cells. Each pair keeps its kind and seen flag
+// and joins two trajectories that could plausibly match, so best response on them is the same
+// search with wrong but believable partners
+TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWorkloads &workloads,
+                                   std::uint64_t seed) {
+    constexpr double kCell = 1000.0;
+    std::map<std::array<long, 4>, std::vector<std::uint32_t>> buckets;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const auto v = db.trajectory(i);
+        auto cell = [&](double c) { return static_cast<long>(std::floor(c / kCell)); };
+        buckets[{cell(v.x.front()), cell(v.y.front()), cell(v.x.back()), cell(v.y.back())}]
+            .push_back(static_cast<std::uint32_t>(i));
+    }
+    std::vector<std::uint32_t> label(db.size());
+    std::mt19937_64 rng(seed + kShuffleSeedOffset);
+    for (auto &[key, members] : buckets) {
+        auto shuffled = members;
+        std::ranges::shuffle(shuffled, rng);
+        for (std::size_t k = 0; k < members.size(); ++k)
+            label[members[k]] = shuffled[k];
+    }
+
+    auto result = workloads;
+    std::set<std::pair<std::uint32_t, std::uint32_t>> real;
+    for (const auto &p : workloads.positives)
+        real.insert({p.i, p.j});
+    std::size_t kept_real = 0;
+    for (auto *pairs : {&result.positives, &result.negatives})
+        for (auto &p : *pairs) {
+            const auto a = label[p.i], b = label[p.j];
+            p.i = std::min(a, b);
+            p.j = std::max(a, b);
+            kept_real += pairs == &result.positives && real.contains({p.i, p.j});
+        }
+    std::cout << std::format("teacher: shuffled partners in {} buckets, {} of {} positive pairs "
+                             "still real\n",
+                             buckets.size(), kept_real, result.positives.size());
+    return result;
+}
+
 core::Simplification to_simplification(const KeptSets &kept) {
     core::Simplification s;
     for (const auto &k : kept)
@@ -354,7 +398,7 @@ Teacher::Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads,
     : m_db(db), m_workloads(std::move(workloads)), m_objective(db, m_workloads, config),
       m_seed(seed) {
     const auto &f = m_objective.floors();
-    std::cout << std::format("teacher: {} seen join pairs ({} positive), floors knn {:.4f}, range "
+    std::cout << std::format("teacher: {} join pairs ({} positive), floors knn {:.4f}, range "
                              "{:.4f}, where-at {:.4f}, join {:.4f}\n",
                              m_objective.pair_count(), m_objective.positive_count(),
                              f[Objective::Knn], f[Objective::Range], f[Objective::WhereAt],
@@ -401,9 +445,10 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         timed("GATEORIG_a0");
     }
 
-    if (wants(arms, {"GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER"})) {
+    if (wants(arms, {"GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED"})) {
         // Partners are fixed at RDP with equal budgets, so each trajectory is scored on its own
-        const bool rdp_only = !wants(arms, {"GATE_a0", "TEACHER", "BR_a0", "BR_TEACHER"});
+        const bool rdp_only =
+            !wants(arms, {"GATE_a0", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED"});
         const auto curves = build_curves(db, objective, candidates[kRdp], caps, rdp_only);
         timed(std::format("value curves up to {} points", cap));
 
@@ -432,19 +477,27 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             keep("TEACHER_RDP", make_candidates(objective, budgets, caps, &rdp_methods),
                  rdp_methods);
         }
-        if (wants(arms, {"TEACHER", "BR_TEACHER"})) {
+        if (wants(arms, {"TEACHER", "BR_TEACHER", "BR_SHUFFLED"})) {
             AllocationStats stats;
             const auto budgets = allocate(curves.best, total_budget, &stats);
             report("allocation", stats, budgets);
             const auto teacher = curve_methods(curves.best, budgets);
-            const auto searched = make_candidates(objective, budgets, caps,
-                                                  wants(arms, {"BR_TEACHER"}) ? nullptr : &teacher);
+            const auto searched =
+                make_candidates(objective, budgets, caps,
+                                wants(arms, {"BR_TEACHER", "BR_SHUFFLED"}) ? nullptr : &teacher);
             if (wants(arms, {"TEACHER"}))
                 keep("TEACHER", searched, teacher);
             if (wants(arms, {"BR_TEACHER"})) {
                 keep("BR_TEACHER", searched,
                      best_response(db, objective, searched, teacher, m_seed));
                 timed("BR_TEACHER");
+            }
+            if (wants(arms, {"BR_SHUFFLED"})) {
+                // Searches on fake partners; keep scores the result on the real ones
+                const auto shuffled = shuffled_partners(db, m_workloads, m_seed);
+                const Objective fake(db, shuffled, objective.config());
+                keep("BR_SHUFFLED", searched, best_response(db, fake, searched, teacher, m_seed));
+                timed("BR_SHUFFLED");
             }
         }
         timed("allocation arms");

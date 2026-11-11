@@ -57,6 +57,12 @@ add_executable(run
 
 target_link_libraries(run PRIVATE engine)
 
+add_executable(teacher_eval
+    apps/teacher_eval.cpp
+)
+
+target_link_libraries(teacher_eval PRIVATE engine)
+
 add_executable(engine_tests
     tests/parquet_loader_test.cpp
     tests/projection_test.cpp

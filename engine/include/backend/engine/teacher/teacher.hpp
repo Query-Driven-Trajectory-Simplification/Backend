@@ -24,8 +24,10 @@ namespace teacher {
 //   TEACHER      best-of value curves with searched allocation (T1)
 //   BR_a0        best response from GATE_a0: re-pick against partners' current choice (T2 step)
 //   BR_TEACHER   best response from TEACHER
-inline constexpr std::array<std::string_view, 6> kArms{
-    "GATEORIG_a0", "GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER"};
+//   BR_SHUFFLED  the same search from TEACHER, partners relabelled among nearby trajectories
+//                (control)
+inline constexpr std::array<std::string_view, 7> kArms{
+    "GATEORIG_a0", "GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED"};
 
 bool is_arm(std::string_view name);
 
@@ -34,6 +36,8 @@ struct TeacherConfig {
     std::filesystem::path cache_dir = "cache"; // looked in first, written to after a build
     std::vector<std::string> arms{"TEACHER", "BR_TEACHER"};
     std::size_t range_query_count = 64000; // the teacher's own boxes, denser than the test's
+    bool all_join_pairs = true;            // false: only the seen half of the join pairs
+    double shape_weight = 0.0;             // the objective's shape term, 0 = off
 };
 
 struct Arm {
@@ -45,8 +49,8 @@ struct Arm {
 // Sees only the database it is given and workloads built from it
 class Teacher {
   public:
-    Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads,
-            const ObjectiveConfig &config, std::uint64_t seed);
+    Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads, const ObjectiveConfig &config,
+            std::uint64_t seed);
     Teacher(const Teacher &) = delete;
     Teacher &operator=(const Teacher &) = delete;
 

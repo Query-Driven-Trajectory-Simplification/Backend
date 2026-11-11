@@ -166,6 +166,27 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
     }
 }
 
+TEST_F(TeacherTest, ShapeTermIsZeroAtTheFloorAndSeparable) {
+    const auto db = random_db(6, 24, 30);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 17, m_dir);
+    const teacher::Objective plain(db, workloads);
+    const teacher::Objective shaped(db, workloads, {.shape_weight = 0.25});
+    const auto floor = endpoints(db), full = every_point(db);
+    EXPECT_NEAR(shaped.total(floor), 0.0, 1e-12);
+    // Keeping every point is a perfect shape, so the term adds exactly its weight
+    EXPECT_NEAR(shaped.total(full) - plain.total(full), 0.25, 1e-9);
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        EXPECT_DOUBLE_EQ(shaped.shape(i, db.trajectory(i)), 1.0);
+        auto state = floor;
+        state[i] = full[i];
+        const double change = shaped.total(state) - shaped.total(floor);
+        const double join = plain.total(state) - plain.total(floor) -
+                            (plain.separable(i, full[i]) - plain.separable(i, floor[i]));
+        EXPECT_NEAR(change, shaped.separable(i, full[i]) - shaped.separable(i, floor[i]) + join,
+                    1e-9);
+    }
+}
+
 TEST_F(TeacherTest, ShapeKnnTermNeverCreditsMoreThanTheQueryTerm) {
     const auto db = random_db(5, 24, 30);
     const auto workloads = teacher::load_or_build_workloads(db, small_config(), 15, m_dir);

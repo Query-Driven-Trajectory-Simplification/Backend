@@ -169,18 +169,21 @@ void run(const Config &config) {
     if (config.teacher.enabled) {
         auto teacher_range = config.range;
         teacher_range.query_count = config.teacher.range_query_count;
-        auto teacher_workloads = teacher::load_or_build_workloads(
-            database,
-            {.k = config.knn.k,
-             .join_eps_m = config.join.eps_m,
-             .frechet = config.join.frechet,
-             .range = teacher_range,
-             .where_at = config.where_at},
-            config.seed, config.teacher.cache_dir);
-        teacher_model.emplace(database, std::move(teacher_workloads),
-                        teacher::ObjectiveConfig{config.where_at_scoring.min_tolerance_m,
-                                                 config.where_at_scoring.max_tolerance_m},
-                        config.seed);
+        auto teacher_workloads =
+            teacher::load_or_build_workloads(database,
+                                             {.k = config.knn.k,
+                                              .join_eps_m = config.join.eps_m,
+                                              .frechet = config.join.frechet,
+                                              .range = teacher_range,
+                                              .where_at = config.where_at},
+                                             config.seed, config.teacher.cache_dir);
+        teacher_model.emplace(
+            database, std::move(teacher_workloads),
+            teacher::ObjectiveConfig{.min_tolerance_m = config.where_at_scoring.min_tolerance_m,
+                                     .max_tolerance_m = config.where_at_scoring.max_tolerance_m,
+                                     .all_join_pairs = config.teacher.all_join_pairs,
+                                     .shape_weight = config.teacher.shape_weight},
+            config.seed);
     }
 
     for (const double share : config.budget_shares) {
@@ -203,7 +206,8 @@ void run(const Config &config) {
 
         if (teacher_model) {
             std::cout << "teacher at " << share * 100 << "%\n";
-            for (const auto &arm : teacher_model->run(total_budget(database, share), config.teacher.arms))
+            for (const auto &arm :
+                 teacher_model->run(total_budget(database, share), config.teacher.arms))
                 evaluate(std::format("{}% {} (J_T {:.4f})", share * 100, arm.name, arm.objective),
                          std::format("{}_{:g}pct", arm.name, share * 100), arm.simplification);
         }
