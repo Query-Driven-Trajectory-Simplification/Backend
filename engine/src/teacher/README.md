@@ -53,6 +53,146 @@ Files:
 
 ---
 
+## How selection works, in plain terms
+
+### What is being chosen
+- Every trajectory keeps a **fixed number of points**: its equal share of the budget (α = 0).
+  At 0.25% that is about 4–5 points. The teacher never changes this number.
+- The teacher chooses **one method per trajectory**: RDP, SED or UNIFORM. All of the trajectory's
+  kept points come from that one method. Methods are never mixed within a trajectory.
+- So each trajectory has exactly **three options**, each a whole kept set with one score. For a
+  trajectory with budget 4:
+
+  ```
+  RDP     with 4 points → e.g. points {0, 37, 112, 250}
+  SED     with 4 points → e.g. points {0, 61, 140, 250}
+  UNIFORM with 4 points → e.g. points {0, 83, 166, 250}
+  ```
+
+  These are simplified once at the start (`make_candidates`) and then only looked up.
+
+### Why a trajectory's choice depends on other trajectories
+kNN, range and where-at only involve trajectory i itself, because everyone else is compared in
+original form. The join is different: a pair (i, j) is scored with **both** sides simplified. Two
+trajectories simplified with the same method follow the same shape and match far more often than
+two simplified differently. So the best method for i depends on what its join partners chose.
+
+### Two stages
+Selection happens in two stages, which differ in how the join partners are seen:
+
+```
+Stage 1, GATE_a0:  one round, every trajectory on its own, partners ASSUMED to be RDP
+Stage 2, BR_a0:    starts from stage 1, partners are their ACTUAL current choices
+                   pass 1, pass 2, ... until a pass makes no switches
+```
+
+| | Stage 1 (GATE_a0) | Stage 2 (BR) |
+|---|---|---|
+| Points per trajectory | fixed budget | fixed budget |
+| Methods tried for i | all 3 | the other 2 (than i's current one) |
+| Terms scored | all 4 (kNN, range, where-at, join) | all 4, as the change from i's current method |
+| i's join partners seen as | RDP (a guess) | their actual current methods |
+| Join change counted for | i only | i and every partner whose pair flips |
+| Order | all trajectories at once, independently | one at a time; each switch is visible to the next |
+| Runs | once | repeated passes until nothing changes |
+
+Stage 1 is not needed for correctness: BR could start from all-RDP and still climb. It gives BR a
+good starting point, and it is a result of its own (the independent, one-pass teacher), which
+shows how much stage 2 adds.
+
+### Stage 1: GATE_a0 (`build_curves`, `curve_methods`)
+For each trajectory i, independently:
+
+1. For each budget b from 2 up to i's budget, try all three methods with b points, and score each
+   on **all four terms** with `independent_value`. In the join term, i's partners are assumed to
+   use RDP. Record the best value and method at each b: that is i's value curve.
+2. Read the curve **at i's budget** and take that method.
+
+"RDP" is only the guess about the partners. i itself can come out as RDP, SED or UNIFORM.
+
+The curve values at smaller b are not used yet. They are there for an allocation step (deciding
+whether i should get 3 or 5 points instead of 4), which can be added back later. With fixed
+budgets and independent scores, picking each trajectory's best method also gives the highest
+possible total, so nothing more is needed in stage 1.
+
+### Stage 2: BR (`best_response`)
+**In one sentence:** go through the trajectories one at a time, and let each switch to whichever
+of its other methods makes the *real* J_T highest, given what everyone else currently uses;
+repeat until nobody wants to switch.
+
+1. **Who is visited:** only trajectories with at least one seen join pair. For the others, the
+   score doesn't depend on anyone else, so their stage-1 choice is already their best.
+2. **Starting state:** stage 1's method for every trajectory, plus a `JoinState` holding every
+   seen pair's outcome (match or not) with both sides on their stage-1 methods.
+3. **One pass:** visit those trajectories in random order. For trajectory i and each of its other
+   two methods c:
+
+   ```
+   gain(c) = [separable(i, c) − separable(i, current)]   change in i's kNN, range, where-at
+           + join.delta(i, c)                            exact change in the join F1
+   ```
+
+   `join.delta` rescores **all** of i's pairs against the partners' current kept points, and
+   updates the F1 of i and of every partner whose pair flips.
+
+   **It switches when the best gain is positive** (above 1e-12). The two parts can pull in
+   opposite directions: a switch that costs i a little where-at can still win if it fixes a join
+   pair. After a switch, `join.apply` stores the new pair outcomes, and later visits see i's new
+   method.
+4. **Repeat passes** until a pass has no switches (at most 10).
+
+**Why it repeats.** A switch changes every pair with that trajectory in it, so its partners may
+now prefer a different method too. If a partner comes later in the same pass, it is checked
+against the new choice right away; otherwise the next pass picks it up. One switch can ripple
+through connected trajectories.
+
+### Example
+Trajectories 1–4; (1, 4) is a true join pair, and 1 is also paired with 2.
+
+```
+stage 1 (GATE_a0): 1=RDP  2=RDP  3=SED  4=SED
+  1 chose RDP assuming its partner 4 would be RDP, but 4 actually chose SED,
+  so the pair (1, 4) doesn't match.
+
+stage 2, pass 1 (random order):
+  visit 3: try RDP, UNIFORM → no gain                   1=RDP  2=RDP  3=SED  4=SED
+  visit 1: try SED, UNIFORM, against 4 as SED:
+           SED makes (1, 4) match; it also rescores (1, 2);
+           total gain > 0 → switch                       1=SED  2=RDP  3=SED  4=SED
+  visit 4: try RDP, UNIFORM → would break (1, 4): stays
+  visit 2: scored against 1 as SED (its new method):
+           SED makes (1, 2) match again → switch         1=SED  2=SED  3=SED  4=SED
+pass 1 had switches → pass 2
+pass 2: nobody gains → stop
+```
+
+1's switch only became worthwhile once the teacher used 4's actual method, and 2's switch only
+became worthwhile after 1 switched. Neither could be found by scoring each trajectory on its own.
+
+### Why it always stops, and where
+Every switch raises J_T by a strictly positive amount, and there are finitely many choices, so it
+must stop. Requiring a strict gain also means no trajectory flips back and forth on a tie. In
+practice (seed 42, 0.25%) it takes 8 passes: 777 switches in the first pass, 91 in the second,
+then a handful.
+
+It ends at a state where **no single trajectory can raise J_T by switching on its own**. That is a
+local optimum, not necessarily the global one: switching two trajectories at the same time might
+still help. The random visiting order changes slightly which local optimum it lands in. In
+optimisation terms this is coordinate ascent; in game-theory terms, best-response dynamics.
+
+### Why it is fast
+`JoinState` keeps every pair's outcome and every trajectory's hit and found counts. Testing one
+switch only rescores that trajectory's own pairs (usually a handful) instead of all ~90,000 seen
+pairs, and the result is exact: the tests check it against a full recompute.
+
+### What it shows
+On seed 42 at 0.25%: GATE_a0 0.506 → BR_a0 0.544 J5, with the same three methods and the same
+budgets. The gain is in join (0.522 → 0.621) and clustering. The only difference is using the
+partners' actual choices. Part of the join gain is in-sample, though: recall on unseen pairs falls
+below seen pairs (0.78 against 0.89).
+
+---
+
 ## workloads.hpp / workloads.cpp
 
 ### Why
