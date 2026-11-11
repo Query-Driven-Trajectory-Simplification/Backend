@@ -34,6 +34,7 @@ constexpr std::size_t kRdp = 0;
 constexpr std::size_t kMaxPasses = 10;
 constexpr std::uint64_t kOrderSeedOffset = 7004;
 constexpr std::uint64_t kShuffleSeedOffset = 7006;
+constexpr std::size_t kMaxRounds = 3;
 
 double seconds_since(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -445,10 +446,11 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         timed("GATEORIG_a0");
     }
 
-    if (wants(arms, {"GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED"})) {
+    if (wants(arms, {"GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED",
+                     "ITER_TEACHER"})) {
         // Partners are fixed at RDP with equal budgets, so each trajectory is scored on its own
-        const bool rdp_only =
-            !wants(arms, {"GATE_a0", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED"});
+        const bool rdp_only = !wants(
+            arms, {"GATE_a0", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED", "ITER_TEACHER"});
         const auto curves = build_curves(db, objective, candidates[kRdp], caps, rdp_only);
         timed(std::format("value curves up to {} points", cap));
 
@@ -477,20 +479,49 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             keep("TEACHER_RDP", make_candidates(objective, budgets, caps, &rdp_methods),
                  rdp_methods);
         }
-        if (wants(arms, {"TEACHER", "BR_TEACHER", "BR_SHUFFLED"})) {
+        if (wants(arms, {"TEACHER", "BR_TEACHER", "BR_SHUFFLED", "ITER_TEACHER"})) {
             AllocationStats stats;
             const auto budgets = allocate(curves.best, total_budget, &stats);
             report("allocation", stats, budgets);
             const auto teacher = curve_methods(curves.best, budgets);
+            const bool searching = wants(arms, {"BR_TEACHER", "BR_SHUFFLED", "ITER_TEACHER"});
             const auto searched =
-                make_candidates(objective, budgets, caps,
-                                wants(arms, {"BR_TEACHER", "BR_SHUFFLED"}) ? nullptr : &teacher);
+                make_candidates(objective, budgets, caps, searching ? nullptr : &teacher);
             if (wants(arms, {"TEACHER"}))
                 keep("TEACHER", searched, teacher);
-            if (wants(arms, {"BR_TEACHER"})) {
-                keep("BR_TEACHER", searched,
-                     best_response(db, objective, searched, teacher, m_seed));
+            if (wants(arms, {"BR_TEACHER", "ITER_TEACHER"})) {
+                const auto responded = best_response(db, objective, searched, teacher, m_seed);
                 timed("BR_TEACHER");
+                if (wants(arms, {"BR_TEACHER"}))
+                    keep("BR_TEACHER", searched, responded);
+                if (wants(arms, {"ITER_TEACHER"})) {
+                    // Each round's curves see the partners as the last round left them, so the
+                    // budgets react to the neighbours too. A round is kept only if J_T rises
+                    auto current = searched;
+                    auto methods = responded;
+                    double value = objective.total(assemble(current, methods));
+                    for (std::size_t round = 1; round <= kMaxRounds; ++round) {
+                        const auto state = assemble(current, methods);
+                        const auto round_curves = build_curves(db, objective, state, caps, false);
+                        AllocationStats round_stats;
+                        const auto round_budgets =
+                            allocate(round_curves.best, total_budget, &round_stats);
+                        auto next = make_candidates(objective, round_budgets, caps);
+                        auto next_methods = best_response(
+                            db, objective, next, curve_methods(round_curves.best, round_budgets),
+                            m_seed + round);
+                        const double next_value = objective.total(assemble(next, next_methods));
+                        std::cout << std::format("teacher: ITER round {}, J_T {:.4f} -> {:.4f}\n",
+                                                 round, value, next_value);
+                        if (next_value <= value + 1e-12)
+                            break;
+                        value = next_value;
+                        current = std::move(next);
+                        methods = std::move(next_methods);
+                    }
+                    keep("ITER_TEACHER", current, methods);
+                    timed("ITER_TEACHER");
+                }
             }
             if (wants(arms, {"BR_SHUFFLED"})) {
                 // Searches on fake partners; keep scores the result on the real ones

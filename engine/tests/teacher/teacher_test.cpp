@@ -219,7 +219,7 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto result = model.run(budget, arms);
 
     ASSERT_EQ(result.size(), arms.size());
-    double gate_jt = 0, br_a0_jt = 0, teacher_jt = 0, br_jt = 0;
+    double gate_jt = 0, br_a0_jt = 0, teacher_jt = 0, br_jt = 0, iter_jt = 0;
     for (const auto &arm : result) {
         SCOPED_TRACE(arm.name);
         ASSERT_EQ(arm.simplification.size(), db.size());
@@ -240,9 +240,12 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
             teacher_jt = arm.objective;
         if (arm.name == "BR_TEACHER")
             br_jt = arm.objective;
+        if (arm.name == "ITER_TEACHER")
+            iter_jt = arm.objective;
     }
     EXPECT_GE(br_a0_jt, gate_jt - 1e-12);
     EXPECT_GE(br_jt, teacher_jt - 1e-12);
+    EXPECT_GE(iter_jt, br_jt - 1e-12);
 }
 
 TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {

@@ -26,8 +26,11 @@ namespace teacher {
 //   BR_TEACHER   best response from TEACHER
 //   BR_SHUFFLED  the same search from TEACHER, partners relabelled among nearby trajectories
 //                (control)
-inline constexpr std::array<std::string_view, 7> kArms{
-    "GATEORIG_a0", "GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED"};
+//   ITER_TEACHER BR_TEACHER, then rounds of value curves against the partners' current state,
+//                allocation and best response, as long as J_T rises
+inline constexpr std::array<std::string_view, 8> kArms{"GATEORIG_a0", "GATE_a0",     "TEACHER_RDP",
+                                                       "TEACHER",     "BR_a0",       "BR_TEACHER",
+                                                       "BR_SHUFFLED", "ITER_TEACHER"};
 
 bool is_arm(std::string_view name);
 
