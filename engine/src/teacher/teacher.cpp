@@ -13,9 +13,7 @@
 #include <cmath>
 #include <format>
 #include <iostream>
-#include <limits>
 #include <map>
-#include <numeric>
 #include <optional>
 #include <random>
 #include <set>
@@ -26,15 +24,26 @@ namespace teacher {
 namespace {
 
 using selection::AlgorithmType;
+enum CandidateIndex : std::size_t {
+    kRdp,
+    kSed,
+    kUniform,
+    kGreedy,
+    kGreedySedQuarter,
+    kGreedySedHalf,
+    kGreedyRdpHalf,
+    kCandidateCount,
+};
+
 // The classic selectors, then BKH's greedy on range and where-at with different seeds: none,
 // SED's best quarter or half of the interior points, RDP's best half
-constexpr std::array<std::string_view, 7> kCandidates{
+constexpr std::array<std::string_view, kCandidateCount> kCandidates{
     "RDP", "SED", "UNIFORM", "GREEDY", "GREEDY_SED4", "GREEDY_SED2", "GREEDY_RDP2"};
-constexpr std::size_t kRdp = 0;
-constexpr std::size_t kMaxPasses = 10;
+constexpr std::size_t kMaxResponsePasses = 10;
+constexpr std::size_t kMaxAllocationRounds = 3;
+constexpr double kMinImprovement = 1e-12;
 constexpr std::uint64_t kOrderSeedOffset = 7004;
 constexpr std::uint64_t kShuffleSeedOffset = 7006;
-constexpr std::size_t kMaxRounds = 3;
 
 double seconds_since(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -56,44 +65,46 @@ std::vector<std::size_t> interior(const std::vector<std::size_t> &kept) {
 class CandidateMaker {
   public:
     CandidateMaker(const Objective &objective, std::size_t i, std::size_t cap,
-                   bool all_budgets = false)
-        : m_v(objective.db().trajectory(i)), m_cap(std::min(cap, m_v.size())),
-          m_objective(objective), m_index(i), m_all_budgets(all_budgets) {}
+                   bool reuse_sequences = false)
+        : m_original(objective.db().trajectory(i)), m_cap(std::min(cap, m_original.size())),
+          m_objective(objective), m_index(i), m_reuse_sequences(reuse_sequences) {}
 
-    std::vector<std::size_t> make(std::size_t c, std::size_t b) {
-        b = std::min(b, m_v.size());
-        if (b > m_cap)
+    std::vector<std::size_t> make(std::size_t candidate, std::size_t budget) {
+        budget = std::min(budget, m_original.size());
+        if (budget > m_cap)
             throw std::runtime_error("teacher: candidate budget above its cap");
         // Every method returns the same kept set at the endpoints and at full resolution.
-        if (b <= 2 || b == m_v.size())
-            return selection::simplify_trajectory(m_v, AlgorithmType::UNIFORM, b);
-        const std::size_t extra = b - 2;
-        switch (c) {
-        case 0:
-            return simplify(AlgorithmType::RDP, b);
-        case 1:
-            return simplify(AlgorithmType::SED, b);
-        case 2:
-            return simplify(AlgorithmType::UNIFORM, b);
-        case 3:
-            return prefix(sequence(0, AlgorithmType::SED), b);
-        case 4:
-            return prefix(sequence(extra / 4, AlgorithmType::SED), b);
-        case 5:
-            return prefix(sequence(extra / 2, AlgorithmType::SED), b);
+        if (budget <= 2 || budget == m_original.size())
+            return selection::simplify_trajectory(m_original, AlgorithmType::UNIFORM, budget);
+        const std::size_t interior_budget = budget - 2;
+        switch (candidate) {
+        case kRdp:
+            return simplify(AlgorithmType::RDP, budget);
+        case kSed:
+            return simplify(AlgorithmType::SED, budget);
+        case kUniform:
+            return simplify(AlgorithmType::UNIFORM, budget);
+        case kGreedy:
+            return prefix(greedy_sequence(0, AlgorithmType::SED), budget);
+        case kGreedySedQuarter:
+            return prefix(greedy_sequence(interior_budget / 4, AlgorithmType::SED), budget);
+        case kGreedySedHalf:
+            return prefix(greedy_sequence(interior_budget / 2, AlgorithmType::SED), budget);
+        case kGreedyRdpHalf:
+            return prefix(greedy_sequence(interior_budget / 2, AlgorithmType::RDP), budget);
         default:
-            return prefix(sequence(extra / 2, AlgorithmType::RDP), b);
+            throw std::logic_error("teacher: unknown candidate");
         }
     }
 
   private:
     std::vector<std::size_t> simplify(AlgorithmType type, std::size_t b) {
-        if (!m_all_budgets || type == AlgorithmType::UNIFORM)
-            return selection::simplify_trajectory(m_v, type, b);
+        if (!m_reuse_sequences || type == AlgorithmType::UNIFORM)
+            return selection::simplify_trajectory(m_original, type, b);
         auto &cached = type == AlgorithmType::RDP ? m_rdp : m_sed;
         if (!cached)
-            cached = type == AlgorithmType::RDP ? selection::rdp::sequence(m_v, m_cap)
-                                                : selection::sed::sequence(m_v, m_cap);
+            cached = type == AlgorithmType::RDP ? selection::rdp::sequence(m_original, m_cap)
+                                                : selection::sed::sequence(m_original, m_cap);
         return prefix(*cached, b);
     }
     static std::vector<std::size_t> prefix(const std::vector<std::size_t> &sequence,
@@ -103,38 +114,39 @@ class CandidateMaker {
         std::ranges::sort(kept);
         return kept;
     }
-    // A greedy sequence seeded with seed_size interior points selected by from.
-    const std::vector<std::size_t> &sequence(std::size_t seed_size, AlgorithmType from) {
+    // A greedy sequence seeded with interior points selected by the seed algorithm.
+    const std::vector<std::size_t> &greedy_sequence(std::size_t seed_size,
+                                                    AlgorithmType seed_algorithm) {
         // Classic-only requests do not need the greedy workload index or its fill candidates.
         if (!m_greedy) {
             m_greedy.emplace(m_objective, m_index);
             for (const auto type :
                  {AlgorithmType::SED, AlgorithmType::RDP, AlgorithmType::UNIFORM}) {
-                const auto from = simplify(type, m_cap);
-                m_fill.insert(m_fill.end(), from.begin(), from.end());
+                const auto fill_points = simplify(type, m_cap);
+                m_fill.insert(m_fill.end(), fill_points.begin(), fill_points.end());
             }
         }
         // The sequence depends on its seed, not which candidate requested it. In particular,
         // all unseeded variants and equal-sized SED seeds share the same greedy work.
-        const auto seed_type = seed_size ? from : AlgorithmType::SED;
-        auto &cached = m_sequences[{seed_type, seed_size}];
+        const auto seed_type = seed_size ? seed_algorithm : AlgorithmType::SED;
+        auto &cached = m_greedy_sequences[{seed_type, seed_size}];
         if (cached.empty()) {
-            const auto seed =
-                seed_size ? interior(simplify(from, 2 + seed_size)) : std::vector<std::size_t>{};
+            const auto seed = seed_size ? interior(simplify(seed_algorithm, 2 + seed_size))
+                                        : std::vector<std::size_t>{};
             cached = m_greedy->sequence(m_cap, seed, m_fill);
         }
         return cached;
     }
 
-    core::TrajectoryView m_v;
+    core::TrajectoryView m_original;
     std::size_t m_cap;
     const Objective &m_objective;
     std::size_t m_index;
-    bool m_all_budgets;
+    bool m_reuse_sequences;
     std::optional<Greedy> m_greedy;
     std::optional<std::vector<std::size_t>> m_rdp, m_sed;
     std::vector<std::size_t> m_fill;
-    std::map<std::pair<AlgorithmType, std::size_t>, std::vector<std::size_t>> m_sequences;
+    std::map<std::pair<AlgorithmType, std::size_t>, std::vector<std::size_t>> m_greedy_sequences;
 };
 
 // Each trajectory's candidates at its budget, or only its selected method when supplied
@@ -147,7 +159,7 @@ Candidates make_candidates(const Objective &objective, const std::vector<std::si
     core::parallel_for(budgets.size(), [&](std::size_t i) {
         // Greedy candidates also need classic selectors for their seeds and fill. Build each
         // classic sequence once when producing all candidates or a greedy candidate.
-        CandidateMaker maker(objective, i, caps[i], !selected || (*selected)[i] >= 3);
+        CandidateMaker maker(objective, i, caps[i], !selected || (*selected)[i] >= kGreedy);
         if (selected) {
             const auto c = (*selected)[i];
             candidates[c][i] = maker.make(c, budgets[i]);
@@ -166,8 +178,6 @@ KeptSets assemble(const Candidates &candidates, const Methods &method) {
     return kept;
 }
 
-// Every trajectory picks its best candidate against the same fixed partner state. Ties go to the
-// earlier candidate, so RDP wins when nothing differs
 // The best of one trajectory's candidates by independent_value, ties to the lower index. RDP,
 // index 0 and always among them, is scored exactly; the rest go best bound first, so the bound
 // in independent_value skips most of the losers' kNN checks
@@ -269,7 +279,7 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
             }
             const auto chosen = pick(objective, i, options, partner_views);
             rdp.value.push_back(chosen.rdp);
-            rdp.method.push_back(0);
+            rdp.method.push_back(kRdp);
             best.value.push_back(chosen.value);
             best.method.push_back(static_cast<std::uint8_t>(chosen.method));
         }
@@ -336,14 +346,14 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
         state[i] = views[method[i]][i];
     JoinState join(objective, state);
 
-    for (std::size_t pass = 1; pass <= kMaxPasses; ++pass) {
+    for (std::size_t pass = 1; pass <= kMaxResponsePasses; ++pass) {
         std::ranges::shuffle(order, rng);
         std::size_t switches = 0;
         for (const auto i : order) {
             const double here = separable[i][method[i]];
             std::size_t best = method[i];
             JoinState::Proposal best_proposal;
-            double best_gain = 1e-12; // strict gains only, so ties cannot cycle
+            double best_gain = kMinImprovement; // strict gains only, so ties cannot cycle
             for (std::size_t c = 0; c < kCandidates.size(); ++c) {
                 if (representative[i][c] != c ||
                     representative[i][c] == representative[i][method[i]])
@@ -429,12 +439,6 @@ std::string wins(const Methods &method) {
     return out;
 }
 
-bool wants(std::span<const std::string> arms, std::initializer_list<std::string_view> any) {
-    return std::ranges::any_of(arms, [&](const std::string &a) {
-        return std::ranges::find(any, std::string_view(a)) != any.end();
-    });
-}
-
 } // namespace
 
 bool is_arm(std::string_view name) { return std::ranges::find(kArms, name) != kArms.end(); }
@@ -455,9 +459,25 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     for (const auto &a : arms)
         if (!is_arm(a))
             throw std::invalid_argument("teacher: unknown arm " + a);
+    const auto requested = [&](std::string_view name) {
+        return std::ranges::find(arms, name) != arms.end();
+    };
+    const bool want_original_gate = requested("GATEORIG_a0");
+    const bool want_gate = requested("GATE_a0");
+    const bool want_rdp_allocation = requested("TEACHER_RDP");
+    const bool want_teacher = requested("TEACHER");
+    const bool want_equal_response = requested("BR_a0");
+    const bool want_response = requested("BR_TEACHER");
+    const bool want_shuffled = requested("BR_SHUFFLED");
+    const bool want_iterative = requested("ITER_TEACHER");
+    const bool needs_allocated_candidates =
+        want_teacher || want_response || want_shuffled || want_iterative;
+    const bool needs_allocation = want_rdp_allocation || needs_allocated_candidates;
+    const bool needs_response_candidates = want_response || want_shuffled || want_iterative;
+
     const auto &db = m_db;
     const auto &objective = m_objective;
-    const auto equal = allocation::create_trajectory_budgets(
+    const auto equal_budgets = allocation::create_trajectory_budgets(
         db, allocation::AllocatorType::SizeProportional, total_budget, 0.0);
     // Curves up to about four times the mean interior budget, at least 6 interior points, and
     // never below a trajectory's equal share
@@ -466,12 +486,12 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const auto cap = 2 + static_cast<std::size_t>(std::ceil(std::max(6.0, 4.0 * mean_interior)));
     std::vector<std::size_t> caps(db.size());
     for (std::size_t i = 0; i < db.size(); ++i)
-        caps[i] = std::min(std::max(cap, equal[i]), db.trajectory(i).size());
+        caps[i] = std::min(std::max(cap, equal_budgets[i]), db.trajectory(i).size());
 
-    std::map<std::string, std::pair<KeptSets, double>, std::less<>> made; // kept sets, J_T
+    std::map<std::string, Arm, std::less<>> outputs;
     auto record = [&](std::string_view name, KeptSets kept, const Methods &method, double j_t) {
         std::cout << std::format("teacher {}: {}, J_T {:.4f}\n", name, wins(method), j_t);
-        made[std::string(name)] = {std::move(kept), j_t};
+        outputs[std::string(name)] = {std::string(name), to_simplification(kept), j_t};
     };
     auto keep = [&](std::string_view name, const Candidates &from, const Methods &method) {
         auto kept = assemble(from, method);
@@ -484,38 +504,37 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         start = std::chrono::steady_clock::now();
     };
     const Methods rdp_methods(db.size(), kRdp);
-    const bool equal_alternatives = wants(arms, {"GATEORIG_a0", "GATE_a0", "BR_a0"});
-    const auto candidates =
-        make_candidates(objective, equal, caps, equal_alternatives ? nullptr : &rdp_methods);
+    const bool equal_alternatives = want_original_gate || want_gate || want_equal_response;
+    const auto equal_candidates = make_candidates(objective, equal_budgets, caps,
+                                                  equal_alternatives ? nullptr : &rdp_methods);
     timed("candidates");
 
-    if (wants(arms, {"GATEORIG_a0"})) {
-        keep("GATEORIG_a0", candidates, independent_choice(db, objective, candidates, nullptr));
+    if (want_original_gate) {
+        keep("GATEORIG_a0", equal_candidates,
+             independent_choice(db, objective, equal_candidates, nullptr));
         timed("GATEORIG_a0");
     }
 
-    if (wants(arms, {"GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED",
-                     "ITER_TEACHER"})) {
-        const bool needs_allocation =
-            wants(arms, {"TEACHER_RDP", "TEACHER", "BR_TEACHER", "BR_SHUFFLED", "ITER_TEACHER"});
+    if (want_gate || want_equal_response || needs_allocation) {
         Curves curves;
         if (needs_allocation) {
             // Partners are fixed at RDP with equal budgets, so trajectories score independently.
-            const bool rdp_only = !wants(
-                arms, {"GATE_a0", "TEACHER", "BR_a0", "BR_TEACHER", "BR_SHUFFLED", "ITER_TEACHER"});
-            curves = build_curves(db, objective, candidates[kRdp], caps, rdp_only);
+            const bool rdp_only = !(want_gate || want_equal_response || needs_allocated_candidates);
+            curves = build_curves(db, objective, equal_candidates[kRdp], caps, rdp_only);
             timed(std::format("value curves up to {} points", cap));
         }
 
-        if (wants(arms, {"GATE_a0", "BR_a0"})) {
+        if (want_gate || want_equal_response) {
             // Fixed budgets only need scores at those budgets, not complete value curves.
-            const auto gate =
-                needs_allocation ? curve_methods(curves.best, equal)
-                                 : independent_choice(db, objective, candidates, &candidates[kRdp]);
-            if (wants(arms, {"GATE_a0"}))
-                keep("GATE_a0", candidates, gate);
-            if (wants(arms, {"BR_a0"})) {
-                keep("BR_a0", candidates, best_response(db, objective, candidates, gate, m_seed));
+            const auto gate_methods =
+                needs_allocation
+                    ? curve_methods(curves.best, equal_budgets)
+                    : independent_choice(db, objective, equal_candidates, &equal_candidates[kRdp]);
+            if (want_gate)
+                keep("GATE_a0", equal_candidates, gate_methods);
+            if (want_equal_response) {
+                keep("BR_a0", equal_candidates,
+                     best_response(db, objective, equal_candidates, gate_methods, m_seed));
                 timed("BR_a0");
             }
         }
@@ -530,62 +549,65 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                                      what, stats.greedy_value, stats.final_value, stats.exchanges,
                                      at_cap);
         };
-        if (wants(arms, {"TEACHER_RDP"})) {
+        if (want_rdp_allocation) {
             AllocationStats stats;
             const auto budgets = allocate(curves.rdp, total_budget, &stats);
             report("RDP allocation", stats, budgets);
             keep("TEACHER_RDP", make_candidates(objective, budgets, caps, &rdp_methods),
                  rdp_methods);
         }
-        if (wants(arms, {"TEACHER", "BR_TEACHER", "BR_SHUFFLED", "ITER_TEACHER"})) {
+        if (needs_allocated_candidates) {
             AllocationStats stats;
             const auto budgets = allocate(curves.best, total_budget, &stats);
             report("allocation", stats, budgets);
-            const auto teacher = curve_methods(curves.best, budgets);
-            const bool searching = wants(arms, {"BR_TEACHER", "BR_SHUFFLED", "ITER_TEACHER"});
-            const auto searched =
-                make_candidates(objective, budgets, caps, searching ? nullptr : &teacher);
-            if (wants(arms, {"TEACHER"}))
-                keep("TEACHER", searched, teacher);
-            if (wants(arms, {"BR_TEACHER", "ITER_TEACHER"})) {
-                const auto responded = best_response(db, objective, searched, teacher, m_seed);
+            const auto teacher_methods = curve_methods(curves.best, budgets);
+            const auto allocated_candidates = make_candidates(
+                objective, budgets, caps, needs_response_candidates ? nullptr : &teacher_methods);
+            if (want_teacher)
+                keep("TEACHER", allocated_candidates, teacher_methods);
+            if (want_response || want_iterative) {
+                const auto response_methods =
+                    best_response(db, objective, allocated_candidates, teacher_methods, m_seed);
                 timed("BR_TEACHER");
-                if (wants(arms, {"BR_TEACHER"}))
-                    keep("BR_TEACHER", searched, responded);
-                if (wants(arms, {"ITER_TEACHER"})) {
+                if (want_response)
+                    keep("BR_TEACHER", allocated_candidates, response_methods);
+                if (want_iterative) {
                     // Each round's curves see the partners as the last round left them, so the
                     // budgets react to the neighbours too. A round is kept only if J_T rises
-                    auto current = assemble(searched, responded);
-                    auto methods = responded;
-                    double value = objective.total(current);
-                    for (std::size_t round = 1; round <= kMaxRounds; ++round) {
-                        const auto round_curves = build_curves(db, objective, current, caps, false);
+                    auto current_kept = assemble(allocated_candidates, response_methods);
+                    auto current_methods = response_methods;
+                    double current_value = objective.total(current_kept);
+                    for (std::size_t round = 1; round <= kMaxAllocationRounds; ++round) {
+                        const auto round_curves =
+                            build_curves(db, objective, current_kept, caps, false);
                         AllocationStats round_stats;
                         const auto round_budgets =
                             allocate(round_curves.best, total_budget, &round_stats);
-                        auto next = make_candidates(objective, round_budgets, caps);
+                        const auto next_candidates =
+                            make_candidates(objective, round_budgets, caps);
                         auto next_methods = best_response(
-                            db, objective, next, curve_methods(round_curves.best, round_budgets),
-                            m_seed + round);
-                        auto next_kept = assemble(next, next_methods);
+                            db, objective, next_candidates,
+                            curve_methods(round_curves.best, round_budgets), m_seed + round);
+                        auto next_kept = assemble(next_candidates, next_methods);
                         const double next_value = objective.total(next_kept);
                         std::cout << std::format("teacher: ITER round {}, J_T {:.4f} -> {:.4f}\n",
-                                                 round, value, next_value);
-                        if (next_value <= value + 1e-12)
+                                                 round, current_value, next_value);
+                        if (next_value <= current_value + kMinImprovement)
                             break;
-                        value = next_value;
-                        current = std::move(next_kept);
-                        methods = std::move(next_methods);
+                        current_value = next_value;
+                        current_kept = std::move(next_kept);
+                        current_methods = std::move(next_methods);
                     }
-                    record("ITER_TEACHER", std::move(current), methods, value);
+                    record("ITER_TEACHER", std::move(current_kept), current_methods, current_value);
                     timed("ITER_TEACHER");
                 }
             }
-            if (wants(arms, {"BR_SHUFFLED"})) {
+            if (want_shuffled) {
                 // Searches on fake partners; keep scores the result on the real ones
                 const auto shuffled = shuffled_partners(db, m_workloads, m_seed);
                 const Objective fake(db, shuffled, objective.config());
-                keep("BR_SHUFFLED", searched, best_response(db, fake, searched, teacher, m_seed));
+                keep("BR_SHUFFLED", allocated_candidates,
+                     best_response(db, fake, allocated_candidates, teacher_methods, m_seed));
                 timed("BR_SHUFFLED");
             }
         }
@@ -593,10 +615,9 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     }
 
     std::vector<Arm> result;
-    for (const auto &name : arms) {
-        const auto &[kept, j_t] = made.at(name);
-        result.push_back({name, to_simplification(kept), j_t});
-    }
+    result.reserve(arms.size());
+    for (const auto &name : arms)
+        result.push_back(outputs.at(name));
     return result;
 }
 

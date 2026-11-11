@@ -1,13 +1,12 @@
 # The teacher
 
-The teacher is a slow, query-aware simplifier. Each trajectory keeps a fixed number of points, and
-the teacher chooses which simplifier picks them: RDP, SED or UNIFORM. Its output is meant to be a
-target that a learned model can later imitate.
+The teacher is a slow, query-aware simplifier. It searches how many points each trajectory gets
+and which candidate keeps them: RDP, SED, UNIFORM or one of four greedy variants. Its output is
+meant to be a target that a learned model can later imitate.
 
 It sees **only the database** (the 85% split) and workloads built from it with their own seeds. It
-never sees the held-out query pool that the pipeline scores on. Allocation (how many points each
-trajectory gets) is not part of it yet: every trajectory gets its equal share of the budget
-(α = 0).
+never sees the held-out query pool that the pipeline scores on. The fixed-budget arms use equal
+shares (α = 0); the allocation arms redistribute the same total point budget.
 
 ## How it fits together
 
@@ -18,10 +17,14 @@ pipeline::run                                    (pipeline.cpp)
  │    └─ Objective(db, workloads)                 objective.cpp: inverts workloads, computes floors
  └─ per budget share:
       Teacher::run(budget, arms)
-       ├─ make_candidates                         RDP, SED and UNIFORM for every trajectory
+       ├─ make_candidates                         seven candidate recipes at equal budgets
        ├─ GATEORIG_a0: independent_choice         best method, partners original
-       ├─ GATE_a0:     build_curves → curve_methods   best method, partners as RDP
-       └─ BR_a0:       best_response(from GATE_a0) re-pick against partners' current choice
+       ├─ GATE_a0 / BR_a0                         fixed budgets, selection / best response
+       ├─ build_curves → allocate                 partners fixed at equal-budget RDP
+       │   ├─ TEACHER_RDP                         allocation using RDP alone
+       │   ├─ TEACHER → BR_TEACHER                 best candidates, then best response
+       │   └─ BR_SHUFFLED                         control with relabelled join partners
+       └─ ITER_TEACHER                            rebuild curves, reallocate, best response
       → each arm evaluated and exported like RDP and SED
 ```
 
@@ -31,7 +34,8 @@ Files:
 |---|---|
 | `workloads.hpp/.cpp` | The teacher's training workloads, and the cache that saves the slow part |
 | `objective.hpp/.cpp` | J_T, the score the teacher maximises, and `JoinState` for fast exact join updates |
-| `curves.hpp` | The `Curve` struct: what a trajectory is worth at each budget |
+| `curves.hpp/.cpp` | Value curves and the budget allocator |
+| `greedy.hpp/.cpp` | Query-aware point selection, with optional classic-method seeds |
 | `teacher.hpp/.cpp` | The `Teacher` class and the selection steps |
 
 ## Words used throughout
@@ -46,7 +50,8 @@ Files:
 - **J5:** the pipeline's score on the held-out test workloads: the equal mean of five normalised
   metrics (kNN, range, where-at, join, clustering).
 - **J_T:** the teacher's own score on its training workloads. It has the same shape as J5 but
-  leaves clustering out.
+  leaves clustering out. kNN and range use training proxies; an optional shape term can also be
+  enabled.
 - **Join pairs:** the teacher uses every 150 m pair, because whoever compresses the database knows
   all of it. The pairs are also split in half (seen / unseen); with `all_join_pairs = false` the
   teacher only gets the seen half, which shows how much of its join gain is fitting those
@@ -58,12 +63,13 @@ Files:
 ## How selection works, in plain terms
 
 ### What is being chosen
-- Every trajectory keeps a **fixed number of points**: its equal share of the budget (α = 0).
-  At 0.25% that is about 4–5 points. The teacher never changes this number.
-- The teacher chooses **one method per trajectory**: RDP, SED or UNIFORM. All of the trajectory's
-  kept points come from that one method. Methods are never mixed within a trajectory.
-- So each trajectory has exactly **three options**, each a whole kept set with one score. For a
-  trajectory with budget 4:
+- At a given budget, the teacher chooses **one candidate per trajectory**. The seven recipes are
+  RDP, SED, UNIFORM, unseeded greedy, greedy seeded with a quarter or half of the interior budget
+  from SED, and greedy seeded with half from RDP. Seeded candidates combine classic and greedy
+  point selection. Different recipes can produce identical kept sets.
+- The fixed-budget arms use equal shares (α = 0). Allocation arms search per-trajectory budgets
+  using value curves, while keeping the total fixed.
+- For example, the three classic candidates for a trajectory with budget 4 might be:
 
   ```
   RDP     with 4 points → e.g. points {0, 37, 112, 250}
@@ -71,16 +77,16 @@ Files:
   UNIFORM with 4 points → e.g. points {0, 83, 166, 250}
   ```
 
-  These are simplified once at the start (`make_candidates`) and then only looked up.
+  Candidates at the chosen budgets are built by `make_candidates` and reused during best response.
 
 ### Why a trajectory's choice depends on other trajectories
 kNN, range and where-at only involve trajectory i itself, because everyone else is compared in
 original form. The join is different: a pair (i, j) is scored with **both** sides simplified. Two
-trajectories simplified with the same method follow the same shape and match far more often than
-two simplified differently. So the best method for i depends on what its join partners chose.
+trajectories can gain or lose a join match when either kept set changes. So the best method for i
+depends on what its join partners chose.
 
 ### Two stages
-Selection happens in two stages, which differ in how the join partners are seen:
+The fixed-budget arms illustrate two stages, which differ in how the join partners are seen:
 
 ```
 Stage 1, GATE_a0:  one round, every trajectory on its own, partners ASSUMED to be RDP
@@ -91,31 +97,36 @@ Stage 2, BR_a0:    starts from stage 1, partners are their ACTUAL current choice
 | | Stage 1 (GATE_a0) | Stage 2 (BR) |
 |---|---|---|
 | Points per trajectory | fixed budget | fixed budget |
-| Methods tried for i | all 3 | the other 2 (than i's current one) |
+| Methods tried for i | all 7 recipes | other distinct kept sets |
 | Terms scored | all 4 (kNN, range, where-at, join) | all 4, as the change from i's current method |
 | i's join partners seen as | RDP (a guess) | their actual current methods |
 | Join change counted for | i only | i and every partner whose pair flips |
 | Order | all trajectories at once, independently | one at a time; each switch is visible to the next |
-| Runs | once | repeated passes until nothing changes |
+| Runs | once | until no switches, at most 10 passes |
 
 Stage 1 is not needed for correctness: BR could start from all-RDP and still climb. It gives BR a
 good starting point, and it is a result of its own (the independent, one-pass teacher), which
 shows how much stage 2 adds.
 
-### Stage 1: GATE_a0 (`build_curves`, `curve_methods`)
-For each trajectory i, independently:
+### Stage 1: GATE_a0 (`independent_choice`, or `curve_methods`)
+For each trajectory i, independently, score its candidates at its equal budget with
+`independent_value`, with join partners fixed at equal-budget RDP. Choose the highest score;
+ties go to the earlier candidate. If allocation arms also need curves, read the same choice from
+the curve at that budget instead.
 
-1. For each budget b from 2 up to i's budget, try all three methods with b points, and score each
-   on **all four terms** with `independent_value`. In the join term, i's partners are assumed to
-   use RDP. Record the best value and method at each b: that is i's value curve.
-2. Read the curve **at i's budget** and take that method.
+The independent scores use a fixed partner reference. Their best choices need not maximise the
+actual J_T once both sides of every join pair use their chosen candidates.
 
-"RDP" is only the guess about the partners. i itself can come out as RDP, SED or UNIFORM.
+### Allocation arms
+`build_curves` scores budgets from 2 up to a per-trajectory cap. `allocate` fills the total budget
+with greedy additions, then improves the curve sum by moving up to three points between a donor
+and a receiver. `TEACHER_RDP` uses RDP-only curves; `TEACHER` uses the best of all candidates.
+`BR_TEACHER` applies best response at those allocated budgets. `BR_SHUFFLED` is a control that
+searches with relabelled partners, then scores the result against the real workloads.
 
-The curve values at smaller b are not used yet. They are there for an allocation step (deciding
-whether i should get 3 or 5 points instead of 4), which can be added back later. With fixed
-budgets and independent scores, picking each trajectory's best method also gives the highest
-possible total, so nothing more is needed in stage 1.
+`ITER_TEACHER` starts from `BR_TEACHER`. Each round rebuilds curves against the current partner
+state, reallocates and runs best response. A round is accepted only if the exact J_T improves by
+more than 1e-12; at most three rounds are tried.
 
 ### Stage 2: BR (`best_response`)
 **In one sentence:** go through the trajectories one at a time, and let each switch to whichever
@@ -127,7 +138,7 @@ repeat until nobody wants to switch.
 2. **Starting state:** stage 1's method for every trajectory, plus a `JoinState` holding every
    pair's outcome (match or not) with both sides on their stage-1 methods.
 3. **One pass:** visit those trajectories in random order. For trajectory i and each of its other
-   two methods c:
+   distinct candidate kept sets c:
 
    ```
    gain(c) = [separable(i, c) − separable(i, current)]   change in i's kNN, range, where-at
@@ -149,7 +160,8 @@ against the new choice right away; otherwise the next pass picks it up. One swit
 through connected trajectories.
 
 ### Example
-Trajectories 1–4; (1, 4) is a true join pair, and 1 is also paired with 2.
+A reduced example using only the three classic candidates: trajectories 1–4; (1, 4) is a true
+join pair, and 1 is also paired with 2.
 
 ```
 stage 1 (GATE_a0): 1=RDP  2=RDP  3=SED  4=SED
@@ -174,12 +186,12 @@ became worthwhile after 1 switched. Neither could be found by scoring each traje
 ### Why it always stops, and where
 Every switch raises J_T by a strictly positive amount, and there are finitely many choices, so it
 must stop. Requiring a strict gain also means no trajectory flips back and forth on a tie. In
-practice (seed 42, 0.25%) it takes 8 passes: 777 switches in the first pass, 91 in the second,
-then a handful.
+practice there is also a limit of 10 passes.
 
-It ends at a state where **no single trajectory can raise J_T by switching on its own**. That is a
-local optimum, not necessarily the global one: switching two trajectories at the same time might
-still help. The random visiting order changes slightly which local optimum it lands in. In
+If a pass has no switches, **no single trajectory can raise J_T by switching on its own** within
+the current candidate sets and improvement tolerance. Reaching the pass limit does not guarantee
+this. Such a local optimum need not be global: switching two trajectories together might still
+help. The random visiting order can change which local optimum it lands in. In
 optimisation terms this is coordinate ascent; in game-theory terms, best-response dynamics.
 
 ### Why it is fast
@@ -188,8 +200,8 @@ switch only rescores that trajectory's own pairs (usually a handful) instead of 
 pairs, and the result is exact: the tests check it against a full recompute.
 
 ### What it shows
-On seed 42 at 0.25%: GATE_a0 0.506 → BR_a0 0.544 J5, with the same three methods and the same
-budgets. The gain is in join (0.522 → 0.621) and clustering. The only difference is using the
+In an earlier three-candidate run, seed 42 at 0.25%: GATE_a0 0.506 → BR_a0 0.544 J5, with the same
+methods and budgets. The gain is in join (0.522 → 0.621) and clustering. The only difference is using the
 partners' actual choices. Part of the join gain is in-sample, though: recall on unseen pairs falls
 below seen pairs (0.78 against 0.89).
 
@@ -472,19 +484,23 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 
 ---
 
-## curves.hpp
+## curves.hpp / curves.cpp
 
 ### `Curve`
 
-- **Why:** a value curve records what one trajectory is worth at each budget. The teacher
-  currently reads it only at the trajectory's fixed budget, i.e. for selection. The struct is kept
-  separate so that an allocation search (moving points to the trajectories whose curves rise
-  fastest) can be added back on top later.
+- **Why:** a value curve records what one trajectory is worth at each budget. The allocator uses
+  these values to redistribute points; selection reads the method at the chosen budget.
 - **Fields:** `value[k]` and `method[k]` for budget `b = 2 + k`: the best candidate's
   `independent_value` and which candidate reached it.
 - **Helpers:** `max_budget()` is the largest budget on the curve, and `at(b)` is the value at b.
 - **Note:** Fréchet thresholds flip on and off, so a curve is a step function and need not rise at
   every step.
+
+`allocate(curves, total_budget, stats)` starts with endpoints, fills the remaining budget with
+greedy steps of up to three points, then makes improving donor/receiver exchanges of up to three
+points. It preserves the exact total budget and respects every curve's maximum budget. It is a
+heuristic search of the curve sum, which is distinct from the exact J_T with both partners
+simplified.
 
 ---
 
@@ -494,13 +510,15 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 
 | Name | Meaning |
 |---|---|
-| `kCandidates` | RDP, SED, UNIFORM, the methods the teacher chooses from. The index into this array is the "method". |
-| `kArms` | the valid arm names: `GATEORIG_a0`, `GATE_a0`, `BR_a0` |
-| `TeacherConfig` | the config section: `enabled`, `cache_dir`, `arms`, `range_query_count` |
+| `CandidateIndex`, `kCandidates` | Named indices and labels for the seven candidate recipes. The index is the "method". |
+| `kArms` | the eight valid arm names, listed in `teacher.hpp` |
+| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `shape_weight` |
 | `Arm` | one result: `name`, `simplification` (for the pipeline), `objective` (its J_T) |
 | `Candidates` | `candidates[c][i]` = trajectory i simplified with method c |
 | `Methods` | one method index per trajectory, i.e. a selection |
-| `kMaxPasses` | at most 10 best-response passes |
+| `kMaxResponsePasses` | at most 10 best-response passes |
+| `kMaxAllocationRounds` | at most 3 iterative reallocation rounds |
+| `kMinImprovement` | strict gain threshold, 1e-12 |
 
 ### `Teacher(db, workloads, config, seed)` — constructor
 
@@ -515,23 +533,29 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 - **Input:** the total point budget for this share, and the arm names to produce.
 - **Computation:**
   1. Rejects unknown arm names.
-  2. `equal` = equal budgets per trajectory (the engine's size^α allocator with α = 0).
-  3. `make_candidates` at those budgets.
+  2. `equal_budgets` = equal budgets per trajectory (the engine's size^α allocator with α = 0).
+     Curves are capped at about four times the mean interior budget, at least six interior
+     points, never below the equal budget and never above trajectory length.
+  3. `make_candidates` at those budgets, building only RDP if no fixed-budget arm needs alternatives.
   4. **`GATEORIG_a0`** (if requested): `independent_choice` with `partners = nullptr`.
   5. **`GATE_a0` and `BR_a0`** (if either is requested):
-     - `build_curves` with partners fixed at the RDP candidates, up to each trajectory's budget;
-     - `curve_methods` reads each curve at the budget, which gives `GATE_a0`;
+     - score candidates directly against equal-budget RDP partners, or reuse curves if allocation
+       arms also need them, to obtain `GATE_a0`;
      - `best_response` starting from `GATE_a0`, which gives `BR_a0`.
-  6. `keep` assembles each arm's kept sets, computes its exact J_T, and prints how many
+  6. Allocation arms build curves against equal-budget RDP, allocate the total budget, and select
+     candidates. Response arms refine that selection; iterative rounds rebuild against the current
+     partners and keep only improvements in exact J_T.
+  7. `keep` assembles each arm's kept sets, computes its exact J_T, and prints how many
      trajectories each method won. `timed` prints step durations.
 - **Output:** one `Arm` per requested name, in the requested order. Each keeps exactly
   `total_budget` points, because every candidate keeps exactly its trajectory's budget.
 
-### `make_candidates(db, budgets)` — internal
+### `make_candidates(objective, budgets, caps, selected)` — internal
 
 - **Why:** each candidate is simplified once, then reused by every step.
-- **Input:** database and per-trajectory budgets.
-- **Computation:** in parallel, `selection::simplify_trajectory` with each of the three methods.
+- **Input:** objective, per-trajectory budgets and caps, and optionally selected method indices.
+- **Computation:** in parallel, `CandidateMaker` builds all seven recipes, or only the selected
+  recipe for each trajectory. Classic sequences and greedy sequences with the same seed are reused.
 - **Output:** `Candidates`.
 
 ### `assemble(candidates, method)` — internal
@@ -547,40 +571,39 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 - **Input:** candidates, and the partner state for `independent_value`.
 - **Computation:** in parallel, for each trajectory, the method with the highest
   `independent_value`. Ties go to the earlier method, so RDP wins when nothing differs.
-- **Output:** `Methods`. With `partners = nullptr` this gives `GATEORIG_a0`. It loses on join,
-  because judging a match against an *original* partner hides the fact that partners get
-  simplified too, and that pairs simplified with different methods match less often.
+- **Output:** `Methods`. With `partners = nullptr` this gives `GATEORIG_a0`. Original partners
+  hide the effect of simplifying both sides of a join pair.
 
-### `build_curves(db, objective, partners, max_budget)` — internal
+### `build_curves(db, objective, partners, caps, rdp_only)` — internal
 
 - **Why:** the value curves: for each trajectory and each budget, the best method and its value.
-- **Input:** the partner reference state (RDP at equal budgets), and how far each curve goes (the
-  trajectory's budget, never more than its length).
+- **Input:** the partner reference state (initially RDP at equal budgets, or the current state in
+  iterative rounds), curve caps, and whether only RDP is needed.
 - **Computation:** in parallel per trajectory, build the RDP addition sequence and reversed SED
   removal sequence once, then use sorted prefixes for each budget. Candidate coordinate buffers
   are reused between budgets. For b = 2 … max:
   - simplify with every candidate (at b = 2 all keep the endpoints, so only one is scored);
-  - score each with `independent_value` against the RDP partners;
+  - score each with `independent_value` against the fixed partner reference;
   - record the best value and method.
-- **Output:** one `Curve` per trajectory.
+- **Output:** RDP-only and best-candidate curves per trajectory.
 - Runs requesting only `GATE_a0` and/or `BR_a0` score their fixed budgets directly and skip full
   curve construction.
 - **Why partners as RDP:** a fixed, plausible guess at how partners will look. It still scores each
   trajectory on its own, but it rewards matching how partners will likely be simplified. This took
-  J5 from 0.446 (`GATEORIG_a0`) to 0.506 (`GATE_a0`).
+  J5 from 0.446 (`GATEORIG_a0`) to 0.506 (`GATE_a0`) in the earlier three-candidate experiment.
 
 ### `curve_methods(curves, budgets)` — internal
 
 - **Input:** curves and per-trajectory budgets.
 - **Computation:** `method[b − 2]` for each trajectory. Throws if a budget is off its curve.
-- **Output:** `Methods`, the `GATE_a0` selection.
+- **Output:** `Methods` at the supplied budgets.
 
 ### `best_response(db, objective, candidates, method, seed)` — internal
 
 - **Why:** this step uses the partners' **actual** choices instead of a guess. A trajectory's best
   method depends on what its join partners chose, so the teacher revisits trajectories until no
   single change helps.
-- **Input:** candidates, a starting selection (`GATE_a0`), and the seed.
+- **Input:** candidates, a starting selection (`GATE_a0` or `TEACHER`), and the seed.
 - **Computation:**
   1. `order` = the trajectories with any join link. Only they can gain, since the other terms
      don't depend on anyone else.
@@ -591,15 +614,13 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
      - switches to the best c only if its gain beats 1e-12 (strictly positive, so ties can't
        cycle), and calls `join.apply`.
   4. Stops after a pass with no switches.
-- **Output:** the improved `Methods`, which gives `BR_a0`. Every switch raises J_T, so it always
-  stops; in practice that takes 5–8 passes.
+- **Output:** the improved `Methods`. Stops after a pass with no switches or the 10-pass limit.
 
-### `to_simplification`, `wins`, `wants`, `seconds_since`, `is_arm` — helpers
+### `to_simplification`, `wins`, `seconds_since`, `is_arm` — helpers
 
 - `to_simplification`: `KeptSets` → `core::Simplification`, the format the pipeline evaluates and
   exports.
-- `wins`: a "RDP n, SED n, UNIFORM n" summary for the log.
-- `wants`: whether any of the given arm names was requested.
+- `wins`: per-candidate counts for the log.
 - `seconds_since`: wall time for the log.
 - `is_arm`: whether a name is in `kArms`. It is also used by the config parser.
 
@@ -617,7 +638,7 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
     goes through the same `evaluate` lambda: materialise, score on the held-out workloads, print,
     and export as `<ARM>_<share>pct`.
 
-## Results so far (Geolife, 0.25%, seed 42)
+## Earlier three-candidate results (Geolife, 0.25%, seed 42)
 
 | Arm | J_T | J5 |
 |---|---:|---:|
@@ -626,8 +647,8 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 | GATE_a0 | 0.503 | 0.506 |
 | BR_a0 | 0.548 | 0.544 |
 
-Teacher run time: about 7 s for `GATEORIG_a0`, 16 s for the curves and 66 s for best response,
-plus about 10 s to recompute the negatives when loading an old cache.
+Historical run time: about 7 s for `GATEORIG_a0`, 16 s for the curves and 66 s for best response.
+These timings predate the seven-candidate teacher, allocation search and cache changes.
 
 ## Tests
 

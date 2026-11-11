@@ -19,7 +19,7 @@ namespace teacher {
 // The arms a teacher run can produce. All pick a candidate per trajectory (RDP, SED, UNIFORM or
 // one of the greedy variants):
 //   GATEORIG_a0  equal budgets, join partners seen as original (fully independent)
-//   GATE_a0      equal budgets, best value-curve choice (selection only)
+//   GATE_a0      equal budgets, best candidate against RDP partners (selection only)
 //   TEACHER_RDP  RDP with allocation searched on its value curves (allocation only)
 //   TEACHER      best-of value curves with searched allocation (T1)
 //   BR_a0        best response from GATE_a0: re-pick against partners' current choice (T2 step)
