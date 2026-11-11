@@ -2,6 +2,7 @@
 
 #include "backend/engine/core/projection.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/teacher/greedy.hpp"
 #include "backend/engine/teacher/objective.hpp"
 #include "backend/engine/teacher/teacher.hpp"
 #include "backend/engine/teacher/workloads.hpp"
@@ -160,7 +161,7 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto result = model.run(budget, arms);
 
     ASSERT_EQ(result.size(), arms.size());
-    double gate_jt = 0, br_a0_jt = 0;
+    double gate_jt = 0, br_a0_jt = 0, teacher_jt = 0, br_jt = 0;
     for (const auto &arm : result) {
         SCOPED_TRACE(arm.name);
         ASSERT_EQ(arm.simplification.size(), db.size());
@@ -177,12 +178,45 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
             gate_jt = arm.objective;
         if (arm.name == "BR_a0")
             br_a0_jt = arm.objective;
+        if (arm.name == "TEACHER")
+            teacher_jt = arm.objective;
+        if (arm.name == "BR_TEACHER")
+            br_jt = arm.objective;
     }
     EXPECT_GE(br_a0_jt, gate_jt - 1e-12);
+    EXPECT_GE(br_jt, teacher_jt - 1e-12);
+}
+
+TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {
+    const auto db = random_db(4, 20, 30);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 13, m_dir);
+    const teacher::Objective objective(db, workloads);
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const teacher::Greedy greedy(objective, i);
+        const std::size_t n = db.trajectory(i).size();
+        const std::vector<std::size_t> seed{n / 2};
+        std::vector<std::size_t> fill(n);
+        for (std::size_t k = 0; k < n; ++k)
+            fill[k] = n - 1 - k;
+        for (const std::size_t b : {2u, 3u, 6u, 12u, 40u}) {
+            SCOPED_TRACE(std::to_string(i) + " at " + std::to_string(b));
+            const auto kept = greedy.run(b, b > 2 ? std::span<const std::size_t>(seed)
+                                                  : std::span<const std::size_t>(),
+                                         fill);
+            ASSERT_EQ(kept.size(), std::min(b, n));
+            EXPECT_EQ(kept.front(), 0u);
+            EXPECT_EQ(kept.back(), n - 1);
+            EXPECT_TRUE(std::ranges::is_sorted(kept));
+            EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
+            if (b > 2 && b < n)
+                EXPECT_TRUE(std::ranges::binary_search(kept, n / 2));
+        }
+    }
 }
 
 TEST(Teacher, RejectsUnknownArms) {
     EXPECT_TRUE(teacher::is_arm("GATE_a0"));
     EXPECT_FALSE(teacher::is_arm("gate_a0"));
-    EXPECT_FALSE(teacher::is_arm("TEACHER")); // allocation arms are not built for now
+    EXPECT_TRUE(teacher::is_arm("TEACHER"));
+    EXPECT_FALSE(teacher::is_arm("TEACHER_A0"));
 }

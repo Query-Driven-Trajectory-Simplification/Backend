@@ -16,19 +16,23 @@
 
 namespace teacher {
 
-// The arms a teacher run can produce. Selection only: every trajectory keeps its equal share of
-// the budget (alpha = 0) and the teacher picks RDP, SED or UNIFORM for it:
-//   GATEORIG_a0  join partners seen as original (fully independent)
-//   GATE_a0      the best choice on each trajectory's value curve, partners seen as RDP
+// The arms a teacher run can produce. All pick a candidate per trajectory (RDP, SED, UNIFORM or
+// one of the greedy variants):
+//   GATEORIG_a0  equal budgets, join partners seen as original (fully independent)
+//   GATE_a0      equal budgets, best value-curve choice (selection only)
+//   TEACHER_RDP  RDP with allocation searched on its value curves (allocation only)
+//   TEACHER      best-of value curves with searched allocation (T1)
 //   BR_a0        best response from GATE_a0: re-pick against partners' current choice (T2 step)
-inline constexpr std::array<std::string_view, 3> kArms{"GATEORIG_a0", "GATE_a0", "BR_a0"};
+//   BR_TEACHER   best response from TEACHER
+inline constexpr std::array<std::string_view, 6> kArms{
+    "GATEORIG_a0", "GATE_a0", "TEACHER_RDP", "TEACHER", "BR_a0", "BR_TEACHER"};
 
 bool is_arm(std::string_view name);
 
 struct TeacherConfig {
     bool enabled = false;
     std::filesystem::path cache_dir = "cache"; // looked in first, written to after a build
-    std::vector<std::string> arms{"GATE_a0", "BR_a0"};
+    std::vector<std::string> arms{"TEACHER", "BR_TEACHER"};
     std::size_t range_query_count = 64000; // the teacher's own boxes, denser than the test's
 };
 

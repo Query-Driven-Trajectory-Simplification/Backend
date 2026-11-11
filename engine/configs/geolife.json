@@ -44,7 +44,7 @@
     "teacher": {
         "enabled": false,
         "cache_dir": "cache",
-        "arms": ["GATE_a0", "BR_a0"],
+        "arms": ["TEACHER", "BR_TEACHER"],
         "range_query_count": 64000
     }
 }

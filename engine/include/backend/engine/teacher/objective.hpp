@@ -72,6 +72,17 @@ class Objective {
     std::size_t positive_count() const { return m_positive_count; }
     std::size_t truth(std::size_t t) const { return m_truth[t]; }
 
+    struct RangeMembership {
+        std::uint32_t box;
+        double weight; // 1 / (|reference| * scored boxes)
+    };
+    const core::TrajectoryDb &db() const { return m_db; }
+    const TeacherWorkloads &workloads() const { return m_workloads; }
+    const ObjectiveConfig &config() const { return m_config; }
+    std::span<const RangeMembership> boxes(std::size_t i) const { return m_range[i]; }
+    std::span<const std::uint32_t> probes(std::size_t i) const { return m_probes[i]; } // where-at
+    double where_at_weight() const { return m_where_at_weight; }
+
     // Whether simplified a and simplified b are within the join threshold
     bool match(std::size_t a, std::span<const std::size_t> kept_a, std::size_t b,
                std::span<const std::size_t> kept_b) const;
@@ -82,10 +93,6 @@ class Objective {
     struct KnnMembership {
         std::uint32_t query;
         double cutoff;
-    };
-    struct RangeMembership {
-        std::uint32_t box;
-        double weight; // 1 / (|reference| * scored boxes)
     };
 
     Terms raw_separable(std::size_t i, std::span<const std::size_t> kept) const;

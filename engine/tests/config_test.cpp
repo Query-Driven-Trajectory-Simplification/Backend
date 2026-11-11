@@ -237,7 +237,7 @@ TEST(Config, TeacherIsOffByDefault) {
         pipeline::load_config(write_config("teacher_default.json", R"({"data_path": "d"})"));
     EXPECT_FALSE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "cache");
-    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"GATE_a0", "BR_a0"}));
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"TEACHER", "BR_TEACHER"}));
 }
 
 TEST(Config, ReadsTheTeacherSection) {
@@ -254,7 +254,7 @@ TEST(Config, ReadsTheTeacherSection) {
 
 TEST(Config, RejectsBadTeacherSections) {
     for (const auto &section :
-         {R"({"enabled": true, "arms": ["TEACHER"]})", R"({"enabled": true, "arms": []})",
+         {R"({"enabled": true, "arms": ["DP"]})", R"({"enabled": true, "arms": []})",
           R"({"arms": ["GATE_a0", "GATE_a0"]})", R"({"cache_dir": ""})",
           R"({"range_query_count": 0})", R"({"seed": 7})"}) {
         SCOPED_TRACE(section);
