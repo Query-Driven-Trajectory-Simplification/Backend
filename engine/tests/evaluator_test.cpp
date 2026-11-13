@@ -151,3 +151,21 @@ TEST(Evaluator, ExposesRangeF1AndSelfJoinTogether) {
     EXPECT_EQ(eval.get_join_scores().mode, query::JoinMode::Self);
     EXPECT_TRUE(std::isnan(eval.get_join_scores().f1)); // one trajectory: no unordered pairs
 }
+
+TEST(Evaluator, ScoresTheSelfJoinNextToAHeldOutJoin) {
+    const core::TrajectoryDb db({0, 2, 4}, {10, 20}, {0, 10, 0, 10}, std::vector<double>(4, 39.95),
+                                {116.35, 116.36, 116.35, 116.36});
+    const auto held_out = query::generate_join_queries(db, db, {.query_count = 0}, 1);
+    const auto self = query::generate_self_join(db);
+    const auto scores =
+        evaluator::Evaluator(db, db, {.join = &held_out, .self_join = &self}).evaluate().scores;
+    EXPECT_EQ(scores.join.mode, query::JoinMode::HeldOut);
+    EXPECT_EQ(scores.join.query_count, 2u);
+    EXPECT_DOUBLE_EQ(scores.join.f1, 1);
+    EXPECT_EQ(scores.self_join.mode, query::JoinMode::Self);
+    EXPECT_EQ(scores.self_join.reference_pairs, 1u);
+    EXPECT_DOUBLE_EQ(scores.self_join.f1, 1);
+    // Without a self join the diagnostic stays undefined
+    EXPECT_TRUE(std::isnan(
+        evaluator::Evaluator(db, db, {.join = &held_out}).evaluate().scores.self_join.f1));
+}

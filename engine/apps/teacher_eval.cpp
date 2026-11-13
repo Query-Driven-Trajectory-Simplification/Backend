@@ -2,6 +2,11 @@
 // workloads. The teacher sees the database only; test workloads are built after every arm is done.
 // Split, workload, scoring and teacher settings come from the same JSON config as `run`
 // (--config), so both measure the same thing; the other flags override parts of it.
+// J4's join term follows join.mode, and so does the teacher's own join term unless teacher.join or
+// --teacher-join says otherwise (teacher_join_mode column). The database self join is scored either way
+// (self_join_f1, norm_self_join, the seen/unseen recall and thresholds.csv): its pairs are the
+// teacher's training pairs, so with join.mode HeldOut it is the in-sample comparison and stays out
+// of J4.
 // Writes results.csv, floors.csv, thresholds.csv, terms.csv, budgets.csv and timings.csv to --out;
 // summarise with teacher_stats.py.
 #include "backend/engine/allocation/budget_allocator.hpp"
@@ -51,6 +56,7 @@ struct Args {
     bool baselines = true;
     std::optional<bool> all_join_pairs;
     std::optional<double> shape_weight;
+    std::optional<query::JoinMode> teacher_join; // config: teacher.join, else join.mode
 };
 
 template <typename T> std::vector<T> parse_list(const std::string &s) {
@@ -90,7 +96,12 @@ Args parse_args(int argc, char **argv) {
             a.arms = parse_list<std::string>(value());
         else if (key == "--shape-weight")
             a.shape_weight = std::stod(value());
-        else if (key == "--no-baselines")
+        else if (key == "--teacher-join") {
+            const auto mode = value();
+            if (mode != "HeldOut" && mode != "Self")
+                throw std::invalid_argument("--teacher-join must be HeldOut or Self");
+            a.teacher_join = mode == "Self" ? query::JoinMode::Self : query::JoinMode::HeldOut;
+        } else if (key == "--no-baselines")
             a.baselines = false;
         else if (key == "--seen-pairs-only")
             a.all_join_pairs = false;
@@ -98,7 +109,7 @@ Args parse_args(int argc, char **argv) {
             throw std::invalid_argument(
                 "unknown argument " + key +
                 " (--config --data --out --cache --seeds --shares --arms --shape-weight "
-                "--no-baselines --seen-pairs-only)");
+                "--teacher-join --no-baselines --seen-pairs-only)");
     }
     for (const auto &arm : a.arms)
         if (!teacher::is_arm(arm))
@@ -119,10 +130,15 @@ pipeline::Config effective_config(const Args &args) {
         config.teacher.all_join_pairs = *args.all_join_pairs;
     if (args.shape_weight)
         config.teacher.shape_weight = *args.shape_weight;
-    // The join recall split and the other thresholds compare database pairs
-    if (config.join.mode != query::JoinMode::Self)
-        throw std::invalid_argument("teacher_eval needs join.mode Self in the config");
+    if (args.teacher_join)
+        config.teacher.join = *args.teacher_join;
+    // The self join is always scored: with a held-out join in J4 it is the in-sample comparison
+    config.self_join = true;
     return config;
+}
+
+const char *mode_name(query::JoinMode mode) {
+    return mode == query::JoinMode::Self ? "Self" : "HeldOut";
 }
 
 double seconds_since(std::chrono::steady_clock::time_point start) {
@@ -343,14 +359,15 @@ int main(int argc, char **argv) try {
         "seed,share,arm,budget,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,"
         "where_at_within_100,join_micro_f1,knn_tau,norm_knn,norm_range,norm_where_at,norm_join,"
         "norm_clustering,J4,J5,J_fam,J_T,join_recall_seen,join_recall_unseen,predicted_clusters,"
-        "eval_s");
-    auto floors = open_csv(args.out / "floors.csv",
-                           "seed,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering");
+        "eval_s,join_mode,self_join_f1,norm_self_join,teacher_join_mode");
+    auto floors =
+        open_csv(args.out / "floors.csv",
+                 "seed,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,self_join_f1");
     auto thresholds =
         open_csv(args.out / "thresholds.csv", "seed,share,arm,eps_m,join_f1,norm_join,recall");
     auto terms = open_csv(args.out / "terms.csv",
                           "seed,share,arm,teacher_knn,teacher_range,teacher_where_at,teacher_join,"
-                          "norm_knn,norm_range,norm_where_at,norm_join");
+                          "norm_knn,norm_range,norm_where_at,norm_join,norm_self_join");
     auto budgets = open_csv(args.out / "budgets.csv", "seed,share,arm,points,budget");
     auto timings = open_csv(args.out / "timings.csv", "seed,step,seconds");
 
@@ -389,7 +406,7 @@ int main(int argc, char **argv) try {
         start = std::chrono::steady_clock::now();
         const auto pool = core::subset(all, parts.queries);
         const pipeline::TestWorkloads test_workloads(db, pool, config);
-        // The join at thresholds the teacher does not optimise: does its join gain generalise?
+        // The self join at thresholds the teacher does not optimise: does its join gain generalise?
         std::vector<query::JoinWorkload> other_joins;
         for (const double eps : {100.0, 300.0})
             other_joins.push_back(query::generate_self_join(db, eps, config.join.frechet));
@@ -399,8 +416,9 @@ int main(int argc, char **argv) try {
         const auto &scoring = config.where_at_scoring;
         const auto floor_db = core::materialize(db, to_simplification(endpoints_only(db)));
         const auto floor = evaluator::Evaluator(db, floor_db, test, scoring).evaluate().scores;
-        floors << std::format("{},{},{},{},{},{}\n", seed, floor.knn.recall_at_k, floor.range_f1,
-                              floor.where_at.average_hit, floor.join.f1, floor.clustering.score);
+        floors << std::format("{},{},{},{},{},{},{}\n", seed, floor.knn.recall_at_k, floor.range_f1,
+                              floor.where_at.average_hit, floor.join.f1, floor.clustering.score,
+                              floor.self_join.f1);
         std::vector<double> other_floor;
         for (const auto &w : other_joins)
             other_floor.push_back(evaluator::evaluate_join(floor_db, w).f1);
@@ -417,12 +435,15 @@ int main(int argc, char **argv) try {
                 (n.knn + n.range + n.where_at + 0.5 * (n.join + n.clustering)) / 4.0;
             const auto recall = pair_recall(compressed, pairs, config.join);
             results << std::format(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
+                "{},{},{},{}\n",
                 seed, arm.share, arm.name, total_budget(db, arm.share), s.knn.recall_at_k,
                 s.range_f1, s.where_at.average_hit, s.join.f1, s.clustering.score,
                 s.where_at.within_radius, s.join.micro_f1, s.knn.kendalls_tau_topk, n.knn, n.range,
                 n.where_at, n.join, n.clustering, n.combined, j5, j_fam, objective.total(arm.kept),
-                recall.seen, recall.unseen, s.clustering.predicted_clusters, seconds_since(start));
+                recall.seen, recall.unseen, s.clustering.predicted_clusters, seconds_since(start),
+                mode_name(config.join.mode), s.self_join.f1, n.self_join,
+                mode_name(objective.config().join_mode));
 
             for (std::size_t k = 0; k < other_joins.size(); ++k) {
                 const auto js = evaluator::evaluate_join(compressed, other_joins[k]);
@@ -430,22 +451,25 @@ int main(int argc, char **argv) try {
                     "{},{},{},{},{},{},{}\n", seed, arm.share, arm.name, other_joins[k].eps_m,
                     js.f1, (js.f1 - other_floor[k]) / (1.0 - other_floor[k]), js.recall);
             }
-            // The teacher's own estimate of each metric, next to the test's
+            // The teacher's own estimate of each metric, next to the test's. Its join term is
+            // like-for-like with norm_join or norm_self_join, whichever its join mode is
             const auto m = objective.metrics(arm.kept);
             const auto &f = objective.floors();
             auto norm = [&](teacher::Objective::Term t) { return (m[t] - f[t]) / (1.0 - f[t]); };
-            terms << std::format("{},{},{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
-                                 norm(teacher::Objective::Knn), norm(teacher::Objective::Range),
-                                 norm(teacher::Objective::WhereAt), norm(teacher::Objective::Join),
-                                 n.knn, n.range, n.where_at, n.join);
+            terms << std::format("{},{},{},{},{},{},{},{},{},{},{},{}\n", seed, arm.share,
+                                 arm.name, norm(teacher::Objective::Knn),
+                                 norm(teacher::Objective::Range), norm(teacher::Objective::WhereAt),
+                                 norm(teacher::Objective::Join), n.knn, n.range, n.where_at, n.join,
+                                 n.self_join);
             if (teacher::is_arm(arm.name))
                 for (std::size_t i = 0; i < arm.kept.size(); ++i)
                     budgets << std::format("{},{},{},{},{}\n", seed, arm.share, arm.name,
                                            db.trajectory(i).size(), arm.kept[i].size());
             for (auto *out : {&results, &thresholds, &terms, &budgets})
                 out->flush();
-            std::cerr << std::format("seed {} {} {:g}: J4 {:.4f}, J5 {:.4f}, J_fam {:.4f}\n", seed,
-                                     arm.name, arm.share, n.combined, j5, j_fam);
+            std::cerr << std::format(
+                "seed {} {} {:g}: J4 {:.4f}, join {:.4f}, self join {:.4f}\n", seed, arm.name,
+                arm.share, n.combined, n.join, n.self_join);
         }
         timings.flush();
         floors.flush();

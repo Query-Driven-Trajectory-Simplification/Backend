@@ -33,6 +33,7 @@ struct Config {
     query::WhereAtConfig where_at;
     evaluator::WhereAtScoringConfig where_at_scoring;
     query::JoinConfig join;
+    bool self_join = false; // also scores the database self join at join.eps_m, outside J4
     query::RouteClusteringConfig clustering;
     teacher::TeacherConfig teacher; // off unless enabled
 };

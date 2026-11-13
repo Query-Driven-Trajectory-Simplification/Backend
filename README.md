@@ -81,7 +81,8 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | `where_at` | Probes per trajectory and max time gap (s) between points to probe |
 | `where_at_scoring` | Tolerance range (m) for the primary average-hit score, and the hit radius (m) for the within-radius diagnostic |
 | `frechet` | Fréchet variant for kNN, join and clustering: `Discrete` (kept vertices only, the default) or `Continuous` (polyline distance, unaffected by adding a vertex on an edge) |
-| `clustering` | Route clustering metric: `enabled`, neighbour threshold `eps_m` (m) and `min_size` per cluster. Reuses the self join when `join.mode` is `Self` with the same eps |
+| `join` | `mode`, threshold `eps_m` (m), `query_count` and `self_join`. `HeldOut` (the default) joins `query_count` original trajectories from the query split (`0` = all) against the simplified database. `Self` joins the database with itself, both sides simplified. `self_join: true` also scores the self join next to a held-out join, as a diagnostic outside the combined score |
+| `clustering` | Route clustering metric: `enabled`, neighbour threshold `eps_m` (m) and `min_size` per cluster. Reuses the self join when one is scored with the same eps |
 | `allocation_alphas` | Allocation exponents to test: budgets follow size^α (`1` = size-proportional, `0` = equal). Exports for α ≠ 1 get an `_a<α>` suffix |
 
 ## Tests

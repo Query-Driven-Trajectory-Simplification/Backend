@@ -50,10 +50,25 @@ Files:
 - **J4:** the pipeline's score on the held-out test workloads: the equal mean of four normalised
   metrics (kNN, range, where-at, join). Route clustering is reported as a diagnostic only, because
   it is built from the same Fréchet neighbour test as the join and would count it twice.
+  With `join.mode` `HeldOut` (the Geolife config) the join term compares original trajectories
+  from the query pool with the simplified database, so all four terms are held out. The database
+  self join, whose pairs the teacher trains on, is then reported separately (`norm_self_join`,
+  the seen / unseen recall and the 100 / 300 m thresholds) and is not part of J4. Results quoted
+  below predate this and have the self join inside the score.
 - **J5:** the earlier headline, J4 plus clustering. Results quoted below from earlier runs use it;
   `teacher_eval` still writes it so old and new runs can be compared.
 - **J_T:** the teacher's own score on its training workloads. It has the same shape as J4. kNN and range use training proxies; an optional shape term can also be
   enabled.
+- **J_T's join term:** follows `join.mode`, so the teacher trains on the kind of join it is
+  scored on. `Self`: both sides of a pair compressed, the self join. `HeldOut`: every database
+  trajectory also acts as an original query against its compressed partners, so each pair is
+  tested once in each direction and a trajectory's own choice only affects its partners' F1.
+  This is the database-only stand-in for the held-out join, as the kNN proxy is for held-out
+  kNN; the teacher still never sees the query pool. `teacher.join` (or `teacher_eval
+  --teacher-join Self|HeldOut`) overrides it, e.g. to train on the self join for the self-join
+  experiment. Held out, `GATE_a0` and `GATEORIG_a0` are the same arm, and best response is
+  coupled only through each query's F1. Everything below describing the join term as "both
+  sides compressed" is the `Self` mode.
 - **Join pairs:** the teacher uses every 150 m pair, because whoever compresses the database knows
   all of it. The pairs are also split in half (seen / unseen); with `all_join_pairs = false` the
   teacher only gets the seen half, which shows how much of its join gain is fitting those
@@ -514,7 +529,7 @@ simplified.
 |---|---|
 | `CandidateIndex`, `kCandidates` | Named indices and labels for the seven candidate recipes. The index is the "method". |
 | `kArms` | the eight valid arm names, listed in `teacher.hpp` |
-| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `shape_weight` |
+| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `shape_weight`, `join` (optional, default: the pipeline's `join.mode`) |
 | `Arm` | one result: `name`, `simplification` (for the pipeline), `objective` (its J_T) |
 | `Candidates` | `candidates[c][i]` = trajectory i simplified with method c |
 | `Methods` | one method index per trajectory, i.e. a selection |

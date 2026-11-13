@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -41,6 +42,8 @@ struct TeacherConfig {
     std::size_t range_query_count = 64000; // the teacher's own boxes, denser than the test's
     bool all_join_pairs = true;            // false: only the seen half of the join pairs
     double shape_weight = 0.0;             // the objective's shape term, 0 = off
+    // The objective's join term (ObjectiveConfig::join_mode). Unset: the join.mode it is scored on
+    std::optional<query::JoinMode> join;
 };
 
 struct Arm {

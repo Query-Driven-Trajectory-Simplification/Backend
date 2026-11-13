@@ -90,7 +90,8 @@ void parse_where_at_scoring_config(Config &config, const json &scoring) {
 }
 
 void parse_join_config(Config &config, const json &join) {
-    validate_keys(join, {"query_count", "eps_m", "mode"}, "join");
+    validate_keys(join, {"query_count", "eps_m", "mode", "self_join"}, "join");
+    config.self_join = join.value("self_join", config.self_join);
     if (join.contains("mode"))
         config.join.mode = parse_enum<query::JoinMode>(join["mode"]);
     config.join.query_count = join.value("query_count", config.join.query_count);
@@ -113,7 +114,8 @@ void parse_clustering_config(Config &config, const json &clustering) {
 void parse_teacher_config(Config &config, const json &section) {
     validate_keys(
         section,
-        {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs", "shape_weight"},
+        {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs", "shape_weight",
+         "join"},
         "teacher");
     auto &t = config.teacher;
     t.enabled = section.value("enabled", t.enabled);
@@ -122,6 +124,8 @@ void parse_teacher_config(Config &config, const json &section) {
     t.range_query_count = section.value("range_query_count", t.range_query_count);
     t.all_join_pairs = section.value("all_join_pairs", t.all_join_pairs);
     t.shape_weight = section.value("shape_weight", t.shape_weight);
+    if (section.contains("join"))
+        t.join = parse_enum<query::JoinMode>(section["join"]);
     if (t.shape_weight < 0)
         throw std::invalid_argument("config: teacher.shape_weight must not be negative");
     if (t.cache_dir.empty())
@@ -219,7 +223,9 @@ teacher::ObjectiveConfig teacher_objective_config(const Config &config) {
     return {.min_tolerance_m = config.where_at_scoring.min_tolerance_m,
             .max_tolerance_m = config.where_at_scoring.max_tolerance_m,
             .all_join_pairs = config.teacher.all_join_pairs,
-            .shape_weight = config.teacher.shape_weight};
+            .shape_weight = config.teacher.shape_weight,
+            // Trains on the kind of join it is scored on, unless told otherwise
+            .join_mode = config.teacher.join.value_or(config.join.mode)};
 }
 
 } // namespace pipeline

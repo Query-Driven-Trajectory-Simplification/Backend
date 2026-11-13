@@ -21,6 +21,10 @@ void print_scores(const evaluator::Scoretable &scores) {
     std::cout << "  join F1: " << scores.join.f1 << ", precision: " << scores.join.precision
               << ", recall: " << scores.join.recall << ", micro F1: " << scores.join.micro_f1
               << '\n';
+    if (scores.join.mode != query::JoinMode::Self && scores.self_join.query_count != 0)
+        std::cout << "  self join F1: " << scores.self_join.f1
+                  << ", precision: " << scores.self_join.precision
+                  << ", recall: " << scores.self_join.recall << '\n';
     if (!std::isnan(scores.clustering.score) || scores.clustering.reference_clusters != 0)
         std::cout << "  route clustering: " << scores.clustering.score << " ("
                   << scores.clustering.predicted_clusters << " clusters, "
@@ -32,6 +36,8 @@ void print_normalized(const evaluator::NormalizedScores &scores) {
               << ", where-at=" << scores.where_at << ", join=" << scores.join;
     if (!std::isnan(scores.clustering))
         std::cout << ", clustering=" << scores.clustering;
+    if (!std::isnan(scores.self_join))
+        std::cout << ", self join=" << scores.self_join;
     std::cout << ", combined J4=" << scores.combined << '\n';
 }
 

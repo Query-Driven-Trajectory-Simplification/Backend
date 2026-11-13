@@ -29,9 +29,7 @@ query::RangeWorkload make_range(const core::TrajectoryDb &database, const Config
     return range;
 }
 
-query::JoinWorkload make_join(const core::TrajectoryDb &database, const core::TrajectoryDb &queries,
-                              const Config &config) {
-    auto join = query::generate_join_queries(database, queries, config.join, config.seed);
+void print_join(const query::JoinWorkload &join) {
     std::size_t pairs = 0;
     for (const auto &entry : join.entries)
         pairs += entry.reference.size();
@@ -39,6 +37,22 @@ query::JoinWorkload make_join(const core::TrajectoryDb &database, const core::Tr
               << (join.mode == query::JoinMode::Self ? " database trajectories, eps="
                                                      : " queries, eps=")
               << join.eps_m << " m, " << pairs << " matching pairs\n";
+}
+
+query::JoinWorkload make_join(const core::TrajectoryDb &database, const core::TrajectoryDb &queries,
+                              const Config &config) {
+    auto join = query::generate_join_queries(database, queries, config.join, config.seed);
+    print_join(join);
+    return join;
+}
+
+// Empty when the join already is the self join
+std::optional<query::JoinWorkload> make_self_join(const core::TrajectoryDb &database,
+                                                  const Config &config) {
+    if (!config.self_join || config.join.mode == query::JoinMode::Self)
+        return std::nullopt;
+    auto join = query::generate_self_join(database, config.join.eps_m, config.join.frechet);
+    print_join(join);
     return join;
 }
 
@@ -63,14 +77,21 @@ TestWorkloads::TestWorkloads(const core::TrajectoryDb &database, const core::Tra
                              const Config &config)
     : knn(make_knn(database, queries, config)), where_at(make_where_at(database, config)),
       range(make_range(database, config)), join(make_join(database, queries, config)),
-      clustering(make_clustering(database, join, config)) {}
+      self_join(make_self_join(database, config)),
+      clustering(make_clustering(database, self_join ? *self_join : join, config)) {}
 
 evaluator::Workloads TestWorkloads::view() const {
+    const query::JoinWorkload *self = nullptr;
+    if (self_join)
+        self = &*self_join;
+    else if (join.mode == query::JoinMode::Self)
+        self = &join;
     return {.knn = &knn,
             .where_at = where_at.queries,
             .range = range.queries,
             .join = &join,
-            .clustering = clustering ? &*clustering : nullptr};
+            .clustering = clustering ? &*clustering : nullptr,
+            .self_join = self};
 }
 
 } // namespace pipeline

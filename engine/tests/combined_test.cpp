@@ -100,6 +100,19 @@ TEST(NormalizeScores, DiagnosticsNeverChangePrimaryScores) {
     EXPECT_TRUE(std::isnan(evaluator::normalize_scores(scores, floor).combined));
 }
 
+TEST(NormalizeScores, SelfJoinIsNormalisedButStaysOutOfCombined) {
+    auto floor = all_scores(0.0);
+    auto scores = all_scores(0.5);
+    floor.self_join.f1 = 0.2;
+    scores.self_join.f1 = 0.6;
+    const auto normalized = evaluator::normalize_scores(scores, floor);
+    EXPECT_DOUBLE_EQ(normalized.self_join, 0.5);
+    EXPECT_DOUBLE_EQ(normalized.join, 0.5);
+    scores.self_join.f1 = 1.0;
+    EXPECT_DOUBLE_EQ(evaluator::normalize_scores(scores, floor).combined, normalized.combined);
+    EXPECT_TRUE(std::isnan(evaluator::normalize_scores(all_scores(0.5), floor).self_join));
+}
+
 TEST(NormalizeScores, WhereAtUsesAverageHitAndItsOwnEndpointFloor) {
     auto floor = all_scores(0.0);
     auto scores = all_scores(0.0);

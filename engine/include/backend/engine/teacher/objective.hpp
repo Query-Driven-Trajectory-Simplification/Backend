@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/query/join.hpp"
 #include "backend/engine/teacher/workloads.hpp"
 
 #include <array>
@@ -53,6 +54,10 @@ struct ObjectiveConfig {
     // Weight of the shape term, next to the four metrics' 1/4 each. 0 = off. It rewards keeping
     // the original shape whatever the query, for kNN queries and join thresholds not trained on
     double shape_weight = 0.0;
+    // Self: both sides of a pair compressed, like the test's self join. HeldOut: each trajectory
+    // is also an original query against its compressed partners, the database-only stand-in for a
+    // join from the held-out query pool
+    query::JoinMode join_mode = query::JoinMode::Self;
 };
 
 // A join candidate of one trajectory
@@ -73,9 +78,13 @@ struct JoinLink {
 //   join      macro F1 over the candidate pairs, both sides compressed, like the evaluator:
 //             F1_t = 2 hits / (found + expected), averaged over trajectories with any truth or
 //             any match. Endpoints-only trajectories match every candidate, so the floor has full
-//             recall and the loss is in false positives
-// kNN, range and where-at add up over trajectories. Join does not, because a pair's outcome
-// depends on both sides; JoinState tracks it exactly for one-at-a-time changes.
+//             recall and the loss is in false positives.
+//             With join_mode HeldOut the query side of each pair stays original: trajectory t's
+//             F1 counts Fréchet(original t, simplified partner) <= eps over its candidates, so
+//             every pair is tested once in each direction
+// kNN, range and where-at add up over trajectories. Join does not: in Self mode a pair's outcome
+// depends on both sides, and in HeldOut mode a query's F1 depends on all of its partners.
+// JoinState tracks it exactly for one-at-a-time changes.
 class Objective {
   public:
     enum Term : std::size_t { Knn, Range, WhereAt, Join, TermCount };
@@ -97,7 +106,8 @@ class Objective {
 
     // A one-pass score for choosing i's points on their own: separable plus i's join F1 against
     // a fixed partner state (empty = original partners), as if each trajectory carried an
-    // equal share of the join metric. An approximation, unlike JoinState.
+    // equal share of the join metric. An approximation, unlike JoinState. With join_mode HeldOut
+    // the partners are always original, whatever is passed: i is scored as the database side.
     // Exact whenever the value is above beat. Otherwise it may return any value at most beat,
     // skipping the kNN checks that cannot lift it over, the costly part
     double independent_value(std::size_t i, const core::TrajectoryView &candidate,
@@ -209,9 +219,16 @@ class JoinState {
   private:
     bool counted(std::size_t t, std::size_t found) const;
     double f1(std::size_t t, std::size_t hits, std::size_t found) const;
+    // Where the outcome of i's link is stored. Held out: the direction with i compressed
+    std::size_t slot(std::size_t i, const JoinLink &link) const {
+        return m_held_out ? 2 * std::size_t{link.pair} + (i > link.other) : link.pair;
+    }
+    // How many of {partner, i} a changed link recounts: the query only, or both sides
+    std::size_t sides() const { return m_held_out ? 1 : 2; }
 
     const Objective &m_objective;
-    std::vector<char> m_matched; // per pair
+    bool m_held_out;
+    std::vector<char> m_matched; // per pair, or per pair and direction when held out
     std::vector<std::size_t> m_hits, m_found;
     double m_sum = 0; // sum of F1 over counted trajectories
     std::size_t m_counted = 0;

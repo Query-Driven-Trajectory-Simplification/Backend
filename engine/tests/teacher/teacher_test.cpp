@@ -217,42 +217,82 @@ TEST_F(TeacherTest, CacheForOtherSettingsIsRebuilt) {
 TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
     const auto db = random_db(2, 24, 20);
     const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
-    const teacher::Objective objective(db, workloads);
+    for (const auto mode : {query::JoinMode::Self, query::JoinMode::HeldOut}) {
+        SCOPED_TRACE(mode == query::JoinMode::Self ? "Self" : "HeldOut");
+        const teacher::Objective objective(db, workloads, {.join_mode = mode});
 
-    const auto floor = endpoints(db);
-    EXPECT_NEAR(objective.total(floor), 0.0, 1e-12);
-    EXPECT_GT(objective.total(every_point(db)), 0.0);
+        const auto floor = endpoints(db);
+        EXPECT_NEAR(objective.total(floor), 0.0, 1e-12);
+        EXPECT_GT(objective.total(every_point(db)), 0.0);
 
-    // Switch random trajectories between endpoints and every point; the tracked join metric
-    // must equal a full recompute after each switch
-    auto state = floor;
-    const teacher::PreparedTrajectories prepared_floor(db, state);
-    auto views = prepared_floor.views();
-    teacher::JoinState join(objective, views);
-    const auto full = every_point(db);
-    const teacher::PreparedTrajectories prepared_full(db, full);
-    const auto full_views = prepared_full.views();
-    const auto floor_views = prepared_floor.views();
-    std::mt19937_64 rng(4);
-    for (int step = 0; step < 40; ++step) {
-        const std::size_t i = rng() % db.size();
-        const auto &next = state[i].size() == 2 ? full[i] : floor[i];
-        const double before = objective.total(state);
-        const auto next_view = state[i].size() == 2 ? full_views[i] : floor_views[i];
-        const double old_metric = join.metric();
-        const auto proposal = join.propose(i, next_view, views);
-        // Evaluating an alternative must neither change the state nor overwrite this proposal.
-        const auto stay = join.propose(i, views[i], views);
-        EXPECT_DOUBLE_EQ(stay.gain, 0.0);
-        EXPECT_DOUBLE_EQ(join.metric(), old_metric);
-        const double predicted = proposal.gain;
-        const double separable = objective.separable(i, next) - objective.separable(i, state[i]);
-        state[i] = next;
-        views[i] = next_view;
-        join.apply(proposal);
-        EXPECT_NEAR(join.metric(), objective.metrics(state)[teacher::Objective::Join], 1e-12);
-        EXPECT_NEAR(objective.total(state) - before, predicted + separable, 1e-9);
+        // Switch random trajectories between endpoints and every point; the tracked join metric
+        // must equal a full recompute after each switch
+        auto state = floor;
+        const teacher::PreparedTrajectories prepared_floor(db, state);
+        auto views = prepared_floor.views();
+        teacher::JoinState join(objective, views);
+        const auto full = every_point(db);
+        const teacher::PreparedTrajectories prepared_full(db, full);
+        const auto full_views = prepared_full.views();
+        const auto floor_views = prepared_floor.views();
+        std::mt19937_64 rng(4);
+        for (int step = 0; step < 40; ++step) {
+            const std::size_t i = rng() % db.size();
+            const auto &next = state[i].size() == 2 ? full[i] : floor[i];
+            const double before = objective.total(state);
+            const auto next_view = state[i].size() == 2 ? full_views[i] : floor_views[i];
+            const double old_metric = join.metric();
+            const auto proposal = join.propose(i, next_view, views);
+            // Evaluating an alternative must neither change the state nor overwrite this proposal.
+            const auto stay = join.propose(i, views[i], views);
+            EXPECT_DOUBLE_EQ(stay.gain, 0.0);
+            EXPECT_DOUBLE_EQ(join.metric(), old_metric);
+            const double predicted = proposal.gain;
+            const double separable =
+                objective.separable(i, next) - objective.separable(i, state[i]);
+            state[i] = next;
+            views[i] = next_view;
+            join.apply(proposal);
+            EXPECT_NEAR(join.metric(), objective.metrics(state)[teacher::Objective::Join], 1e-12);
+            EXPECT_NEAR(objective.total(state) - before, predicted + separable, 1e-9);
+        }
     }
+}
+
+TEST_F(TeacherTest, HeldOutJoinScoresOriginalQueriesAgainstCompressedPartners) {
+    const auto db = random_db(2, 24, 20);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    const teacher::Objective objective(db, workloads, {.join_mode = query::JoinMode::HeldOut});
+    // Every point kept is the original database: each query finds exactly its positives
+    EXPECT_DOUBLE_EQ(objective.metrics(every_point(db))[teacher::Objective::Join], 1.0);
+
+    std::mt19937_64 rng(21);
+    auto kept = endpoints(db);
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        for (std::size_t k = 1; k + 1 < db.trajectory(i).size(); ++k)
+            if (rng() % 4 == 0)
+                kept[i].push_back(k);
+        std::ranges::sort(kept[i]);
+    }
+    const teacher::PreparedTrajectories prepared(db, kept);
+    const auto views = prepared.views();
+    double sum = 0;
+    std::size_t counted = 0;
+    for (std::size_t e = 0; e < db.size(); ++e) {
+        std::size_t hits = 0, found = 0;
+        for (const auto &link : objective.links(e)) {
+            const bool matched = objective.match(db.trajectory(e), views[link.other]);
+            found += matched;
+            hits += matched && link.positive;
+        }
+        if (found + objective.truth(e) == 0)
+            continue;
+        sum += 2.0 * static_cast<double>(hits) / static_cast<double>(found + objective.truth(e));
+        ++counted;
+    }
+    ASSERT_GT(counted, 0u);
+    EXPECT_NEAR(objective.metrics(kept)[teacher::Objective::Join],
+                sum / static_cast<double>(counted), 1e-12);
 }
 
 TEST_F(TeacherTest, ShapeTermIsZeroAtTheFloorAndSeparable) {
@@ -303,10 +343,21 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
     const auto db = random_db(2, 24, 20);
     const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
     std::mt19937_64 rng(74);
-    for (const bool knn_by_shape : {false, true}) {
-        for (const double shape_weight : {0.0, 0.25}) {
+    // {knn_by_shape, shape_weight, held-out join}
+    struct Variant {
+        bool knn_by_shape;
+        double shape_weight;
+        bool held_out;
+    };
+    for (const auto &[knn_by_shape, shape_weight, held_out] :
+         {Variant{false, 0.0, false}, Variant{false, 0.25, false}, Variant{true, 0.0, false},
+          Variant{true, 0.25, false}, Variant{false, 0.0, true}}) {
+        {
             const teacher::Objective objective(
-                db, workloads, {.knn_by_shape = knn_by_shape, .shape_weight = shape_weight});
+                db, workloads,
+                {.knn_by_shape = knn_by_shape,
+                 .shape_weight = shape_weight,
+                 .join_mode = held_out ? query::JoinMode::HeldOut : query::JoinMode::Self});
             std::size_t with_truth = 0;
             for (std::size_t i = 0; i < db.size(); ++i)
                 with_truth += objective.truth(i) != 0;
@@ -331,7 +382,10 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                         for (const auto &link : objective.links(i)) {
                             const auto other =
                                 original_partners ? db.trajectory(link.other) : views[link.other];
-                            const bool matched = objective.match(views[i], other);
+                            // Held out, i is the database side of an original partner's query
+                            const bool matched =
+                                held_out ? objective.match(db.trajectory(link.other), views[i])
+                                         : objective.match(views[i], other);
                             found += matched;
                             hits += matched && link.positive;
                         }
@@ -362,40 +416,48 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
 
 TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto db = random_db(3, 30, 25);
-    auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
-    const teacher::Teacher model(db, std::move(workloads), {}, 11);
-    const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
-    const std::size_t budget = 2 * db.size() + 40;
-    const auto result = model.run(budget, arms);
+    for (const auto mode : {query::JoinMode::Self, query::JoinMode::HeldOut}) {
+        SCOPED_TRACE(mode == query::JoinMode::Self ? "Self" : "HeldOut");
+        auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
+        const teacher::Teacher model(db, std::move(workloads), {.join_mode = mode}, 11);
+        const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
+        const std::size_t budget = 2 * db.size() + 40;
+        const auto result = model.run(budget, arms);
 
-    ASSERT_EQ(result.size(), arms.size());
-    double gate_jt = 0, br_a0_jt = 0, teacher_jt = 0, br_jt = 0, iter_jt = 0;
-    for (const auto &arm : result) {
-        SCOPED_TRACE(arm.name);
-        ASSERT_EQ(arm.simplification.size(), db.size());
-        EXPECT_EQ(arm.simplification.num_points(), budget);
-        for (std::size_t i = 0; i < db.size(); ++i) {
-            const auto kept = arm.simplification.trajectory(i);
-            ASSERT_GE(kept.size(), 2u);
-            EXPECT_EQ(kept.front(), 0u);
-            EXPECT_EQ(kept.back(), db.trajectory(i).size() - 1);
-            EXPECT_TRUE(std::ranges::is_sorted(kept));
-            EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
+        ASSERT_EQ(result.size(), arms.size());
+        double gate_orig_jt = 0, gate_jt = 0, br_a0_jt = 0, teacher_jt = 0, br_jt = 0, iter_jt = 0;
+        for (const auto &arm : result) {
+            SCOPED_TRACE(arm.name);
+            ASSERT_EQ(arm.simplification.size(), db.size());
+            EXPECT_EQ(arm.simplification.num_points(), budget);
+            for (std::size_t i = 0; i < db.size(); ++i) {
+                const auto kept = arm.simplification.trajectory(i);
+                ASSERT_GE(kept.size(), 2u);
+                EXPECT_EQ(kept.front(), 0u);
+                EXPECT_EQ(kept.back(), db.trajectory(i).size() - 1);
+                EXPECT_TRUE(std::ranges::is_sorted(kept));
+                EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
+            }
+            if (arm.name == "GATEORIG_a0")
+                gate_orig_jt = arm.objective;
+            if (arm.name == "GATE_a0")
+                gate_jt = arm.objective;
+            if (arm.name == "BR_a0")
+                br_a0_jt = arm.objective;
+            if (arm.name == "TEACHER")
+                teacher_jt = arm.objective;
+            if (arm.name == "BR_TEACHER")
+                br_jt = arm.objective;
+            if (arm.name == "ITER_TEACHER")
+                iter_jt = arm.objective;
         }
-        if (arm.name == "GATE_a0")
-            gate_jt = arm.objective;
-        if (arm.name == "BR_a0")
-            br_a0_jt = arm.objective;
-        if (arm.name == "TEACHER")
-            teacher_jt = arm.objective;
-        if (arm.name == "BR_TEACHER")
-            br_jt = arm.objective;
-        if (arm.name == "ITER_TEACHER")
-            iter_jt = arm.objective;
+        EXPECT_GE(br_a0_jt, gate_jt - 1e-12);
+        EXPECT_GE(br_jt, teacher_jt - 1e-12);
+        EXPECT_GE(iter_jt, br_jt - 1e-12);
+        // Held out, the partners are queries and stay original, so the two gates are the same
+        if (mode == query::JoinMode::HeldOut)
+            EXPECT_DOUBLE_EQ(gate_jt, gate_orig_jt);
     }
-    EXPECT_GE(br_a0_jt, gate_jt - 1e-12);
-    EXPECT_GE(br_jt, teacher_jt - 1e-12);
-    EXPECT_GE(iter_jt, br_jt - 1e-12);
 }
 
 TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {

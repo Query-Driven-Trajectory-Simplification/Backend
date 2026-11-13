@@ -23,12 +23,17 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
 EvaluationResult Evaluator::evaluate() const {
     auto knn = m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnEvaluation{};
     auto range = evaluate_range(m_simplified, m_workloads.range);
+    const auto join = get_join_scores();
     return {.scores = {.knn = knn.scores,
                        .range_recall = range.recall,
                        .where_at = get_where_at_scores(),
-                       .join = get_join_scores(),
+                       .join = join,
                        .range_f1 = range.f1,
-                       .clustering = get_clustering_scores()},
+                       .clustering = get_clustering_scores(),
+                       // The same workload is not evaluated twice
+                       .self_join = m_workloads.self_join == m_workloads.join
+                                        ? join
+                                        : get_self_join_scores()},
             .knn = std::move(knn.answers),
             .range = std::move(range.answers)};
 }
@@ -51,6 +56,11 @@ WhereAtScores Evaluator::get_where_at_scores() const {
 
 JoinScores Evaluator::get_join_scores() const {
     return m_workloads.join ? evaluate_join(m_simplified, *m_workloads.join) : JoinScores{};
+}
+
+JoinScores Evaluator::get_self_join_scores() const {
+    return m_workloads.self_join ? evaluate_join(m_simplified, *m_workloads.self_join)
+                                 : JoinScores{};
 }
 
 RouteClusteringScores Evaluator::get_clustering_scores() const {

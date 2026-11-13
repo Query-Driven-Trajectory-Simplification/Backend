@@ -1,7 +1,10 @@
 """Summarises a teacher_eval run: python3 teacher_stats.py <out dir> [summary.md]
 
 Per share: means and SDs over seeds, paired J4 differences with t intervals, the gate against
-the best cheap baseline, the coordination checks, and the join at 100 and 300 m.
+the best cheap baseline, the coordination checks, and the self join at 100, 150 and 300 m.
+
+norm_join is J4's join term (held-out when join.mode is HeldOut). norm_self_join is the database
+self join, which the teacher trains on: an in-sample diagnostic that is not part of J4.
 """
 import csv
 import math
@@ -11,7 +14,7 @@ from pathlib import Path
 from collections import defaultdict
 
 T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
-METRICS = ["J4", "J5", "J_fam", "norm_knn", "norm_range", "norm_where_at", "norm_join", "norm_clustering"]
+METRICS = ["J4", "J5", "J_fam", "norm_knn", "norm_range", "norm_where_at", "norm_join", "norm_clustering", "norm_self_join"]
 CHEAP = ["RDP_a0", "RDP_a025", "PARTNER_l0.5", "PARTNER_l1"]
 
 
@@ -102,12 +105,14 @@ def main():
                 out.append(f"| {a} − {b} | {fmt(paired(arms[a]['J4'], arms[b]['J4']))} |")
         out.append("")
         if share in other:
-            out.append("Normalised join F1 at the test's 150 m and at thresholds the teacher does not optimise:\n")
+            out.append("Normalised self-join F1 at the teacher's 150 m and at thresholds it does not optimise:\n")
             out.append("| Arm | 100 m | 150 m | 300 m |")
             out.append("|---|---:|---:|---:|")
             for arm in sorted(arms):
+                # Runs from before the held-out join have the self join in norm_join
+                at_150 = arms[arm]["norm_self_join"] or arms[arm]["norm_join"]
                 cells = [mean_sd(list(other[share][arm].get(100.0, {}).values())),
-                         mean_sd(list(arms[arm]["norm_join"].values())),
+                         mean_sd(list(at_150.values())),
                          mean_sd(list(other[share][arm].get(300.0, {}).values()))]
                 out.append(f"| {arm} | " + " | ".join(cells) + " |")
             out.append("")

@@ -282,9 +282,13 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
     score.candidate = candidate;
     score.terms = raw_separable(i, candidate, m_config.knn_by_shape);
     std::size_t hits = 0, found = 0;
+    const bool held_out = m_config.join_mode == query::JoinMode::HeldOut;
     for (const auto &link : m_links[i]) {
+        // Held out: the partner is the original query and i the database side
         const bool matched =
-            match(candidate, partners.empty() ? m_db.trajectory(link.other) : partners[link.other]);
+            held_out ? match(m_db.trajectory(link.other), candidate)
+                     : match(candidate, partners.empty() ? m_db.trajectory(link.other)
+                                                         : partners[link.other]);
         found += matched;
         hits += matched && link.positive;
     }
@@ -332,18 +336,29 @@ double Objective::independent_bound(std::size_t i, const core::TrajectoryView &c
 }
 
 double Objective::join_metric(std::span<const core::TrajectoryView> state) const {
-    std::vector<char> matched(m_pair_i.size());
+    // matched[p]: the pair's outcome, counted for i. reverse[p]: counted for j, the same outcome
+    // unless held out, where each side is in turn the original query
+    const bool held_out = m_config.join_mode == query::JoinMode::HeldOut;
+    std::vector<char> matched(m_pair_i.size()), reverse(m_pair_i.size());
     core::parallel_for(m_pair_i.size(), [&](std::size_t p) {
-        matched[p] = match(state[m_pair_i[p]], state[m_pair_j[p]]);
+        const auto i = m_pair_i[p], j = m_pair_j[p];
+        if (held_out) {
+            matched[p] = match(m_db.trajectory(i), state[j]);
+            reverse[p] = match(m_db.trajectory(j), state[i]);
+        } else {
+            matched[p] = reverse[p] = match(state[i], state[j]);
+        }
     });
     std::vector<std::size_t> hits(m_db.size(), 0), found(m_db.size(), 0);
     for (std::size_t p = 0; p < m_pair_i.size(); ++p) {
-        if (!matched[p])
-            continue;
         const bool positive = p < m_positive_count;
-        for (const auto t : {m_pair_i[p], m_pair_j[p]}) {
-            ++found[t];
-            hits[t] += positive;
+        if (matched[p]) {
+            ++found[m_pair_i[p]];
+            hits[m_pair_i[p]] += positive;
+        }
+        if (reverse[p]) {
+            ++found[m_pair_j[p]];
+            hits[m_pair_j[p]] += positive;
         }
     }
     double sum = 0;
@@ -388,26 +403,35 @@ double Objective::total(const KeptSets &kept) const {
 }
 
 JoinState::JoinState(const Objective &objective, std::span<const core::TrajectoryView> state)
-    : m_objective(objective) {
+    : m_objective(objective),
+      m_held_out(objective.config().join_mode == query::JoinMode::HeldOut) {
     const std::size_t n = state.size();
-    m_matched.assign(objective.pair_count(), 0);
+    m_matched.assign((m_held_out ? 2 : 1) * objective.pair_count(), 0);
     m_hits.assign(n, 0);
     m_found.assign(n, 0);
-    // Each pair once, from its smaller side
-    std::vector<std::vector<std::pair<std::uint32_t, char>>> outcome(n);
+    // Each pair once, from its smaller side. Held out: each direction from its compressed side
+    std::vector<std::vector<std::pair<std::size_t, char>>> outcome(n);
     core::parallel_for(n, [&](std::size_t i) {
-        for (const auto &link : objective.links(i))
-            if (i < link.other)
-                outcome[i].push_back({link.pair, objective.match(state[i], state[link.other])});
+        for (const auto &link : objective.links(i)) {
+            if (m_held_out)
+                outcome[i].push_back(
+                    {slot(i, link),
+                     objective.match(objective.db().trajectory(link.other), state[i])});
+            else if (i < link.other)
+                outcome[i].push_back(
+                    {slot(i, link), objective.match(state[i], state[link.other])});
+        }
     });
     for (std::size_t i = 0; i < n; ++i)
-        for (const auto &[pair, matched] : outcome[i])
-            m_matched[pair] = matched;
+        for (const auto &[at, matched] : outcome[i])
+            m_matched[at] = matched;
     for (std::size_t i = 0; i < n; ++i)
         for (const auto &link : objective.links(i))
-            if (m_matched[link.pair]) {
-                ++m_found[i];
-                m_hits[i] += link.positive;
+            if (m_matched[slot(i, link)]) {
+                // Held out, the match is found by the query, not by the compressed side
+                const std::size_t t = m_held_out ? link.other : i;
+                ++m_found[t];
+                m_hits[t] += link.positive;
             }
     for (std::size_t t = 0; t < n; ++t)
         if (counted(t, m_found[t])) {
@@ -435,13 +459,16 @@ JoinState::Proposal JoinState::propose(std::size_t i, const core::TrajectoryView
     // New outcomes of i's pairs, and the hits/found changes they cause on each side
     std::unordered_map<std::size_t, std::pair<long, long>> change; // t -> (hits, found)
     for (const auto &link : m_objective.links(i)) {
-        const bool now = m_matched[link.pair];
-        const bool then = m_objective.match(candidate, state[link.other]);
+        const bool now = m_matched[slot(i, link)];
+        const bool then =
+            m_held_out ? m_objective.match(m_objective.db().trajectory(link.other), candidate)
+                       : m_objective.match(candidate, state[link.other]);
         proposal.matched.push_back(then);
         if (now == then)
             continue;
         const long d = then ? 1 : -1;
-        for (const auto t : {i, static_cast<std::size_t>(link.other)}) {
+        const std::array<std::size_t, 2> touched{link.other, i};
+        for (const auto t : std::span(touched).first(sides())) {
             auto &[h, f] = change[t];
             f += d;
             h += link.positive ? d : 0;
@@ -476,13 +503,14 @@ void JoinState::apply(const Proposal &proposal) {
         throw std::invalid_argument("join proposal: outcome count does not match links");
     for (std::size_t k = 0; k < links.size(); ++k) {
         const auto &link = links[k];
-        const bool now = m_matched[link.pair];
+        const bool now = m_matched[slot(i, link)];
         const bool then = proposal.matched[k];
         if (now == then)
             continue;
-        m_matched[link.pair] = then;
+        m_matched[slot(i, link)] = then;
         const long d = then ? 1 : -1;
-        for (const auto t : {i, static_cast<std::size_t>(link.other)}) {
+        const std::array<std::size_t, 2> touched{link.other, i};
+        for (const auto t : std::span(touched).first(sides())) {
             if (counted(t, m_found[t])) {
                 m_sum -= f1(t, m_hits[t], m_found[t]);
                 --m_counted;

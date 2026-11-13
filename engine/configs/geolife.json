@@ -32,8 +32,10 @@
         "max_tolerance_m": 500.0
     },
     "join": {
-        "mode": "Self",
-        "eps_m": 150.0
+        "mode": "HeldOut",
+        "query_count": 0,
+        "eps_m": 150.0,
+        "self_join": true
     },
     "clustering": {
         "enabled": true,

@@ -48,8 +48,9 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
     result.where_at = result.where_at_average_hit;
     result.join = result.join_f1;
     result.clustering = result.clustering_score;
+    result.self_join = normalize(scores.self_join.f1, floor.self_join.f1);
 
-    // Clustering stays out: it repeats the join's neighbour test (see combined.hpp)
+    // Clustering and the self join stay out (see combined.hpp)
     result.combined = mean_ignoring_nan({result.knn, result.range, result.where_at, result.join});
     return result;
 }

@@ -22,6 +22,8 @@ struct Workloads {
     std::span<const query::RangeQuery> range = {};
     const query::JoinWorkload *join = nullptr; // a pointer, as it also carries eps and the queries
     const query::RouteClusteringWorkload *clustering = nullptr;
+    // The database self join as a diagnostic next to a held-out join. May point at join itself.
+    const query::JoinWorkload *self_join = nullptr;
 };
 
 // Kendall's tau is in [-1, 1] and the others in [0, 1], or NaN if it could not be computed
@@ -32,6 +34,7 @@ struct Scoretable {
     JoinScores join;
     double range_f1 = std::numeric_limits<double>::quiet_NaN();
     RouteClusteringScores clustering;
+    JoinScores self_join;
 };
 
 struct EvaluationResult {
@@ -53,6 +56,7 @@ class Evaluator {
     double get_range_f1() const;
     WhereAtScores get_where_at_scores() const;
     JoinScores get_join_scores() const;
+    JoinScores get_self_join_scores() const;
     RouteClusteringScores get_clustering_scores() const;
 
   private:

@@ -21,6 +21,8 @@ struct TestWorkloads {
     query::WhereAtWorkload where_at;
     query::RangeWorkload range;
     query::JoinWorkload join;
+    // The database self join next to a held-out join, when config.self_join asks for it
+    std::optional<query::JoinWorkload> self_join;
     std::optional<query::RouteClusteringWorkload> clustering;
 
     // Generates every workload configured in config and prints a summary line for each

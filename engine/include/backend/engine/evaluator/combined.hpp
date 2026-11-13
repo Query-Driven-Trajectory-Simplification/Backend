@@ -14,6 +14,8 @@ namespace evaluator {
 // diagnostic and does not contribute to the combined score.
 // Route clustering is also a diagnostic: it is built from the same Fréchet neighbour test as the
 // join, so including it would count pair preservation twice.
+// The self join is a diagnostic too, scored next to a held-out join: its pairs are database pairs,
+// which anything fitted to the database has already seen.
 struct NormalizedScores {
     static constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 
@@ -31,6 +33,7 @@ struct NormalizedScores {
     double where_at = missing;
     double join = missing;
     double clustering = missing;
+    double self_join = missing;
 
     double combined = missing;
 };
