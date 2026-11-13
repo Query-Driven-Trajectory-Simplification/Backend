@@ -51,40 +51,37 @@ void push_split(std::priority_queue<Split> &heap, std::span<const double> x,
 
 } // namespace
 
-std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
-                                  std::size_t points_to_keep) {
+std::vector<std::size_t> sequence(const core::TrajectoryView &trajectory, std::size_t limit) {
     const std::size_t n = trajectory.size();
-    const auto &x = trajectory.x;
-    const auto &y = trajectory.y;
-
-    if (points_to_keep >= n) {
-        std::vector<std::size_t> all_points_kept(n);
-        for (std::size_t i = 0; i < n; ++i)
-            all_points_kept[i] = i;
-        return all_points_kept;
-    }
-    std::vector<bool> kept(n, false);
-    kept.front() = kept.back() = true;
-    std::size_t num_kept = 2;
-
+    if (n == 0)
+        return {};
+    if (n == 1)
+        return {0};
+    limit = std::clamp(limit, std::size_t{2}, n);
+    std::vector<std::size_t> indices{0, n - 1};
+    indices.reserve(limit);
     std::priority_queue<Split> heap;
-
-    push_split(heap, x, y, 0, n - 1);
-    while (num_kept < points_to_keep && !heap.empty()) {
+    push_split(heap, trajectory.x, trajectory.y, 0, n - 1);
+    while (indices.size() < limit && !heap.empty()) {
         const Split split = heap.top();
         heap.pop();
-        kept[split.index] = true;
-        ++num_kept;
-        push_split(heap, x, y, split.first, split.index);
-        push_split(heap, x, y, split.index, split.last);
+        indices.push_back(split.index);
+        push_split(heap, trajectory.x, trajectory.y, split.first, split.index);
+        push_split(heap, trajectory.x, trajectory.y, split.index, split.last);
     }
+    return indices;
+}
 
-    std::vector<std::size_t> indices;
-    indices.reserve(num_kept);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (kept[i])
-            indices.push_back(i);
+std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
+                                  std::size_t points_to_keep) {
+    if (points_to_keep >= trajectory.size()) {
+        std::vector<std::size_t> indices(trajectory.size());
+        for (std::size_t i = 0; i < indices.size(); ++i)
+            indices[i] = i;
+        return indices;
     }
+    auto indices = sequence(trajectory, points_to_keep);
+    std::ranges::sort(indices);
     return indices;
 }
 

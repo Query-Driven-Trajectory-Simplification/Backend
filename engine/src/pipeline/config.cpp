@@ -110,11 +110,40 @@ void parse_clustering_config(Config &config, const json &clustering) {
     }
 }
 
+void parse_teacher_config(Config &config, const json &section) {
+    validate_keys(
+        section,
+        {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs", "shape_weight"},
+        "teacher");
+    auto &t = config.teacher;
+    t.enabled = section.value("enabled", t.enabled);
+    t.cache_dir = section.value("cache_dir", t.cache_dir.string());
+    t.arms = section.value("arms", t.arms);
+    t.range_query_count = section.value("range_query_count", t.range_query_count);
+    t.all_join_pairs = section.value("all_join_pairs", t.all_join_pairs);
+    t.shape_weight = section.value("shape_weight", t.shape_weight);
+    if (t.shape_weight < 0)
+        throw std::invalid_argument("config: teacher.shape_weight must not be negative");
+    if (t.cache_dir.empty())
+        throw std::invalid_argument("config: teacher.cache_dir must not be empty");
+    if (t.enabled && t.arms.empty())
+        throw std::invalid_argument("config: teacher.arms must not be empty when enabled");
+    for (std::size_t a = 0; a < t.arms.size(); ++a) {
+        if (!teacher::is_arm(t.arms[a]))
+            throw std::invalid_argument("config: unknown teacher arm '" + t.arms[a] + "'");
+        if (std::find(t.arms.begin(), t.arms.begin() + static_cast<std::ptrdiff_t>(a), t.arms[a]) !=
+            t.arms.begin() + static_cast<std::ptrdiff_t>(a))
+            throw std::invalid_argument("config: teacher arm '" + t.arms[a] + "' listed twice");
+    }
+    if (t.range_query_count == 0)
+        throw std::invalid_argument("config: teacher.range_query_count must be positive");
+}
+
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
                    "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
-                   "where_at_scoring", "join", "clustering", "frechet"},
+                   "where_at_scoring", "join", "clustering", "frechet", "teacher"},
                   "root");
     Config config;
 
@@ -149,6 +178,7 @@ Config parse_config(const json &data) {
     parse_where_at_scoring_config(config, data.value("where_at_scoring", json::object()));
     parse_join_config(config, data.value("join", json::object()));
     parse_clustering_config(config, data.value("clustering", json::object()));
+    parse_teacher_config(config, data.value("teacher", json::object()));
     // One distance for every Fréchet-based query, so both sides of each comparison agree
     if (data.contains("frechet")) {
         const auto variant = parse_enum<query::FrechetVariant>(data["frechet"]);
@@ -173,6 +203,23 @@ Config load_config(const std::filesystem::path &path) {
         // Wrong types and malformed JSON
         throw std::invalid_argument(std::string("config: ") + e.what());
     }
+}
+
+teacher::WorkloadConfig teacher_workload_config(const Config &config) {
+    auto range = config.range;
+    range.query_count = config.teacher.range_query_count;
+    return {.k = config.knn.k,
+            .join_eps_m = config.join.eps_m,
+            .frechet = config.join.frechet,
+            .range = range,
+            .where_at = config.where_at};
+}
+
+teacher::ObjectiveConfig teacher_objective_config(const Config &config) {
+    return {.min_tolerance_m = config.where_at_scoring.min_tolerance_m,
+            .max_tolerance_m = config.where_at_scoring.max_tolerance_m,
+            .all_join_pairs = config.teacher.all_join_pairs,
+            .shape_weight = config.teacher.shape_weight};
 }
 
 } // namespace pipeline

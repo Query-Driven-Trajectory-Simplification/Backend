@@ -40,5 +40,11 @@
         "eps_m": 150.0,
         "min_size": 5
     },
-    "frechet": "Continuous"
+    "frechet": "Continuous",
+    "teacher": {
+        "enabled": false,
+        "cache_dir": "cache",
+        "arms": ["TEACHER", "BR_TEACHER"],
+        "range_query_count": 64000
+    }
 }

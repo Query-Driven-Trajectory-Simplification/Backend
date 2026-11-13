@@ -15,7 +15,7 @@ struct RouteClusteringConfig {
     bool enabled = false;
     double eps_m = 500.0;     // neighbour threshold, same test as the self join
     std::size_t min_size = 5; // a cluster needs at least this many trajectories, medoid included
-    FrechetVariant frechet = FrechetVariant::Discrete;
+    FrechetVariant frechet = FrechetVariant::Continuous;
 };
 
 using TrajectoryPair = std::pair<std::size_t, std::size_t>;
@@ -48,7 +48,7 @@ struct RouteClusteringWorkload {
     std::vector<TrajectoryEndpoints> originals;
     double eps_m = 0.0;
     std::size_t min_size = 0;
-    FrechetVariant frechet = FrechetVariant::Discrete;
+    FrechetVariant frechet = FrechetVariant::Continuous;
 };
 
 // Clusters the original database. A self join workload over the same trajectories, eps and

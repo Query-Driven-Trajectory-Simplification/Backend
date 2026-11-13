@@ -210,13 +210,15 @@ TEST(Config, RejectsInvalidClustering) {
 
 TEST(Config, FrechetVariantAppliesToEveryFrechetQuery) {
     const auto config = pipeline::load_config(
-        write_config("frechet.json", R"({"data_path": "d", "frechet": "Continuous"})"));
-    EXPECT_EQ(config.knn.frechet, query::FrechetVariant::Continuous);
-    EXPECT_EQ(config.join.frechet, query::FrechetVariant::Continuous);
-    EXPECT_EQ(config.clustering.frechet, query::FrechetVariant::Continuous);
+        write_config("frechet.json", R"({"data_path": "d", "frechet": "Discrete"})"));
+    EXPECT_EQ(config.knn.frechet, query::FrechetVariant::Discrete);
+    EXPECT_EQ(config.join.frechet, query::FrechetVariant::Discrete);
+    EXPECT_EQ(config.clustering.frechet, query::FrechetVariant::Discrete);
     const auto defaults =
         pipeline::load_config(write_config("frechet_default.json", R"({"data_path": "d"})"));
-    EXPECT_EQ(defaults.join.frechet, query::FrechetVariant::Discrete);
+    EXPECT_EQ(defaults.knn.frechet, query::FrechetVariant::Continuous);
+    EXPECT_EQ(defaults.join.frechet, query::FrechetVariant::Continuous);
+    EXPECT_EQ(defaults.clustering.frechet, query::FrechetVariant::Continuous);
     EXPECT_THROW(pipeline::load_config(
                      write_config("frechet_bad.json", R"({"data_path": "d", "frechet": "Weak"})")),
                  std::invalid_argument);
@@ -230,4 +232,39 @@ TEST(Config, RejectsInvalidWhereAtScoring) {
                 "where_at_scoring_bad.json",
                 std::string(R"({"data_path": "d", "where_at_scoring": )") + scoring + "}")),
             std::invalid_argument);
+}
+
+TEST(Config, TeacherIsOffByDefault) {
+    const auto config =
+        pipeline::load_config(write_config("teacher_default.json", R"({"data_path": "d"})"));
+    EXPECT_FALSE(config.teacher.enabled);
+    EXPECT_EQ(config.teacher.cache_dir, "cache");
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"TEACHER", "BR_TEACHER"}));
+    EXPECT_TRUE(config.teacher.all_join_pairs);
+}
+
+TEST(Config, ReadsTheTeacherSection) {
+    const auto config = pipeline::load_config(write_config("teacher.json", R"({
+        "data_path": "d",
+        "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["GATEORIG_a0", "BR_a0"],
+                    "range_query_count": 1000, "all_join_pairs": false, "shape_weight": 0.25}
+    })"));
+    EXPECT_TRUE(config.teacher.enabled);
+    EXPECT_EQ(config.teacher.cache_dir, "my_cache");
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"GATEORIG_a0", "BR_a0"}));
+    EXPECT_EQ(config.teacher.range_query_count, 1000u);
+    EXPECT_FALSE(config.teacher.all_join_pairs);
+    EXPECT_DOUBLE_EQ(config.teacher.shape_weight, 0.25);
+}
+
+TEST(Config, RejectsBadTeacherSections) {
+    for (const auto &section :
+         {R"({"enabled": true, "arms": ["DP"]})", R"({"enabled": true, "arms": []})",
+          R"({"arms": ["GATE_a0", "GATE_a0"]})", R"({"cache_dir": ""})",
+          R"({"range_query_count": 0})", R"({"shape_weight": -1})", R"({"seed": 7})"}) {
+        SCOPED_TRACE(section);
+        const auto contents = std::string(R"({"data_path": "d", "teacher": )") + section + "}";
+        EXPECT_THROW(pipeline::load_config(write_config("bad_teacher.json", contents)),
+                     std::invalid_argument);
+    }
 }

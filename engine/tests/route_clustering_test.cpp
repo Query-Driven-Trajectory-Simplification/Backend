@@ -238,7 +238,7 @@ TEST(RouteClustering, RejectsMismatchedDatabasesAndInvalidInput) {
                  std::invalid_argument);
 }
 
-TEST(RouteClustering, CombinedIncludesClustering) {
+TEST(RouteClustering, ClusteringIsNormalizedButNotCombined) {
     evaluator::Scoretable floor{};
     floor.knn.recall_at_k = 0.0;
     floor.range_f1 = 0.0;
@@ -250,7 +250,7 @@ TEST(RouteClustering, CombinedIncludesClustering) {
     scores.clustering.score = 0.75;
     const auto normalized = evaluator::normalize_scores(scores, floor);
     EXPECT_DOUBLE_EQ(normalized.clustering, 0.5);
-    EXPECT_DOUBLE_EQ(normalized.combined, 1.5 / 5.0);
+    EXPECT_DOUBLE_EQ(normalized.combined, 0.25);
     scores.clustering.score = std::numeric_limits<double>::quiet_NaN();
     EXPECT_DOUBLE_EQ(evaluator::normalize_scores(scores, floor).combined, 0.25);
 }
