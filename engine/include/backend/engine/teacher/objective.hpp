@@ -63,7 +63,7 @@ struct JoinLink {
 };
 
 // The teacher's objective J_T: an equal mean of four normalised metrics on the teacher's own
-// workloads, (metric - floor) / (1 - floor), floor = endpoints only, like J5. Clustering is left
+// workloads, (metric - floor) / (1 - floor), floor = endpoints only, like J4. Clustering is left
 // out. Join uses all pairs, or only the seen half (ObjectiveConfig::all_join_pairs).
 //   kNN       for each query e with i in its top k: Fréchet(original e, simplified i) <= cutoff(e).
 //             Competitors stay original

@@ -71,7 +71,7 @@ double frechet(const core::TrajectoryView &a, const core::TrajectoryView &b) {
     return dp.back().back();
 }
 
-// Full Fréchet distance to every trajectory, no pruning
+// Full discrete Fréchet distance to every trajectory, no pruning
 std::vector<std::size_t> brute_force_knn(const core::TrajectoryDb &db,
                                          const core::TrajectoryView &query, std::size_t k) {
     std::vector<std::pair<double, std::size_t>> distances;
@@ -109,7 +109,8 @@ TEST(Knn, KLargerThanDatabaseReturnsEverything) {
     std::mt19937_64 rng(3);
     const auto db = make_db(random_tracks(rng, 4));
     const auto query = db.trajectory(1);
-    EXPECT_EQ(query::knn(db, query, 10), brute_force_knn(db, query, 10));
+    EXPECT_EQ(query::knn(db, query, 10, query::FrechetVariant::Discrete),
+              brute_force_knn(db, query, 10));
 }
 
 TEST(Knn, MatchesBruteForceOnRandomTrajectories) {
@@ -119,7 +120,8 @@ TEST(Knn, MatchesBruteForceOnRandomTrajectories) {
     for (const std::size_t k : {1u, 3u, 5u, 10u}) {
         for (std::size_t q = 0; q < queries.size(); ++q) {
             const auto query = queries.trajectory(q);
-            EXPECT_EQ(query::knn(db, query, k), brute_force_knn(db, query, k))
+            EXPECT_EQ(query::knn(db, query, k, query::FrechetVariant::Discrete),
+                      brute_force_knn(db, query, k))
                 << "query " << q << ", k " << k;
         }
     }
@@ -141,7 +143,7 @@ TEST(Knn, MatchesBruteForceForOverlappingLongTrajectories) {
     const auto queries = make_db({tracks.begin() + 20, tracks.end()});
     for (const std::size_t k : {1u, 5u, 20u, 30u}) {
         for (std::size_t q = 0; q < queries.size(); ++q) {
-            EXPECT_EQ(query::knn(db, queries.trajectory(q), k),
+            EXPECT_EQ(query::knn(db, queries.trajectory(q), k, query::FrechetVariant::Discrete),
                       brute_force_knn(db, queries.trajectory(q), k))
                 << "query " << q << ", k " << k;
         }
@@ -154,7 +156,7 @@ TEST(Knn, MatchesBruteForceAcrossSeedCountBoundary) {
     const auto queries = make_db(random_tracks(rng, 3));
     for (const std::size_t k : {1u, 63u, 64u, 65u, 90u, 100u}) {
         for (std::size_t q = 0; q < queries.size(); ++q) {
-            EXPECT_EQ(query::knn(db, queries.trajectory(q), k),
+            EXPECT_EQ(query::knn(db, queries.trajectory(q), k, query::FrechetVariant::Discrete),
                       brute_force_knn(db, queries.trajectory(q), k))
                 << "query " << q << ", k " << k;
         }
@@ -166,7 +168,8 @@ TEST(Knn, AcceptsQueryViewWithoutCachedBoundingBox) {
     const auto db = make_db(random_tracks(rng, 30));
     auto query = db.trajectory(4);
     query.bbox = {};
-    EXPECT_EQ(query::knn(db, query, 5), brute_force_knn(db, query, 5));
+    EXPECT_EQ(query::knn(db, query, 5, query::FrechetVariant::Discrete),
+              brute_force_knn(db, query, 5));
 }
 
 TEST(Knn, BreaksEqualDistanceTiesByDatabaseIndex) {

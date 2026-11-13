@@ -15,7 +15,7 @@ struct JoinConfig {
     std::size_t query_count = 10;      // 0 = use every trajectory in the query pool
     double eps_m = 500.0;              // join threshold in metres, must be positive
     JoinMode mode = JoinMode::HeldOut; // Self ignores query_count and the query pool
-    FrechetVariant frechet = FrechetVariant::Discrete;
+    FrechetVariant frechet = FrechetVariant::Continuous;
 };
 
 struct JoinQuery {
@@ -30,7 +30,7 @@ struct JoinWorkload {
     std::vector<JoinQuery> entries;
     double eps_m = 0.0;
     JoinMode mode = JoinMode::HeldOut;
-    FrechetVariant frechet = FrechetVariant::Discrete;
+    FrechetVariant frechet = FrechetVariant::Continuous;
     // Self entries contain only indices j > i; both operands are evaluated compressed.
 };
 
@@ -43,10 +43,10 @@ JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
 // All unordered database pairs, endpoint-pruned, with reference truth on originals.
 // No held-out queries or sampling. Nonempty trajectories must retain their endpoints/IDs/order.
 JoinWorkload generate_self_join(const core::TrajectoryDb &original, double eps_m = 500.0,
-                                FrechetVariant variant = FrechetVariant::Discrete);
+                                FrechetVariant variant = FrechetVariant::Continuous);
 
 std::vector<std::size_t> join(const core::TrajectoryDb &trajectories,
                               const core::TrajectoryView &query, double eps,
-                              FrechetVariant variant = FrechetVariant::Discrete);
+                              FrechetVariant variant = FrechetVariant::Continuous);
 
 } // namespace query

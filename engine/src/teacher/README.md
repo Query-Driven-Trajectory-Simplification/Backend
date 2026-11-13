@@ -47,10 +47,12 @@ Files:
 - **Floor:** a metric's value when every trajectory keeps endpoints only.
 - **Normalised metric:** `(metric − floor) / (1 − floor)`. 0 means no better than endpoints only;
   1 means as good as the original.
-- **J5:** the pipeline's score on the held-out test workloads: the equal mean of five normalised
-  metrics (kNN, range, where-at, join, clustering).
-- **J_T:** the teacher's own score on its training workloads. It has the same shape as J5 but
-  leaves clustering out. kNN and range use training proxies; an optional shape term can also be
+- **J4:** the pipeline's score on the held-out test workloads: the equal mean of four normalised
+  metrics (kNN, range, where-at, join). Route clustering is reported as a diagnostic only, because
+  it is built from the same Fréchet neighbour test as the join and would count it twice.
+- **J5:** the earlier headline, J4 plus clustering. Results quoted below from earlier runs use it;
+  `teacher_eval` still writes it so old and new runs can be compared.
+- **J_T:** the teacher's own score on its training workloads. It has the same shape as J4. kNN and range use training proxies; an optional shape term can also be
   enabled.
 - **Join pairs:** the teacher uses every 150 m pair, because whoever compresses the database knows
   all of it. The pairs are also split in half (seen / unseen); with `all_join_pairs = false` the
@@ -302,9 +304,9 @@ not. They matter because the join metric is F1: simplification can make negative
 
 ### Why
 
-This is the score the teacher maximises. It has the same shape as J5, so that improving it
-improves J5. It is computed only on the teacher's training workloads. Over the arms tested so far,
-J_T correlates with J5 at r ≈ 0.95.
+This is the score the teacher maximises. It has the same shape as J4, so that improving it
+improves J4. It is computed only on the teacher's training workloads. Over the arms tested so far,
+J_T correlated with the earlier J5 at r ≈ 0.95.
 
 The four terms, each normalised `(metric − floor) / (1 − floor)` and then averaged:
 
@@ -639,6 +641,8 @@ simplified.
     and export as `<ARM>_<share>pct`.
 
 ## Earlier three-candidate results (Geolife, 0.25%, seed 42)
+
+These predate J4 and use J5, which includes clustering.
 
 | Arm | J_T | J5 |
 |---|---:|---:|

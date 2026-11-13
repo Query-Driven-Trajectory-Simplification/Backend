@@ -205,4 +205,21 @@ Config load_config(const std::filesystem::path &path) {
     }
 }
 
+teacher::WorkloadConfig teacher_workload_config(const Config &config) {
+    auto range = config.range;
+    range.query_count = config.teacher.range_query_count;
+    return {.k = config.knn.k,
+            .join_eps_m = config.join.eps_m,
+            .frechet = config.join.frechet,
+            .range = range,
+            .where_at = config.where_at};
+}
+
+teacher::ObjectiveConfig teacher_objective_config(const Config &config) {
+    return {.min_tolerance_m = config.where_at_scoring.min_tolerance_m,
+            .max_tolerance_m = config.where_at_scoring.max_tolerance_m,
+            .all_join_pairs = config.teacher.all_join_pairs,
+            .shape_weight = config.teacher.shape_weight};
+}
+
 } // namespace pipeline

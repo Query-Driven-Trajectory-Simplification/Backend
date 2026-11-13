@@ -210,13 +210,15 @@ TEST(Config, RejectsInvalidClustering) {
 
 TEST(Config, FrechetVariantAppliesToEveryFrechetQuery) {
     const auto config = pipeline::load_config(
-        write_config("frechet.json", R"({"data_path": "d", "frechet": "Continuous"})"));
-    EXPECT_EQ(config.knn.frechet, query::FrechetVariant::Continuous);
-    EXPECT_EQ(config.join.frechet, query::FrechetVariant::Continuous);
-    EXPECT_EQ(config.clustering.frechet, query::FrechetVariant::Continuous);
+        write_config("frechet.json", R"({"data_path": "d", "frechet": "Discrete"})"));
+    EXPECT_EQ(config.knn.frechet, query::FrechetVariant::Discrete);
+    EXPECT_EQ(config.join.frechet, query::FrechetVariant::Discrete);
+    EXPECT_EQ(config.clustering.frechet, query::FrechetVariant::Discrete);
     const auto defaults =
         pipeline::load_config(write_config("frechet_default.json", R"({"data_path": "d"})"));
-    EXPECT_EQ(defaults.join.frechet, query::FrechetVariant::Discrete);
+    EXPECT_EQ(defaults.knn.frechet, query::FrechetVariant::Continuous);
+    EXPECT_EQ(defaults.join.frechet, query::FrechetVariant::Continuous);
+    EXPECT_EQ(defaults.clustering.frechet, query::FrechetVariant::Continuous);
     EXPECT_THROW(pipeline::load_config(
                      write_config("frechet_bad.json", R"({"data_path": "d", "frechet": "Weak"})")),
                  std::invalid_argument);

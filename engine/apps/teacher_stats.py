@@ -1,6 +1,6 @@
 """Summarises a teacher_eval run: python3 teacher_stats.py <out dir> [summary.md]
 
-Per share: means and SDs over seeds, paired J5 differences with t intervals, the gate against
+Per share: means and SDs over seeds, paired J4 differences with t intervals, the gate against
 the best cheap baseline, the coordination checks, and the join at 100 and 300 m.
 """
 import csv
@@ -11,7 +11,7 @@ from pathlib import Path
 from collections import defaultdict
 
 T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
-METRICS = ["J5", "J_fam", "norm_knn", "norm_range", "norm_where_at", "norm_join", "norm_clustering"]
+METRICS = ["J4", "J5", "J_fam", "norm_knn", "norm_range", "norm_where_at", "norm_join", "norm_clustering"]
 CHEAP = ["RDP_a0", "RDP_a025", "PARTNER_l0.5", "PARTNER_l1"]
 
 
@@ -52,6 +52,11 @@ def main():
     rows = list(csv.DictReader(open(run / "results.csv")))
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
     for r in rows:
+        # Runs from before clustering became a diagnostic have no J4 column: derive it
+        if num(r.get("J4", "")) is None:
+            parts = [num(r.get(c, "")) for c in ["norm_knn", "norm_range", "norm_where_at", "norm_join"]]
+            parts = [x for x in parts if x is not None]
+            r["J4"] = str(statistics.fmean(parts)) if parts else ""
         for m in METRICS + ["J_T", "join_recall_seen", "join_recall_unseen"]:
             v = num(r.get(m, ""))
             if v is not None:
@@ -75,26 +80,26 @@ def main():
             su = f"{statistics.fmean(seen):.4f} / {statistics.fmean(unseen):.4f}" if seen and unseen else "–"
             out.append(f"| {arm} | " + " | ".join(cells) + f" | {su} |")
         out.append("")
-        cheap = [a for a in CHEAP if a in arms and arms[a]["J5"]]
-        best = max(cheap, key=lambda a: statistics.fmean(arms[a]["J5"].values())) if cheap else None
-        out.append(f"Best cheap baseline by mean J5: **{best}**\n")
-        out.append("| Paired J5 difference | mean [95% CI] |")
+        cheap = [a for a in CHEAP if a in arms and arms[a]["J4"]]
+        best = max(cheap, key=lambda a: statistics.fmean(arms[a]["J4"].values())) if cheap else None
+        out.append(f"Best cheap baseline by mean J4: **{best}**\n")
+        out.append("| Paired J4 difference | mean [95% CI] |")
         out.append("|---|---|")
         for arm in sorted(arms):
             if arm != "RDP_a0" and "RDP_a0" in arms:
-                out.append(f"| {arm} − RDP_a0 | {fmt(paired(arms[arm]['J5'], arms['RDP_a0']['J5']))} |")
+                out.append(f"| {arm} − RDP_a0 | {fmt(paired(arms[arm]['J4'], arms['RDP_a0']['J4']))} |")
         if best and "TEACHER" in arms:
-            gate = paired(arms["TEACHER"]["J5"], arms[best]["J5"])
+            gate = paired(arms["TEACHER"]["J4"], arms[best]["J4"])
             out.append(f"| **TEACHER − {best} (gate: ≥ .03, CI above 0)** | {fmt(gate)} |")
         if all(a in arms for a in ["RDP_a0", "GATE_a0", "TEACHER_RDP", "TEACHER"]):
-            j = {a: arms[a]["J5"] for a in ["RDP_a0", "GATE_a0", "TEACHER_RDP", "TEACHER"]}
+            j = {a: arms[a]["J4"] for a in ["RDP_a0", "GATE_a0", "TEACHER_RDP", "TEACHER"]}
             seeds = set.intersection(*(set(v) for v in j.values()))
             inter = {s: j["TEACHER"][s] - j["GATE_a0"][s] - j["TEACHER_RDP"][s] + j["RDP_a0"][s] for s in seeds}
             out.append(f"| Interaction (TEACHER − GATE_a0 − TEACHER_RDP + RDP_a0) | {fmt(paired(inter, {s: 0.0 for s in seeds}))} |")
         for a, b in [("BR_TEACHER", "TEACHER"), ("ITER_TEACHER", "BR_TEACHER"), ("ITER_TEACHER", "TEACHER"),
                      ("BR_a0", "GATE_a0"), ("BR_TEACHER", "BR_SHUFFLED")]:
             if a in arms and b in arms:
-                out.append(f"| {a} − {b} | {fmt(paired(arms[a]['J5'], arms[b]['J5']))} |")
+                out.append(f"| {a} − {b} | {fmt(paired(arms[a]['J4'], arms[b]['J4']))} |")
         out.append("")
         if share in other:
             out.append("Normalised join F1 at the test's 150 m and at thresholds the teacher does not optimise:\n")
@@ -106,10 +111,10 @@ def main():
                          mean_sd(list(other[share][arm].get(300.0, {}).values()))]
                 out.append(f"| {arm} | " + " | ".join(cells) + " |")
             out.append("")
-        pairs = [(arms[a]["J_T"][s], arms[a]["J5"][s]) for a in arms for s in arms[a]["J_T"] if s in arms[a]["J5"]]
+        pairs = [(arms[a]["J_T"][s], arms[a]["J4"][s]) for a in arms for s in arms[a]["J_T"] if s in arms[a]["J4"]]
         if len(pairs) >= 3:
             xs, ys = zip(*pairs)
-            out.append(f"Surrogate check: Pearson r(J_T, J5) = {statistics.correlation(xs, ys):.3f} over {len(pairs)} arm-seeds\n")
+            out.append(f"Surrogate check: Pearson r(J_T, J4) = {statistics.correlation(xs, ys):.3f} over {len(pairs)} arm-seeds\n")
     text = "\n".join(out)
     if len(sys.argv) > 2:
         open(sys.argv[2], "w").write("# Teacher summary\n\n" + text + "\n")

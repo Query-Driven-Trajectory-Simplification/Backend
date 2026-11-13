@@ -17,6 +17,8 @@ add_library(engine
     src/io/workload_export.cpp
     src/pipeline/config.cpp
     src/pipeline/pipeline.cpp
+    src/pipeline/scorer.cpp
+    src/pipeline/test_workloads.cpp
     src/selection/rdp.cpp
     src/selection/sed.cpp
     src/selection/uniform.cpp

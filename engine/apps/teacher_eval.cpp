@@ -1,5 +1,7 @@
 // Runs the teacher and the baselines on several seeds and scores every arm on the held-out test
 // workloads. The teacher sees the database only; test workloads are built after every arm is done.
+// Split, workload, scoring and teacher settings come from the same JSON config as `run`
+// (--config), so both measure the same thing; the other flags override parts of it.
 // Writes results.csv, floors.csv, thresholds.csv, terms.csv, budgets.csv and timings.csv to --out;
 // summarise with teacher_stats.py.
 #include "backend/engine/allocation/budget_allocator.hpp"
@@ -9,6 +11,8 @@
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/join.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/pipeline/config.hpp"
+#include "backend/engine/pipeline/test_workloads.hpp"
 #include "backend/engine/query/frechet_helper.hpp"
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
@@ -25,6 +29,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -34,19 +39,18 @@ namespace {
 
 using teacher::KeptSets;
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
-constexpr double kJoinEps = 150.0;
-constexpr auto kFrechet = query::FrechetVariant::Continuous;
-
+// Unset options keep the config's value. Arms default to every teacher arm, not the config's.
 struct Args {
-    std::filesystem::path data = "data/geolife.parquet";
+    std::filesystem::path config = "engine/configs/geolife.json";
     std::filesystem::path out = "results/teacher";
-    std::filesystem::path cache = "cache";
-    std::vector<std::uint64_t> seeds{42};
-    std::vector<double> shares{0.0025, 0.005, 0.01};
+    std::optional<std::filesystem::path> data;
+    std::optional<std::filesystem::path> cache;
+    std::optional<std::vector<std::uint64_t>> seeds; // config: seed
+    std::optional<std::vector<double>> shares;       // config: budget_shares
     std::vector<std::string> arms{teacher::kArms.begin(), teacher::kArms.end()};
     bool baselines = true;
-    bool all_join_pairs = true;
-    double shape_weight = 0.0;
+    std::optional<bool> all_join_pairs;
+    std::optional<double> shape_weight;
 };
 
 template <typename T> std::vector<T> parse_list(const std::string &s) {
@@ -70,7 +74,9 @@ Args parse_args(int argc, char **argv) {
                 throw std::invalid_argument("missing value for " + key);
             return std::string(argv[++k]);
         };
-        if (key == "--data")
+        if (key == "--config")
+            a.config = value();
+        else if (key == "--data")
             a.data = value();
         else if (key == "--out")
             a.out = value();
@@ -91,13 +97,32 @@ Args parse_args(int argc, char **argv) {
         else
             throw std::invalid_argument(
                 "unknown argument " + key +
-                " (--data --out --cache --seeds --shares --arms --shape-weight --no-baselines "
-                "--seen-pairs-only)");
+                " (--config --data --out --cache --seeds --shares --arms --shape-weight "
+                "--no-baselines --seen-pairs-only)");
     }
     for (const auto &arm : a.arms)
         if (!teacher::is_arm(arm))
             throw std::invalid_argument("unknown teacher arm " + arm);
     return a;
+}
+
+// The config with the command line overrides applied
+pipeline::Config effective_config(const Args &args) {
+    auto config = pipeline::load_config(args.config);
+    if (args.data)
+        config.data_path = *args.data;
+    if (args.cache)
+        config.teacher.cache_dir = *args.cache;
+    if (args.shares)
+        config.budget_shares = *args.shares;
+    if (args.all_join_pairs)
+        config.teacher.all_join_pairs = *args.all_join_pairs;
+    if (args.shape_weight)
+        config.teacher.shape_weight = *args.shape_weight;
+    // The join recall split and the other thresholds compare database pairs
+    if (config.join.mode != query::JoinMode::Self)
+        throw std::invalid_argument("teacher_eval needs join.mode Self in the config");
+    return config;
 }
 
 double seconds_since(std::chrono::steady_clock::time_point start) {
@@ -263,14 +288,15 @@ struct PairRecall {
     double seen = kNan, unseen = kNan;
 };
 
-// Recall per trajectory on the seen and unseen halves of the 150 m pairs, averaged over
+// Recall per trajectory on the seen and unseen halves of the teacher's join pairs, averaged over
 // trajectories
 PairRecall pair_recall(const core::TrajectoryDb &compressed,
-                       const std::vector<teacher::JoinPair> &pairs) {
+                       const std::vector<teacher::JoinPair> &pairs, const query::JoinConfig &join) {
     std::vector<char> matched(pairs.size());
     core::parallel_for(pairs.size(), [&](std::size_t k) {
-        matched[k] = query::frechet_within(compressed.trajectory(pairs[k].i),
-                                           compressed.trajectory(pairs[k].j), kJoinEps, kFrechet);
+        matched[k] =
+            query::frechet_within(compressed.trajectory(pairs[k].i),
+                                  compressed.trajectory(pairs[k].j), join.eps_m, join.frechet);
     });
     PairRecall result;
     for (const bool seen : {true, false}) {
@@ -307,15 +333,16 @@ std::ofstream open_csv(const std::filesystem::path &file, const std::string &hea
 
 int main(int argc, char **argv) try {
     const auto args = parse_args(argc, argv);
+    const auto base_config = effective_config(args);
     std::filesystem::create_directories(args.out);
-    const auto all = io::load_trajectories(args.data);
+    const auto all = io::load_trajectories(base_config.data_path);
     std::cerr << std::format("loaded {} trajectories, {} points\n", all.size(), all.num_points());
 
     auto results = open_csv(
         args.out / "results.csv",
         "seed,share,arm,budget,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,"
         "where_at_within_100,join_micro_f1,knn_tau,norm_knn,norm_range,norm_where_at,norm_join,"
-        "norm_clustering,J5,J_fam,J_T,join_recall_seen,join_recall_unseen,predicted_clusters,"
+        "norm_clustering,J4,J5,J_fam,J_T,join_recall_seen,join_recall_unseen,predicted_clusters,"
         "eval_s");
     auto floors = open_csv(args.out / "floors.csv",
                            "seed,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering");
@@ -327,37 +354,33 @@ int main(int argc, char **argv) try {
     auto budgets = open_csv(args.out / "budgets.csv", "seed,share,arm,points,budget");
     auto timings = open_csv(args.out / "timings.csv", "seed,step,seconds");
 
-    for (const auto seed : args.seeds) {
-        const auto parts = split::split(all, {split::SplitType::Random, 0.15}, seed);
+    for (const auto seed : args.seeds.value_or(std::vector{base_config.seed})) {
+        auto config = base_config;
+        config.seed = seed;
+        const auto parts = split::split(all, config.split, seed);
         const auto db = core::subset(all, parts.database);
         std::cerr << std::format("seed {}: database {} trajectories, {} points\n", seed, db.size(),
                                  db.num_points());
 
         // Database only
         auto start = std::chrono::steady_clock::now();
-        auto workloads =
-            teacher::load_or_build_workloads(db,
-                                             {.k = 10,
-                                              .join_eps_m = kJoinEps,
-                                              .frechet = kFrechet,
-                                              .range = {64000, 2000.0, 604800, 5, 20, 1000},
-                                              .where_at = {128, 60.0}},
-                                             seed, args.cache);
+        auto workloads = teacher::load_or_build_workloads(
+            db, pipeline::teacher_workload_config(config), seed, config.teacher.cache_dir);
         const auto pairs = workloads.positives;
-        const teacher::Teacher model(
-            db, std::move(workloads),
-            {.all_join_pairs = args.all_join_pairs, .shape_weight = args.shape_weight}, seed);
+        const teacher::Teacher model(db, std::move(workloads),
+                                     pipeline::teacher_objective_config(config), seed);
         timings << std::format("{},teacher_setup,{:.2f}\n", seed, seconds_since(start));
 
         std::vector<Arm> arms;
-        for (const double share : args.shares) {
+        for (const double share : config.budget_shares) {
             start = std::chrono::steady_clock::now();
             for (auto &arm : model.run(total_budget(db, share), args.arms))
                 arms.push_back({arm.name, share, to_kept(arm.simplification)});
             timings << std::format("{},teacher_{:g},{:.2f}\n", seed, share, seconds_since(start));
         }
         if (args.baselines)
-            for (auto &arm : baseline_arms(db, pairs, args.all_join_pairs, args.shares))
+            for (auto &arm :
+                 baseline_arms(db, pairs, config.teacher.all_join_pairs, config.budget_shares))
                 arms.push_back(std::move(arm));
         for (const auto &arm : arms)
             validate(arm, db);
@@ -365,26 +388,15 @@ int main(int argc, char **argv) try {
         // Held-out data from here on
         start = std::chrono::steady_clock::now();
         const auto pool = core::subset(all, parts.queries);
-        const auto knn = query::generate_knn_queries(
-            db, pool, {.k = 10, .query_count = 0, .frechet = kFrechet}, seed);
-        const auto where_at = query::generate_where_at_queries(db, {128, 60.0}, seed);
-        const auto range =
-            query::generate_range_queries(db, {20000, 2000.0, 604800, 5, 20, 1000}, seed);
-        const auto join = query::generate_self_join(db, kJoinEps, kFrechet);
-        const auto clustering =
-            query::generate_route_clustering(db, {true, kJoinEps, 5, kFrechet}, &join);
+        const pipeline::TestWorkloads test_workloads(db, pool, config);
         // The join at thresholds the teacher does not optimise: does its join gain generalise?
         std::vector<query::JoinWorkload> other_joins;
         for (const double eps : {100.0, 300.0})
-            other_joins.push_back(query::generate_self_join(db, eps, kFrechet));
+            other_joins.push_back(query::generate_self_join(db, eps, config.join.frechet));
         timings << std::format("{},test_workloads,{:.2f}\n", seed, seconds_since(start));
 
-        const evaluator::Workloads test{.knn = &knn,
-                                        .where_at = where_at.queries,
-                                        .range = range.queries,
-                                        .join = &join,
-                                        .clustering = &clustering};
-        const evaluator::WhereAtScoringConfig scoring{100.0, 25.0, 500.0};
+        const auto test = test_workloads.view();
+        const auto &scoring = config.where_at_scoring;
         const auto floor_db = core::materialize(db, to_simplification(endpoints_only(db)));
         const auto floor = evaluator::Evaluator(db, floor_db, test, scoring).evaluate().scores;
         floors << std::format("{},{},{},{},{},{}\n", seed, floor.knn.recall_at_k, floor.range_f1,
@@ -399,15 +411,17 @@ int main(int argc, char **argv) try {
             const auto compressed = core::materialize(db, to_simplification(arm.kept));
             const auto s = evaluator::Evaluator(db, compressed, test, scoring).evaluate().scores;
             const auto n = evaluator::normalize_scores(s, floor);
+            // J5 is the old headline, with clustering, kept so older runs stay comparable
+            const double j5 = (n.knn + n.range + n.where_at + n.join + n.clustering) / 5.0;
             const double j_fam =
                 (n.knn + n.range + n.where_at + 0.5 * (n.join + n.clustering)) / 4.0;
-            const auto recall = pair_recall(compressed, pairs);
+            const auto recall = pair_recall(compressed, pairs, config.join);
             results << std::format(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f}\n",
                 seed, arm.share, arm.name, total_budget(db, arm.share), s.knn.recall_at_k,
                 s.range_f1, s.where_at.average_hit, s.join.f1, s.clustering.score,
                 s.where_at.within_radius, s.join.micro_f1, s.knn.kendalls_tau_topk, n.knn, n.range,
-                n.where_at, n.join, n.clustering, n.combined, j_fam, objective.total(arm.kept),
+                n.where_at, n.join, n.clustering, n.combined, j5, j_fam, objective.total(arm.kept),
                 recall.seen, recall.unseen, s.clustering.predicted_clusters, seconds_since(start));
 
             for (std::size_t k = 0; k < other_joins.size(); ++k) {
@@ -430,8 +444,8 @@ int main(int argc, char **argv) try {
                                            db.trajectory(i).size(), arm.kept[i].size());
             for (auto *out : {&results, &thresholds, &terms, &budgets})
                 out->flush();
-            std::cerr << std::format("seed {} {} {:g}: J5 {:.4f}, J_fam {:.4f}\n", seed, arm.name,
-                                     arm.share, n.combined, j_fam);
+            std::cerr << std::format("seed {} {} {:g}: J4 {:.4f}, J5 {:.4f}, J_fam {:.4f}\n", seed,
+                                     arm.name, arm.share, n.combined, j5, j_fam);
         }
         timings.flush();
         floors.flush();
