@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace evaluator {
@@ -41,8 +42,11 @@ struct JoinEvaluation {
     std::vector<JoinPair> pairs;
 };
 
-JoinEvaluation run_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload);
+// Optionally returns matching (query index, database index) pairs for reuse by clustering.
+JoinEvaluation run_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload,
+                        std::vector<std::pair<std::size_t, std::size_t>> *matched_pairs = nullptr);
 
-JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload);
+JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload,
+                         std::vector<std::pair<std::size_t, std::size_t>> *matched_pairs = nullptr);
 
 } // namespace evaluator

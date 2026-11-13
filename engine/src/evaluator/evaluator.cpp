@@ -8,6 +8,32 @@
 
 namespace evaluator {
 
+namespace {
+
+bool can_reuse_join(const core::TrajectoryDb &db, const query::JoinWorkload &join,
+                    const query::RouteClusteringWorkload &clustering) {
+    if (join.mode != query::JoinMode::Self || join.eps_m != clustering.eps_m ||
+        join.frechet != clustering.frechet || clustering.originals.size() != db.size())
+        return false;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const auto trajectory = db.trajectory(i);
+        if (trajectory.size() == 0 || query::endpoints_of(trajectory) != clustering.originals[i])
+            return false;
+    }
+    // Also require the same candidate pairs: independently supplied workloads may differ.
+    std::size_t k = 0;
+    for (const auto &entry : join.entries) {
+        for (const auto j : entry.candidates) {
+            if (k == clustering.candidates.size() ||
+                clustering.candidates[k++] != query::TrajectoryPair{entry.query_index, j})
+                return false;
+        }
+    }
+    return k == clustering.candidates.size();
+}
+
+} // namespace
+
 Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryDb &simplified,
                      Workloads workloads, WhereAtScoringConfig where_at_config)
     : m_simplified(simplified), m_workloads(workloads), m_where_at_config(where_at_config) {
@@ -23,12 +49,19 @@ Evaluator::Evaluator(const core::TrajectoryDb &original, const core::TrajectoryD
 EvaluationResult Evaluator::evaluate() const {
     auto knn = m_workloads.knn ? evaluate_knn(m_simplified, *m_workloads.knn) : KnnEvaluation{};
     auto range = evaluate_range(m_simplified, m_workloads.range);
-    auto join = m_workloads.join ? run_join(m_simplified, *m_workloads.join) : JoinEvaluation{};
+    const bool reuse = m_workloads.join && m_workloads.clustering &&
+                       can_reuse_join(m_simplified, *m_workloads.join, *m_workloads.clustering);
+    std::vector<query::TrajectoryPair> pairs;
+    auto join = m_workloads.join
+                    ? run_join(m_simplified, *m_workloads.join, reuse ? &pairs : nullptr)
+                    : JoinEvaluation{};
 
     RouteClusteringScores clustering;
     std::vector<std::vector<std::int32_t>> clusters;
     if (m_workloads.clustering) {
-        const auto predicted = compressed_route_clusters(m_simplified, *m_workloads.clustering);
+        const auto predicted =
+            reuse ? query::cluster_routes(m_simplified, pairs, m_workloads.clustering->min_size)
+                  : compressed_route_clusters(m_simplified, *m_workloads.clustering);
         clustering = compare_route_clusters(m_workloads.clustering->reference, predicted);
         clusters.reserve(predicted.members.size());
         for (const auto &members : predicted.members) {

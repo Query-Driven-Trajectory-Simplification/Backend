@@ -29,6 +29,8 @@ struct TrajectoryView {
     std::size_t size() const { return t.size(); }
 };
 
+class Simplification;
+
 class TrajectoryDb {
   public:
     TrajectoryDb(std::vector<std::uint64_t> offsets, std::vector<std::int32_t> trajectory_ids,
@@ -55,6 +57,7 @@ class TrajectoryDb {
   private:
     TrajectoryDb() = default;
     friend TrajectoryDb subset(const TrajectoryDb &, std::span<const std::size_t>);
+    friend TrajectoryDb materialize(const TrajectoryDb &, const Simplification &);
 
     std::vector<std::uint64_t> m_offsets{0};
     std::vector<std::int32_t> m_trajectory_ids;

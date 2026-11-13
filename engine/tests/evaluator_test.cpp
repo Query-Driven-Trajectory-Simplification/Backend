@@ -151,3 +151,49 @@ TEST(Evaluator, ExposesRangeF1AndSelfJoinTogether) {
     EXPECT_EQ(eval.get_join_scores().mode, query::JoinMode::Self);
     EXPECT_TRUE(std::isnan(eval.get_join_scores().f1)); // one trajectory: no unordered pairs
 }
+
+TEST(Evaluator, SharedJoinMatchesIndependentClusteringAndFallsBackForDifferentWorkloads) {
+    // Same endpoints, but the middle trajectory makes a detour which simplification removes.
+    const core::TrajectoryDb db(
+        {0, 3, 6, 9}, {10, 20, 30}, {0, 10, 20, 0, 10, 20, 0, 10, 20},
+        std::vector<double>(9, 39.95),
+        {116.35, 116.35, 116.35, 116.35, 116.36, 116.35, 116.35, 116.35, 116.35});
+    core::Simplification kept;
+    for (int i = 0; i < 3; ++i)
+        kept.add_trajectory(std::vector<std::size_t>{0, 2});
+    const auto compressed = core::materialize(db, kept);
+    for (const auto variant :
+         {query::FrechetVariant::Discrete, query::FrechetVariant::Continuous}) {
+        const auto join = query::generate_self_join(db, 100, variant);
+        const auto clustering = query::generate_route_clustering(
+            db, {.enabled = true, .eps_m = 100, .min_size = 2, .frechet = variant}, &join);
+        const auto check = [&](const query::RouteClusteringWorkload &workload) {
+            const evaluator::Evaluator eval(db, compressed,
+                                            {.join = &join, .clustering = &workload});
+            const auto actual = eval.evaluate().scores;
+            const auto expected = eval.get_clustering_scores();
+            EXPECT_DOUBLE_EQ(actual.join.f1, eval.get_join_scores().f1);
+            EXPECT_DOUBLE_EQ(actual.clustering.score, expected.score);
+            EXPECT_EQ(actual.clustering.predicted_clusters, expected.predicted_clusters);
+            EXPECT_EQ(actual.clustering.predicted_covered, expected.predicted_covered);
+        };
+        check(clustering);
+        auto different = clustering;
+        different.candidates.clear(); // Must not reuse the join's nonempty matches.
+        check(different);
+        different = clustering;
+        different.eps_m = 50;
+        check(different);
+        different = clustering;
+        different.frechet = variant == query::FrechetVariant::Discrete
+                                ? query::FrechetVariant::Continuous
+                                : query::FrechetVariant::Discrete;
+        check(different);
+
+        std::vector<query::TrajectoryPair> pairs{{99, 99}};
+        evaluator::evaluate_join(compressed, join, &pairs);
+        EXPECT_EQ(pairs, (std::vector<query::TrajectoryPair>{{0, 1}, {0, 2}, {1, 2}}));
+        EXPECT_EQ(join.entries[0].candidates, (std::vector<std::size_t>{1, 2}));
+        EXPECT_EQ(join.entries[0].reference, (std::vector<std::size_t>{2}));
+    }
+}

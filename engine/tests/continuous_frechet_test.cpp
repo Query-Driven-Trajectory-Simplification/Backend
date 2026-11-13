@@ -306,3 +306,26 @@ TEST(ContinuousFrechet, AgreesWithDiscreteDistanceOnDenselySubdividedLines) {
         EXPECT_GE(c, d - step - 1e-2);
     }
 }
+
+TEST(FrechetBounds, BoxPruningMatchesUnboundedViewsIncludingThresholdTolerance) {
+    const auto db = make_db({{{0, 0}, {100, 0}, {0, 0}},
+                             {{0, 0}, {0, 100}, {0, 0}},
+                             {{0, 0}, {50, 0}, {100, 0}},
+                             {{0, 1}, {50, 1}, {100, 1}}});
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        for (std::size_t j = 0; j < db.size(); ++j) {
+            const auto a = db.trajectory(i), b = db.trajectory(j);
+            auto unbounded_a = a, unbounded_b = b;
+            unbounded_a.bbox = {};
+            unbounded_b.bbox = {};
+            const double bound = std::sqrt(query::squared_box_extent_lower_bound(a, b));
+            for (const auto eps : {0.0, 0.5, 1.0, 50.0, 100.0, bound, bound * (1 - 1e-13)}) {
+                for (const auto variant :
+                     {query::FrechetVariant::Discrete, query::FrechetVariant::Continuous}) {
+                    EXPECT_EQ(query::frechet_within(a, b, eps, variant),
+                              query::frechet_within(unbounded_a, unbounded_b, eps, variant));
+                }
+            }
+        }
+    }
+}
