@@ -33,8 +33,8 @@ double average(const std::vector<double> &values) {
 
 } // namespace
 
-JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload,
-                         std::vector<std::pair<std::size_t, std::size_t>> *matched_pairs) {
+JoinEvaluation run_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload,
+                        std::vector<std::pair<std::size_t, std::size_t>> *matched_pairs) {
     if (matched_pairs)
         matched_pairs->clear();
     const bool self = workload.mode == query::JoinMode::Self;
@@ -120,7 +120,22 @@ JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::Join
     result.micro_precision = found == 0 ? nan : hits / found;
     result.micro_recall = expected == 0 ? nan : hits / expected;
     result.micro_f1 = found + expected == 0 ? nan : 2.0 * hits / (found + expected);
-    return result;
+
+    JoinEvaluation evaluation{.scores = result};
+    evaluation.pairs.reserve(result.predicted_pairs);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto &entry = workload.entries[i];
+        const auto first = self ? compressed.trajectory(entry.query_index).trajectory_id
+                                : workload.queries.trajectory(entry.query_index).trajectory_id;
+        for (const auto j : matched[i])
+            evaluation.pairs.push_back({first, compressed.trajectory(j).trajectory_id});
+    }
+    return evaluation;
+}
+
+JoinScores evaluate_join(const core::TrajectoryDb &compressed, const query::JoinWorkload &workload,
+                         std::vector<std::pair<std::size_t, std::size_t>> *matched_pairs) {
+    return run_join(compressed, workload, matched_pairs).scores;
 }
 
 } // namespace evaluator
