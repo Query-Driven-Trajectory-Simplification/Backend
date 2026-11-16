@@ -47,6 +47,10 @@
         "enabled": false,
         "cache_dir": "cache",
         "arms": ["TEACHER", "BR_TEACHER"],
-        "range_query_count": 64000
+        "range_query_count": 64000,
+        "extra_join_eps_m": [],
+        "held_out_term": false,
+        "ranking_knn": false,
+        "guard": false
     }
 }

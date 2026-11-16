@@ -105,21 +105,27 @@ void split_seen(std::vector<JoinPair> &pairs, std::uint64_t seed) {
     });
 }
 
-// Positives and negatives from one self-join, each split into seen and unseen halves
-void build_pairs(const core::TrajectoryDb &db, const WorkloadConfig &config, std::uint64_t seed,
-                 std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
-    const auto join = query::generate_self_join(db, config.join_eps_m, config.frechet);
+// Positives and negatives from one self-join
+void collect_pairs(const core::TrajectoryDb &db, double eps_m, query::FrechetVariant frechet,
+                   bool seen, std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
+    const auto join = query::generate_self_join(db, eps_m, frechet);
     positives.clear();
     negatives.clear();
     for (const auto &entry : join.entries)
         for (const auto j : entry.candidates) {
             const JoinPair pair{static_cast<std::uint32_t>(entry.query_index),
-                                static_cast<std::uint32_t>(j), false};
+                                static_cast<std::uint32_t>(j), seen};
             if (std::ranges::binary_search(entry.reference, j))
                 positives.push_back(pair);
             else
                 negatives.push_back(pair);
         }
+}
+
+// The pairs at join_eps_m, each list split into seen and unseen halves
+void build_pairs(const core::TrajectoryDb &db, const WorkloadConfig &config, std::uint64_t seed,
+                 std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
+    collect_pairs(db, config.join_eps_m, config.frechet, false, positives, negatives);
     split_seen(positives, seed + kPairSplitSeedOffset);
     split_seen(negatives, seed + kNegativeSeedOffset);
 }
@@ -206,6 +212,15 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
                                          const std::filesystem::path &cache_dir) {
     if (config.k == 0)
         throw std::invalid_argument("teacher workloads: k must be positive");
+    for (std::size_t a = 0; a < config.extra_join_eps_m.size(); ++a) {
+        const double eps = config.extra_join_eps_m[a];
+        if (!(eps > 0) || eps == config.join_eps_m ||
+            std::find(config.extra_join_eps_m.begin(),
+                      config.extra_join_eps_m.begin() + static_cast<std::ptrdiff_t>(a),
+                      eps) != config.extra_join_eps_m.begin() + static_cast<std::ptrdiff_t>(a))
+            throw std::invalid_argument("teacher workloads: extra join thresholds must be "
+                                        "positive, distinct and differ from join_eps_m");
+    }
     TeacherWorkloads w;
     w.k = config.k;
     w.join_eps_m = config.join_eps_m;
@@ -230,6 +245,13 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
 
     w.range = query::generate_range_queries(db, config.range, seed + kRangeSeedOffset);
     w.where_at = query::generate_where_at_queries(db, config.where_at, seed + kWhereAtSeedOffset);
+    for (const double eps : config.extra_join_eps_m) {
+        ExtraJoin extra{.eps_m = eps, .positives = {}, .negatives = {}};
+        collect_pairs(db, eps, config.frechet, true, extra.positives, extra.negatives);
+        std::cout << std::format("teacher: extra join at {} m, {} pairs, {} negatives\n", eps,
+                                 extra.positives.size(), extra.negatives.size());
+        w.extra_joins.push_back(std::move(extra));
+    }
 
     std::size_t invalid = 0;
     for (const auto &q : w.knn)

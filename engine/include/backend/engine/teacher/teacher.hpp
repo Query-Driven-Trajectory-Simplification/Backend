@@ -25,13 +25,14 @@ namespace teacher {
 //   TEACHER      best-of value curves with searched allocation (T1)
 //   BR_a0        best response from GATE_a0: re-pick against partners' current choice (T2 step)
 //   BR_TEACHER   best response from TEACHER
+//   BR_TEACHER_RDP best response from TEACHER_RDP: RDP's points at searched budgets as the start
 //   BR_SHUFFLED  the same search from TEACHER, partners relabelled among nearby trajectories
 //                (control)
 //   ITER_TEACHER BR_TEACHER, then rounds of value curves against the partners' current state,
 //                allocation and best response, as long as J_T rises
-inline constexpr std::array<std::string_view, 8> kArms{"GATEORIG_a0", "GATE_a0",     "TEACHER_RDP",
-                                                       "TEACHER",     "BR_a0",       "BR_TEACHER",
-                                                       "BR_SHUFFLED", "ITER_TEACHER"};
+inline constexpr std::array<std::string_view, 9> kArms{
+    "GATEORIG_a0", "GATE_a0",        "TEACHER_RDP", "TEACHER",     "BR_a0",
+    "BR_TEACHER",  "BR_TEACHER_RDP", "BR_SHUFFLED", "ITER_TEACHER"};
 
 bool is_arm(std::string_view name);
 
@@ -44,6 +45,11 @@ struct TeacherConfig {
     double shape_weight = 0.0;             // the objective's shape term, 0 = off
     // The objective's join term (ObjectiveConfig::join_mode). Unset: the join.mode it is scored on
     std::optional<query::JoinMode> join;
+    std::vector<double> extra_join_eps_m; // more self-join thresholds for the join term
+    bool held_out_term = false;           // ObjectiveConfig::held_out_term
+    bool ranking_knn = false;             // ObjectiveConfig::ranking_knn
+    // Best response never takes the kNN or join metric below where it started
+    bool guard = false;
 };
 
 struct Arm {
@@ -56,7 +62,7 @@ struct Arm {
 class Teacher {
   public:
     Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads, const ObjectiveConfig &config,
-            std::uint64_t seed);
+            std::uint64_t seed, bool guard = false);
     Teacher(const Teacher &) = delete;
     Teacher &operator=(const Teacher &) = delete;
 
@@ -70,6 +76,7 @@ class Teacher {
     TeacherWorkloads m_workloads; // before m_objective, which refers to it
     Objective m_objective;
     std::uint64_t m_seed;
+    bool m_guard;
 };
 
 } // namespace teacher

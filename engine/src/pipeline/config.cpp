@@ -112,11 +112,10 @@ void parse_clustering_config(Config &config, const json &clustering) {
 }
 
 void parse_teacher_config(Config &config, const json &section) {
-    validate_keys(
-        section,
-        {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs", "shape_weight",
-         "join"},
-        "teacher");
+    validate_keys(section,
+                  {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs",
+                   "shape_weight", "join", "extra_join_eps_m", "held_out_term", "ranking_knn", "guard"},
+                  "teacher");
     auto &t = config.teacher;
     t.enabled = section.value("enabled", t.enabled);
     t.cache_dir = section.value("cache_dir", t.cache_dir.string());
@@ -126,6 +125,13 @@ void parse_teacher_config(Config &config, const json &section) {
     t.shape_weight = section.value("shape_weight", t.shape_weight);
     if (section.contains("join"))
         t.join = parse_enum<query::JoinMode>(section["join"]);
+    t.extra_join_eps_m = section.value("extra_join_eps_m", t.extra_join_eps_m);
+    t.held_out_term = section.value("held_out_term", t.held_out_term);
+    t.ranking_knn = section.value("ranking_knn", t.ranking_knn);
+    t.guard = section.value("guard", t.guard);
+    for (const double eps : t.extra_join_eps_m)
+        if (!std::isfinite(eps) || eps <= 0)
+            throw std::invalid_argument("config: teacher.extra_join_eps_m must be positive");
     if (t.shape_weight < 0)
         throw std::invalid_argument("config: teacher.shape_weight must not be negative");
     if (t.cache_dir.empty())
@@ -214,6 +220,7 @@ teacher::WorkloadConfig teacher_workload_config(const Config &config) {
     range.query_count = config.teacher.range_query_count;
     return {.k = config.knn.k,
             .join_eps_m = config.join.eps_m,
+            .extra_join_eps_m = config.teacher.extra_join_eps_m,
             .frechet = config.join.frechet,
             .range = range,
             .where_at = config.where_at};
@@ -225,7 +232,9 @@ teacher::ObjectiveConfig teacher_objective_config(const Config &config) {
             .all_join_pairs = config.teacher.all_join_pairs,
             .shape_weight = config.teacher.shape_weight,
             // Trains on the kind of join it is scored on, unless told otherwise
-            .join_mode = config.teacher.join.value_or(config.join.mode)};
+            .join_mode = config.teacher.join.value_or(config.join.mode),
+            .held_out_term = config.teacher.held_out_term,
+            .ranking_knn = config.teacher.ranking_knn};
 }
 
 } // namespace pipeline

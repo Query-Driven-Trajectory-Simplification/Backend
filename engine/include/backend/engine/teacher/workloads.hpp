@@ -16,8 +16,9 @@ namespace teacher {
 // query pool, and use their own seeds, so the teacher is never scored on what it trained on
 // (except the self-join, which is database-wide by nature; hence the seen/unseen pair split).
 struct WorkloadConfig {
-    std::size_t k = 10;        // kNN neighbours per database query
-    double join_eps_m = 150.0; // self-join threshold
+    std::size_t k = 10;                   // kNN neighbours per database query
+    double join_eps_m = 150.0;            // self-join threshold
+    std::vector<double> extra_join_eps_m; // more self-join thresholds for the join term
     query::FrechetVariant frechet = query::FrechetVariant::Continuous;
     query::RangeConfig range{.query_count = 64000};
     query::WhereAtConfig where_at;
@@ -35,6 +36,12 @@ struct JoinPair {
     bool seen;          // the half the teacher may be limited to (ObjectiveConfig::all_join_pairs)
 };
 
+// Self-join pairs at one more threshold than join_eps_m, all of them used
+struct ExtraJoin {
+    double eps_m = 0.0;
+    std::vector<JoinPair> positives, negatives;
+};
+
 struct TeacherWorkloads {
     std::size_t k = 0;
     double join_eps_m = 0.0;
@@ -42,14 +49,15 @@ struct TeacherWorkloads {
     std::vector<KnnEntry> knn;       // one per database trajectory
     std::vector<JoinPair> positives; // self-join pairs, half seen
     std::vector<JoinPair> negatives; // endpoint candidates that are not pairs, half seen
+    std::vector<ExtraJoin> extra_joins;
     query::RangeWorkload range;
     query::WhereAtWorkload where_at;
 };
 
 // Loads the kNN and join part from cache_dir/teacher_cache_seed<seed>.bin if it matches the
 // full database contents, seed, settings and workload version, otherwise builds it (the slow
-// part, minutes to an hour) and saves it. Older cache versions are rebuilt once. Range and
-// where-at are regenerated every time
+// part, minutes to an hour) and saves it. Older cache versions are rebuilt once. Range,
+// where-at and the extra joins are regenerated every time
 TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const WorkloadConfig &config,
                                          std::uint64_t seed,
                                          const std::filesystem::path &cache_dir);

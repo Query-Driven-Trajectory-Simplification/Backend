@@ -40,6 +40,7 @@ enum CandidateIndex : std::size_t {
 constexpr std::array<std::string_view, kCandidateCount> kCandidates{
     "RDP", "SED", "UNIFORM", "GREEDY", "GREEDY_SED4", "GREEDY_SED2", "GREEDY_RDP2"};
 constexpr std::size_t kMaxResponsePasses = 10;
+constexpr std::size_t kKnnWatchFactor = 3; // each query watches its 3k nearest per state
 constexpr std::size_t kMaxAllocationRounds = 3;
 constexpr double kMinImprovement = 1e-12;
 constexpr std::uint64_t kOrderSeedOffset = 7004;
@@ -302,10 +303,19 @@ Methods curve_methods(const std::vector<Curve> &curves, const std::vector<std::s
 // candidates can gain, since nothing else depends on the state. Every switch strictly raises
 // J_T, so it stops
 Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
-                      const Candidates &candidates, Methods method, std::uint64_t seed) {
+                      const Candidates &candidates, Methods method, std::uint64_t seed,
+                      bool guard = false) {
+    // With the ranking kNN term, a trajectory also matters to the queries that watch it
+    std::optional<KnnState> knn;
+    if (objective.config().ranking_knn)
+        knn.emplace(objective, assemble(candidates, method), candidates,
+                    kKnnWatchFactor * objective.workloads().k);
+    const auto active = [&](std::size_t i) {
+        return !objective.links(i).empty() || (knn && knn->watched(i));
+    };
     std::vector<std::size_t> order;
     for (std::size_t i = 0; i < db.size(); ++i)
-        if (!objective.links(i).empty())
+        if (active(i))
             order.push_back(i);
     std::vector<std::vector<PreparedTrajectory>> prepared(db.size());
     std::array<std::vector<core::TrajectoryView>, kCandidates.size()> views;
@@ -314,10 +324,11 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
     // These terms depend only on the candidate, never on the partners' current choices.
     std::vector<std::array<double, kCandidates.size()>> separable(db.size());
     std::vector<std::array<std::size_t, kCandidates.size()>> representative(db.size());
+    std::vector<std::array<std::vector<double>, kCandidates.size()>> knn_distances(db.size());
     core::parallel_for(db.size(), [&](std::size_t i) {
         auto &owned = prepared[i];
         const auto original = db.trajectory(i);
-        if (objective.links(i).empty()) {
+        if (!active(i)) {
             // Isolated trajectories never switch; only their selected state is needed.
             owned.emplace_back(original, candidates[method[i]][i]);
             views[method[i]][i] = owned.back().view();
@@ -334,6 +345,8 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
                 owned.emplace_back(original, candidates[c][i]);
                 views[c][i] = owned.back().view();
                 separable[i][c] = objective.separable(i, views[c][i]);
+                if (knn)
+                    knn_distances[i][c] = knn->distances(i, views[c][i]);
             } else {
                 views[c][i] = views[first][i];
                 separable[i][c] = separable[i][first];
@@ -345,6 +358,8 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
     for (std::size_t i = 0; i < db.size(); ++i)
         state[i] = views[method[i]][i];
     JoinState join(objective, state);
+    const double join_start = join.metric();
+    const double knn_start = knn ? knn->metric() : 0.0;
 
     for (std::size_t pass = 1; pass <= kMaxResponsePasses; ++pass) {
         std::ranges::shuffle(order, rng);
@@ -359,7 +374,17 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
                     representative[i][c] == representative[i][method[i]])
                     continue;
                 auto proposal = join.propose(i, views[c][i], state);
-                const double gain = separable[i][c] - here + proposal.gain;
+                const double knn_gain = knn ? knn->propose(i, knn_distances[i][c]) : 0.0;
+                if (guard) {
+                    const double join_after =
+                        join.metric() + proposal.gain / objective.scale(Objective::Join);
+                    const double knn_after =
+                        knn ? knn->metric() + knn_gain / objective.scale(Objective::Knn) : 0.0;
+                    if (join_after < join_start - kMinImprovement ||
+                        (knn && knn_after < knn_start - kMinImprovement))
+                        continue;
+                }
+                const double gain = separable[i][c] - here + proposal.gain + knn_gain;
                 if (gain > best_gain) {
                     best = c;
                     best_gain = gain;
@@ -371,10 +396,13 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
             method[i] = best;
             state[i] = views[best][i];
             join.apply(best_proposal);
+            if (knn)
+                knn->apply(i, knn_distances[i][best]);
             ++switches;
         }
-        std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}\n", pass,
-                                 switches, join.metric());
+        std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}{}\n", pass,
+                                 switches, join.metric(),
+                                 knn ? std::format(", knn {:.4f}", knn->metric()) : "");
         if (switches == 0)
             break;
     }
@@ -409,7 +437,12 @@ TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWo
     for (const auto &p : workloads.positives)
         real.insert({p.i, p.j});
     std::size_t kept_real = 0;
-    for (auto *pairs : {&result.positives, &result.negatives})
+    std::vector<std::vector<JoinPair> *> lists{&result.positives, &result.negatives};
+    for (auto &extra : result.extra_joins) {
+        lists.push_back(&extra.positives);
+        lists.push_back(&extra.negatives);
+    }
+    for (auto *pairs : lists)
         for (auto &p : *pairs) {
             const auto a = label[p.i], b = label[p.j];
             p.i = std::min(a, b);
@@ -444,9 +477,9 @@ std::string wins(const Methods &method) {
 bool is_arm(std::string_view name) { return std::ranges::find(kArms, name) != kArms.end(); }
 
 Teacher::Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads,
-                 const ObjectiveConfig &config, std::uint64_t seed)
+                 const ObjectiveConfig &config, std::uint64_t seed, bool guard)
     : m_db(db), m_workloads(std::move(workloads)), m_objective(db, m_workloads, config),
-      m_seed(seed) {
+      m_seed(seed), m_guard(guard) {
     const auto &f = m_objective.floors();
     std::cout << std::format("teacher: {} join pairs ({} positive), floors knn {:.4f}, range "
                              "{:.4f}, where-at {:.4f}, join {:.4f}\n",
@@ -465,6 +498,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const bool want_original_gate = requested("GATEORIG_a0");
     const bool want_gate = requested("GATE_a0");
     const bool want_rdp_allocation = requested("TEACHER_RDP");
+    const bool want_rdp_response = requested("BR_TEACHER_RDP");
     const bool want_teacher = requested("TEACHER");
     const bool want_equal_response = requested("BR_a0");
     const bool want_response = requested("BR_TEACHER");
@@ -472,7 +506,8 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const bool want_iterative = requested("ITER_TEACHER");
     const bool needs_allocated_candidates =
         want_teacher || want_response || want_shuffled || want_iterative;
-    const bool needs_allocation = want_rdp_allocation || needs_allocated_candidates;
+    const bool needs_allocation =
+        want_rdp_allocation || want_rdp_response || needs_allocated_candidates;
     const bool needs_response_candidates = want_response || want_shuffled || want_iterative;
 
     const auto &db = m_db;
@@ -534,7 +569,8 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                 keep("GATE_a0", equal_candidates, gate_methods);
             if (want_equal_response) {
                 keep("BR_a0", equal_candidates,
-                     best_response(db, objective, equal_candidates, gate_methods, m_seed));
+                     best_response(db, objective, equal_candidates, gate_methods, m_seed,
+                                   m_guard));
                 timed("BR_a0");
             }
         }
@@ -549,12 +585,19 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                                      what, stats.greedy_value, stats.final_value, stats.exchanges,
                                      at_cap);
         };
-        if (want_rdp_allocation) {
+        if (want_rdp_allocation || want_rdp_response) {
             AllocationStats stats;
             const auto budgets = allocate(curves.rdp, total_budget, &stats);
             report("RDP allocation", stats, budgets);
-            keep("TEACHER_RDP", make_candidates(objective, budgets, caps, &rdp_methods),
-                 rdp_methods);
+            if (want_rdp_allocation)
+                keep("TEACHER_RDP", make_candidates(objective, budgets, caps, &rdp_methods),
+                     rdp_methods);
+            if (want_rdp_response) {
+                const auto rdp_candidates = make_candidates(objective, budgets, caps);
+                keep("BR_TEACHER_RDP", rdp_candidates,
+                     best_response(db, objective, rdp_candidates, rdp_methods, m_seed, m_guard));
+                timed("BR_TEACHER_RDP");
+            }
         }
         if (needs_allocated_candidates) {
             AllocationStats stats;
@@ -566,8 +609,8 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             if (want_teacher)
                 keep("TEACHER", allocated_candidates, teacher_methods);
             if (want_response || want_iterative) {
-                const auto response_methods =
-                    best_response(db, objective, allocated_candidates, teacher_methods, m_seed);
+                const auto response_methods = best_response(
+                    db, objective, allocated_candidates, teacher_methods, m_seed, m_guard);
                 timed("BR_TEACHER");
                 if (want_response)
                     keep("BR_TEACHER", allocated_candidates, response_methods);

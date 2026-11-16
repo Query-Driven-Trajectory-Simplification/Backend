@@ -259,6 +259,153 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
     }
 }
 
+TEST_F(TeacherTest, SeveralJoinTermsAreTrackedExactly) {
+    const auto db = random_db(2, 24, 20);
+    auto config = small_config();
+    config.extra_join_eps_m = {config.join_eps_m * 0.5, config.join_eps_m * 2.0};
+    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    ASSERT_EQ(workloads.extra_joins.size(), 2u);
+    EXPECT_LE(workloads.extra_joins[0].positives.size(), workloads.positives.size());
+    EXPECT_GE(workloads.extra_joins[1].positives.size(), workloads.positives.size());
+
+    const teacher::Objective single(db, workloads, {.join_mode = query::JoinMode::Self});
+    for (const bool held_out_term : {false, true}) {
+        SCOPED_TRACE(held_out_term ? "with held-out term" : "self terms");
+        const teacher::Objective objective(
+            db, workloads, {.join_mode = query::JoinMode::Self, .held_out_term = held_out_term});
+        EXPECT_EQ(objective.slots(), db.size() * (held_out_term ? 4u : 3u));
+        EXPECT_NEAR(objective.total(endpoints(db)), 0.0, 1e-12);
+        EXPECT_DOUBLE_EQ(objective.metrics(every_point(db))[teacher::Objective::Join], 1.0);
+
+        auto state = endpoints(db);
+        const auto floor = state, full = every_point(db);
+        const teacher::PreparedTrajectories prepared_floor(db, floor), prepared_full(db, full);
+        const auto floor_views = prepared_floor.views(), full_views = prepared_full.views();
+        auto views = floor_views;
+        teacher::JoinState join(objective, views);
+        std::mt19937_64 rng(4);
+        for (int step = 0; step < 40; ++step) {
+            const std::size_t i = rng() % db.size();
+            const bool grow = state[i].size() == 2;
+            const auto &next = grow ? full[i] : floor[i];
+            const auto next_view = grow ? full_views[i] : floor_views[i];
+            const double before = objective.total(state);
+            const auto proposal = join.propose(i, next_view, views);
+            const double separable =
+                objective.separable(i, next) - objective.separable(i, state[i]);
+            state[i] = next;
+            views[i] = next_view;
+            join.apply(proposal);
+            EXPECT_NEAR(join.metric(), objective.metrics(state)[teacher::Objective::Join], 1e-12);
+            EXPECT_NEAR(objective.total(state) - before, proposal.gain + separable, 1e-9);
+        }
+    }
+    // Without extra terms the workloads' extra joins are the only difference
+    teacher::TeacherWorkloads plain = workloads;
+    plain.extra_joins.clear();
+    const teacher::Objective base(db, plain, {.join_mode = query::JoinMode::Self});
+    EXPECT_EQ(base.slots(), db.size());
+    EXPECT_GT(single.pair_count(), base.pair_count());
+}
+
+TEST_F(TeacherTest, RankingKnnIsTrackedExactly) {
+    const auto db = random_db(2, 24, 20);
+    auto config = small_config();
+    // Discrete distances order exactly, without the continuous ranking's 1 mm ties
+    config.frechet = query::FrechetVariant::Discrete;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    const teacher::Objective objective(db, workloads,
+                                       {.join_mode = query::JoinMode::Self, .ranking_knn = true});
+    const auto floor = endpoints(db), full = every_point(db);
+    EXPECT_NEAR(objective.total(floor), 0.0, 1e-12);
+    EXPECT_DOUBLE_EQ(objective.metrics(full)[teacher::Objective::Knn], 1.0);
+
+    // Every query watches every trajectory, so the tracked value must equal a full recompute
+    auto state = floor;
+    const std::vector<teacher::KeptSets> watch{full};
+    teacher::KnnState knn(objective, state, watch, db.size());
+    EXPECT_NEAR(knn.metric(), objective.metrics(state)[teacher::Objective::Knn], 1e-12);
+    const teacher::PreparedTrajectories prepared_floor(db, floor), prepared_full(db, full);
+    const auto floor_views = prepared_floor.views(), full_views = prepared_full.views();
+    auto views = floor_views;
+    teacher::JoinState join(objective, views);
+    std::mt19937_64 rng(5);
+    for (int step = 0; step < 40; ++step) {
+        const std::size_t i = rng() % db.size();
+        const bool grow = state[i].size() == 2;
+        const auto &next = grow ? full[i] : floor[i];
+        const auto next_view = grow ? full_views[i] : floor_views[i];
+        const double before = objective.total(state);
+        const auto distances = knn.distances(i, next_view);
+        const double knn_gain = knn.propose(i, distances);
+        EXPECT_DOUBLE_EQ(knn.propose(i, knn.distances(i, views[i])), 0.0);
+        const auto proposal = join.propose(i, next_view, views);
+        const double separable = objective.separable(i, next) - objective.separable(i, state[i]);
+        state[i] = next;
+        views[i] = next_view;
+        join.apply(proposal);
+        knn.apply(i, distances);
+        EXPECT_NEAR(knn.metric(), objective.metrics(state)[teacher::Objective::Knn], 1e-12);
+        EXPECT_NEAR(objective.total(state) - before, knn_gain + proposal.gain + separable, 1e-9);
+    }
+}
+
+TEST_F(TeacherTest, RankingKnnArmsKeepTheBudget) {
+    const auto db = random_db(3, 30, 25);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
+    const teacher::Teacher model(db, std::move(workloads),
+                                 {.join_mode = query::JoinMode::HeldOut, .ranking_knn = true}, 11);
+    const std::size_t budget = 2 * db.size() + 40;
+    const std::vector<std::string> arms{"GATEORIG_a0", "BR_a0", "TEACHER_RDP", "BR_TEACHER",
+                                        "BR_TEACHER_RDP"};
+    for (const auto &arm : model.run(budget, arms)) {
+        SCOPED_TRACE(arm.name);
+        EXPECT_EQ(arm.simplification.num_points(), budget);
+        for (std::size_t i = 0; i < db.size(); ++i) {
+            const auto kept = arm.simplification.trajectory(i);
+            EXPECT_EQ(kept.front(), 0u);
+            EXPECT_EQ(kept.back(), db.trajectory(i).size() - 1);
+        }
+    }
+}
+
+TEST_F(TeacherTest, GuardNeverLowersTheTrackedKnnOrJoin) {
+    const auto db = random_db(3, 30, 25);
+    auto config = small_config();
+    config.frechet = query::FrechetVariant::Discrete;
+    auto workloads = teacher::load_or_build_workloads(db, config, 11, m_dir);
+    const teacher::ObjectiveConfig objective{.join_mode = query::JoinMode::Self,
+                                             .ranking_knn = true};
+    const teacher::Teacher guarded(db, workloads, objective, 11, true);
+    const std::size_t budget = 2 * db.size() + 40;
+    const std::vector<std::string> arms{"TEACHER_RDP", "BR_TEACHER_RDP"};
+    const auto g = guarded.run(budget, arms);
+    const auto &o = guarded.objective();
+    auto kept = [](const teacher::Arm &arm) {
+        teacher::KeptSets k(arm.simplification.size());
+        for (std::size_t i = 0; i < k.size(); ++i)
+            k[i].assign(arm.simplification.trajectory(i).begin(),
+                        arm.simplification.trajectory(i).end());
+        return k;
+    };
+    const auto start = o.metrics(kept(g[0])), after = o.metrics(kept(g[1]));
+    // Lists of 3k cover small databases almost fully; allow for the rare unwatched entry
+    EXPECT_GE(after[teacher::Objective::Knn], start[teacher::Objective::Knn] - 0.02);
+    EXPECT_GE(after[teacher::Objective::Join], start[teacher::Objective::Join] - 1e-12);
+    EXPECT_GE(g[1].objective, g[0].objective - 0.02);
+}
+
+TEST_F(TeacherTest, ExtraJoinThresholdsMustBeDistinctAndPositive) {
+    const auto db = random_db(2, 24, 20);
+    for (const auto &extra :
+         {std::vector<double>{0.0}, std::vector<double>{-5.0},
+          std::vector<double>{small_config().join_eps_m}, std::vector<double>{40.0, 40.0}}) {
+        auto config = small_config();
+        config.extra_join_eps_m = extra;
+        EXPECT_THROW(teacher::load_or_build_workloads(db, config, 9, m_dir), std::invalid_argument);
+    }
+}
+
 TEST_F(TeacherTest, HeldOutJoinScoresOriginalQueriesAgainstCompressedPartners) {
     const auto db = random_db(2, 24, 20);
     const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);

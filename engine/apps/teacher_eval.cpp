@@ -3,12 +3,14 @@
 // Split, workload, scoring and teacher settings come from the same JSON config as `run`
 // (--config), so both measure the same thing; the other flags override parts of it.
 // J4's join term follows join.mode, and so does the teacher's own join term unless teacher.join or
-// --teacher-join says otherwise (teacher_join_mode column). The database self join is scored either way
-// (self_join_f1, norm_self_join, the seen/unseen recall and thresholds.csv): its pairs are the
+// --teacher-join says otherwise (teacher_join_mode column). The database self join is scored either
+// way (self_join_f1, norm_self_join, the seen/unseen recall and thresholds.csv): its pairs are the
 // teacher's training pairs, so with join.mode HeldOut it is the in-sample comparison and stays out
 // of J4.
-// Writes results.csv, floors.csv, thresholds.csv, terms.csv, budgets.csv and timings.csv to --out;
-// summarise with teacher_stats.py.
+// --train-eps adds self-join thresholds to the teacher's join term, --held-out-term the held-out
+// form next to a self join, and --eval-eps sets the self-join thresholds in thresholds.csv.
+// Writes results.csv, floors.csv, thresholds.csv, terms.csv, budgets.csv and timings.csv to --out
+// (and knn_check.csv with --knn-check); summarise with teacher_stats.py.
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/parallel.hpp"
 #include "backend/engine/core/simplification.hpp"
@@ -56,7 +58,13 @@ struct Args {
     bool baselines = true;
     std::optional<bool> all_join_pairs;
     std::optional<double> shape_weight;
-    std::optional<query::JoinMode> teacher_join; // config: teacher.join, else join.mode
+    std::optional<query::JoinMode> teacher_join;  // config: teacher.join, else join.mode
+    std::optional<std::vector<double>> train_eps; // config: teacher.extra_join_eps_m
+    std::optional<bool> held_out_term;            // config: teacher.held_out_term
+    std::optional<bool> ranking_knn;              // config: teacher.ranking_knn
+    std::optional<bool> guard;                    // config: teacher.guard
+    std::vector<double> eval_eps{100.0, 300.0};
+    bool knn_check = false;
 };
 
 template <typename T> std::vector<T> parse_list(const std::string &s) {
@@ -94,6 +102,18 @@ Args parse_args(int argc, char **argv) {
             a.shares = parse_list<double>(value());
         else if (key == "--arms")
             a.arms = parse_list<std::string>(value());
+        else if (key == "--train-eps")
+            a.train_eps = parse_list<double>(value());
+        else if (key == "--eval-eps")
+            a.eval_eps = parse_list<double>(value());
+        else if (key == "--guard")
+            a.guard = true;
+        else if (key == "--ranking-knn")
+            a.ranking_knn = true;
+        else if (key == "--held-out-term")
+            a.held_out_term = true;
+        else if (key == "--knn-check")
+            a.knn_check = true;
         else if (key == "--shape-weight")
             a.shape_weight = std::stod(value());
         else if (key == "--teacher-join") {
@@ -109,7 +129,8 @@ Args parse_args(int argc, char **argv) {
             throw std::invalid_argument(
                 "unknown argument " + key +
                 " (--config --data --out --cache --seeds --shares --arms --shape-weight "
-                "--teacher-join --no-baselines --seen-pairs-only)");
+                "--teacher-join --train-eps --held-out-term --ranking-knn --guard --eval-eps --knn-check "
+                "--no-baselines --seen-pairs-only)");
     }
     for (const auto &arm : a.arms)
         if (!teacher::is_arm(arm))
@@ -132,6 +153,14 @@ pipeline::Config effective_config(const Args &args) {
         config.teacher.shape_weight = *args.shape_weight;
     if (args.teacher_join)
         config.teacher.join = *args.teacher_join;
+    if (args.train_eps)
+        config.teacher.extra_join_eps_m = *args.train_eps;
+    if (args.held_out_term)
+        config.teacher.held_out_term = *args.held_out_term;
+    if (args.ranking_knn)
+        config.teacher.ranking_knn = *args.ranking_knn;
+    if (args.guard)
+        config.teacher.guard = *args.guard;
     // The self join is always scored: with a held-out join in J4 it is the in-sample comparison
     config.self_join = true;
     return config;
@@ -337,6 +366,33 @@ PairRecall pair_recall(const core::TrajectoryDb &compressed,
     return result;
 }
 
+// Recall@k of the teacher's own kNN queries (database trajectories, themselves excluded) answered
+// on the compressed database, so competitors are compressed too, unlike the teacher's kNN term
+double db_knn_recall(const core::TrajectoryDb &db, const core::TrajectoryDb &compressed,
+                     const teacher::TeacherWorkloads &w) {
+    std::vector<double> recall(db.size(), kNan);
+    core::parallel_for(db.size(), [&](std::size_t e) {
+        const auto &q = w.knn[e];
+        if (!q.valid)
+            return;
+        auto found = query::knn(compressed, db.trajectory(e), w.k + 1, w.frechet);
+        std::erase(found, e);
+        found.resize(std::min(found.size(), w.k));
+        std::size_t hits = 0;
+        for (const auto i : q.top)
+            hits += std::ranges::find(found, std::size_t{i}) != found.end();
+        recall[e] = static_cast<double>(hits) / static_cast<double>(w.k);
+    });
+    double sum = 0;
+    std::size_t count = 0;
+    for (const double r : recall)
+        if (!std::isnan(r)) {
+            sum += r;
+            ++count;
+        }
+    return count ? sum / static_cast<double>(count) : kNan;
+}
+
 std::ofstream open_csv(const std::filesystem::path &file, const std::string &header) {
     const bool fresh = !std::filesystem::exists(file);
     std::ofstream out(file, std::ios::app);
@@ -370,6 +426,11 @@ int main(int argc, char **argv) try {
                           "norm_knn,norm_range,norm_where_at,norm_join,norm_self_join");
     auto budgets = open_csv(args.out / "budgets.csv", "seed,share,arm,points,budget");
     auto timings = open_csv(args.out / "timings.csv", "seed,step,seconds");
+    std::ofstream knn_check;
+    if (args.knn_check)
+        knn_check = open_csv(args.out / "knn_check.csv",
+                             "seed,share,arm,proxy_recall,db_recall,test_recall,norm_proxy,"
+                             "norm_db,norm_test");
 
     for (const auto seed : args.seeds.value_or(std::vector{base_config.seed})) {
         auto config = base_config;
@@ -385,7 +446,8 @@ int main(int argc, char **argv) try {
             db, pipeline::teacher_workload_config(config), seed, config.teacher.cache_dir);
         const auto pairs = workloads.positives;
         const teacher::Teacher model(db, std::move(workloads),
-                                     pipeline::teacher_objective_config(config), seed);
+                                     pipeline::teacher_objective_config(config), seed,
+                                     config.teacher.guard);
         timings << std::format("{},teacher_setup,{:.2f}\n", seed, seconds_since(start));
 
         std::vector<Arm> arms;
@@ -408,7 +470,7 @@ int main(int argc, char **argv) try {
         const pipeline::TestWorkloads test_workloads(db, pool, config);
         // The self join at thresholds the teacher does not optimise: does its join gain generalise?
         std::vector<query::JoinWorkload> other_joins;
-        for (const double eps : {100.0, 300.0})
+        for (const double eps : args.eval_eps)
             other_joins.push_back(query::generate_self_join(db, eps, config.join.frechet));
         timings << std::format("{},test_workloads,{:.2f}\n", seed, seconds_since(start));
 
@@ -424,6 +486,8 @@ int main(int argc, char **argv) try {
             other_floor.push_back(evaluator::evaluate_join(floor_db, w).f1);
 
         const auto &objective = model.objective();
+        const double db_knn_floor =
+            args.knn_check ? db_knn_recall(db, floor_db, objective.workloads()) : kNan;
         for (const auto &arm : arms) {
             start = std::chrono::steady_clock::now();
             const auto compressed = core::materialize(db, to_simplification(arm.kept));
@@ -456,20 +520,26 @@ int main(int argc, char **argv) try {
             const auto m = objective.metrics(arm.kept);
             const auto &f = objective.floors();
             auto norm = [&](teacher::Objective::Term t) { return (m[t] - f[t]) / (1.0 - f[t]); };
-            terms << std::format("{},{},{},{},{},{},{},{},{},{},{},{}\n", seed, arm.share,
-                                 arm.name, norm(teacher::Objective::Knn),
-                                 norm(teacher::Objective::Range), norm(teacher::Objective::WhereAt),
-                                 norm(teacher::Objective::Join), n.knn, n.range, n.where_at, n.join,
-                                 n.self_join);
+            terms << std::format("{},{},{},{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
+                                 norm(teacher::Objective::Knn), norm(teacher::Objective::Range),
+                                 norm(teacher::Objective::WhereAt), norm(teacher::Objective::Join),
+                                 n.knn, n.range, n.where_at, n.join, n.self_join);
+            if (args.knn_check) {
+                const double db_knn = db_knn_recall(db, compressed, objective.workloads());
+                knn_check << std::format("{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
+                                         m[teacher::Objective::Knn], db_knn, s.knn.recall_at_k,
+                                         norm(teacher::Objective::Knn),
+                                         (db_knn - db_knn_floor) / (1.0 - db_knn_floor), n.knn);
+                knn_check.flush();
+            }
             if (teacher::is_arm(arm.name))
                 for (std::size_t i = 0; i < arm.kept.size(); ++i)
                     budgets << std::format("{},{},{},{},{}\n", seed, arm.share, arm.name,
                                            db.trajectory(i).size(), arm.kept[i].size());
             for (auto *out : {&results, &thresholds, &terms, &budgets})
                 out->flush();
-            std::cerr << std::format(
-                "seed {} {} {:g}: J4 {:.4f}, join {:.4f}, self join {:.4f}\n", seed, arm.name,
-                arm.share, n.combined, n.join, n.self_join);
+            std::cerr << std::format("seed {} {} {:g}: J4 {:.4f}, join {:.4f}, self join {:.4f}\n",
+                                     seed, arm.name, arm.share, n.combined, n.join, n.self_join);
         }
         timings.flush();
         floors.flush();

@@ -246,6 +246,8 @@ TEST(Config, TeacherIsOffByDefault) {
     EXPECT_EQ(config.teacher.cache_dir, "cache");
     EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"TEACHER", "BR_TEACHER"}));
     EXPECT_TRUE(config.teacher.all_join_pairs);
+    EXPECT_TRUE(config.teacher.extra_join_eps_m.empty());
+    EXPECT_FALSE(pipeline::teacher_objective_config(config).held_out_term);
     // The teacher's join term follows the join it is scored on
     EXPECT_FALSE(config.teacher.join);
     EXPECT_EQ(pipeline::teacher_objective_config(config).join_mode, query::JoinMode::HeldOut);
@@ -259,9 +261,15 @@ TEST(Config, ReadsTheTeacherSection) {
         "data_path": "d",
         "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["GATEORIG_a0", "BR_a0"],
                     "range_query_count": 1000, "all_join_pairs": false, "shape_weight": 0.25,
-                    "join": "Self"}
+                    "join": "Self", "extra_join_eps_m": [100, 300], "held_out_term": true,
+                    "ranking_knn": true, "guard": true}
     })"));
     EXPECT_EQ(pipeline::teacher_objective_config(config).join_mode, query::JoinMode::Self);
+    EXPECT_TRUE(pipeline::teacher_objective_config(config).held_out_term);
+    EXPECT_TRUE(pipeline::teacher_objective_config(config).ranking_knn);
+    EXPECT_TRUE(config.teacher.guard);
+    EXPECT_EQ(pipeline::teacher_workload_config(config).extra_join_eps_m,
+              (std::vector<double>{100.0, 300.0}));
     EXPECT_TRUE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "my_cache");
     EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"GATEORIG_a0", "BR_a0"}));
@@ -275,7 +283,8 @@ TEST(Config, RejectsBadTeacherSections) {
          {R"({"enabled": true, "arms": ["DP"]})", R"({"enabled": true, "arms": []})",
           R"({"arms": ["GATE_a0", "GATE_a0"]})", R"({"cache_dir": ""})",
           R"({"range_query_count": 0})", R"({"shape_weight": -1})", R"({"seed": 7})",
-          R"({"join": "Both"})"}) {
+          R"({"join": "Both"})", R"({"extra_join_eps_m": [0]})",
+          R"({"extra_join_eps_m": [-100]})"}) {
         SCOPED_TRACE(section);
         const auto contents = std::string(R"({"data_path": "d", "teacher": )") + section + "}";
         EXPECT_THROW(pipeline::load_config(write_config("bad_teacher.json", contents)),

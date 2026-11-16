@@ -69,6 +69,12 @@ Files:
   experiment. Held out, `GATE_a0` and `GATEORIG_a0` are the same arm, and best response is
   coupled only through each query's F1. Everything below describing the join term as "both
   sides compressed" is the `Self` mode.
+- **Join terms:** the join term can pool several terms. `teacher.extra_join_eps_m` (or
+  `teacher_eval --train-eps`) adds self-join thresholds next to `join.eps_m`, so the join gain is
+  not fitted to one threshold. `teacher.held_out_term` (or `--held-out-term`) adds the held-out
+  form of the join at `join.eps_m` next to a `Self` join term, so one teacher keeps both the self
+  join and the join from outside queries. Each trajectory's F1 is counted once per term and the
+  metric is the mean over all of them, so a term with more matching trajectories weighs more.
 - **Join pairs:** the teacher uses every 150 m pair, because whoever compresses the database knows
   all of it. The pairs are also split in half (seen / unseen); with `all_join_pairs = false` the
   teacher only gets the seen half, which shows how much of its join gain is fitting those
@@ -240,10 +246,11 @@ on disk.
 
 | Struct | Fields | Meaning |
 |---|---|---|
-| `WorkloadConfig` | `k`, `join_eps_m`, `frechet`, `range`, `where_at` | Settings, taken from the pipeline config (`knn.k`, `join.eps_m`, `frechet`, `range` with the teacher's own query count, `where_at`) |
+| `WorkloadConfig` | `k`, `join_eps_m`, `extra_join_eps_m`, `frechet`, `range`, `where_at` | Settings, taken from the pipeline config (`knn.k`, `join.eps_m`, `teacher.extra_join_eps_m`, `frechet`, `range` with the teacher's own query count, `where_at`) |
 | `KnnEntry` | `valid`, `top`, `cutoff` | Database trajectory e as a kNN query: its k nearest other trajectories, and `cutoff`, the Fréchet distance to the (k+1)th. `valid = false` if it has fewer than k+1 neighbours. |
 | `JoinPair` | `i < j`, `seen` | A pair of database trajectories |
-| `TeacherWorkloads` | `knn`, `positives`, `negatives`, `range`, `where_at`, plus the settings | Everything the objective needs |
+| `ExtraJoin` | `eps_m`, `positives`, `negatives` | The self-join pairs at one extra threshold, all of them used |
+| `TeacherWorkloads` | `knn`, `positives`, `negatives`, `extra_joins`, `range`, `where_at`, plus the settings | Everything the objective needs |
 
 **Positives** are true self-join pairs: the originals are within `join_eps_m` (Fréchet).
 **Negatives** are candidate pairs whose endpoints are within `join_eps_m`, but whose originals are
@@ -260,6 +267,8 @@ not. They matter because the join metric is F1: simplification can make negative
   3. Otherwise, it builds everything with `build_knn` and `build_pairs`, then `save`s it.
   4. Always regenerates the range boxes and where-at probes. They are fast, and use their own seeds
      (`seed + 7001` and `seed + 7002`).
+  5. Always regenerates the extra joins, one self join per extra threshold. They are not cached, so
+     changing the thresholds does not invalidate the kNN cache.
 - **Output:** a `TeacherWorkloads`. It prints whether the cache was hit, and the counts.
 
 ### `fingerprint(db)` — internal
@@ -529,7 +538,7 @@ simplified.
 |---|---|
 | `CandidateIndex`, `kCandidates` | Named indices and labels for the seven candidate recipes. The index is the "method". |
 | `kArms` | the eight valid arm names, listed in `teacher.hpp` |
-| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `shape_weight`, `join` (optional, default: the pipeline's `join.mode`) |
+| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `shape_weight`, `join` (optional, default: the pipeline's `join.mode`), `extra_join_eps_m`, `held_out_term` |
 | `Arm` | one result: `name`, `simplification` (for the pipeline), `objective` (its J_T) |
 | `Candidates` | `candidates[c][i]` = trajectory i simplified with method c |
 | `Methods` | one method index per trajectory, i.e. a selection |
@@ -678,6 +687,8 @@ These timings predate the seven-candidate teacher, allocation search and cache c
 - `ObjectiveIsZeroAtTheFloorAndTracksJoinExactly`: J_T = 0 at endpoints only. After random
   switches, `JoinState`'s tracked F1 equals a full recompute, and `delta + separable` predicts the
   real change in J_T.
+- `SeveralJoinTermsAreTrackedExactly`: the same exactness with two extra thresholds, with and
+  without the held-out term.
 - `ArmsKeepTheBudgetAndBestResponseOnlyImproves`: every arm keeps exactly the budget, endpoints
   kept, indices sorted; and `BR_a0`'s J_T ≥ `GATE_a0`'s.
 
