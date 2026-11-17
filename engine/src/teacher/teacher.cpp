@@ -29,16 +29,15 @@ enum CandidateIndex : std::size_t {
     kSed,
     kUniform,
     kGreedy,
-    kGreedySedQuarter,
     kGreedySedHalf,
     kGreedyRdpHalf,
     kCandidateCount,
 };
 
 // The classic selectors, then BKH's greedy on range and where-at with different seeds: none,
-// SED's best quarter or half of the interior points, RDP's best half
+// SED's or RDP's best half of the interior points
 constexpr std::array<std::string_view, kCandidateCount> kCandidates{
-    "RDP", "SED", "UNIFORM", "GREEDY", "GREEDY_SED4", "GREEDY_SED2", "GREEDY_RDP2"};
+    "RDP", "SED", "UNIFORM", "GREEDY", "GREEDY_SED2", "GREEDY_RDP2"};
 constexpr std::size_t kMaxResponsePasses = 10;
 constexpr std::size_t kKnnWatchFactor = 3; // each query watches its 3k nearest per state
 constexpr std::size_t kMaxAllocationRounds = 3;
@@ -87,8 +86,6 @@ class CandidateMaker {
             return simplify(AlgorithmType::UNIFORM, budget);
         case kGreedy:
             return prefix(greedy_sequence(0, AlgorithmType::SED), budget);
-        case kGreedySedQuarter:
-            return prefix(greedy_sequence(interior_budget / 4, AlgorithmType::SED), budget);
         case kGreedySedHalf:
             return prefix(greedy_sequence(interior_budget / 2, AlgorithmType::SED), budget);
         case kGreedyRdpHalf:
@@ -298,13 +295,14 @@ Methods curve_methods(const std::vector<Curve> &curves, const std::vector<std::s
     return method;
 }
 
-// Coordinate ascent on the exact J_T: one trajectory at a time, in a random order, switches to
+// The loop: coordinate ascent on J_T. One trajectory at a time, in a random order, switches to
 // the candidate that raises J_T most given everyone's current choice. Only trajectories with join
-// candidates can gain, since nothing else depends on the state. Every switch strictly raises
-// J_T, so it stops
+// links or, with the ranking kNN term, a watching query can gain, since nothing else depends on
+// the state. Every switch strictly raises the tracked J_T, so it stops
+// update = false: one pass against the starting state, nobody seeing anyone else's switch
 Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
                       const Candidates &candidates, Methods method, std::uint64_t seed,
-                      bool guard = false) {
+                      bool update = true) {
     // With the ranking kNN term, a trajectory also matters to the queries that watch it
     std::optional<KnnState> knn;
     if (objective.config().ranking_knn)
@@ -358,8 +356,6 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
     for (std::size_t i = 0; i < db.size(); ++i)
         state[i] = views[method[i]][i];
     JoinState join(objective, state);
-    const double join_start = join.metric();
-    const double knn_start = knn ? knn->metric() : 0.0;
 
     for (std::size_t pass = 1; pass <= kMaxResponsePasses; ++pass) {
         std::ranges::shuffle(order, rng);
@@ -375,15 +371,6 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
                     continue;
                 auto proposal = join.propose(i, views[c][i], state);
                 const double knn_gain = knn ? knn->propose(i, knn_distances[i][c]) : 0.0;
-                if (guard) {
-                    const double join_after =
-                        join.metric() + proposal.gain / objective.scale(Objective::Join);
-                    const double knn_after =
-                        knn ? knn->metric() + knn_gain / objective.scale(Objective::Knn) : 0.0;
-                    if (join_after < join_start - kMinImprovement ||
-                        (knn && knn_after < knn_start - kMinImprovement))
-                        continue;
-                }
                 const double gain = separable[i][c] - here + proposal.gain + knn_gain;
                 if (gain > best_gain) {
                     best = c;
@@ -394,25 +381,27 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
             if (best == method[i])
                 continue;
             method[i] = best;
+            ++switches;
+            if (!update)
+                continue;
             state[i] = views[best][i];
             join.apply(best_proposal);
             if (knn)
                 knn->apply(i, knn_distances[i][best]);
-            ++switches;
         }
         std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}{}\n", pass,
                                  switches, join.metric(),
                                  knn ? std::format(", knn {:.4f}", knn->metric()) : "");
-        if (switches == 0)
+        if (switches == 0 || !update)
             break;
     }
     return method;
 }
 
-// The same workloads with the trajectories in every join pair relabelled at random among
-// trajectories that start and end in the same 1 km cells. Each pair keeps its kind and seen flag
-// and joins two trajectories that could plausibly match, so best response on them is the same
-// search with wrong but believable partners
+// The same workloads with trajectories relabelled at random among those that start and end in the
+// same 1 km cells, in every join pair and every kNN query's true neighbours. Each pair keeps its
+// kind and seen flag and joins two trajectories that could plausibly match, so the loop on them
+// is the same search with wrong but believable partners and neighbours
 TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWorkloads &workloads,
                                    std::uint64_t seed) {
     constexpr double kCell = 1000.0;
@@ -449,9 +438,22 @@ TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWo
             p.j = std::max(a, b);
             kept_real += pairs == &result.positives && real.contains({p.i, p.j});
         }
-    std::cout << std::format("teacher: shuffled partners in {} buckets, {} of {} positive pairs "
-                             "still real\n",
-                             buckets.size(), kept_real, result.positives.size());
+    std::size_t kept_neighbours = 0, neighbours = 0;
+    for (std::size_t e = 0; e < result.knn.size(); ++e) {
+        std::vector<std::uint32_t> relabelled;
+        for (const auto j : result.knn[e].top) {
+            const auto to = label[j] == e ? j : label[j];
+            if (std::ranges::find(relabelled, to) == relabelled.end())
+                relabelled.push_back(to);
+            kept_neighbours += to == j;
+            ++neighbours;
+        }
+        result.knn[e].top = std::move(relabelled);
+    }
+    std::cout << std::format(
+        "teacher: shuffled in {} buckets, {} of {} positive pairs and {} of {} "
+        "kNN neighbours still real\n",
+        buckets.size(), kept_real, result.positives.size(), kept_neighbours, neighbours);
     return result;
 }
 
@@ -472,14 +474,24 @@ std::string wins(const Methods &method) {
     return out;
 }
 
+// The requested arms, in the order asked
+std::vector<Arm> collect(const std::map<std::string, Arm, std::less<>> &outputs,
+                         std::span<const std::string> arms) {
+    std::vector<Arm> result;
+    result.reserve(arms.size());
+    for (const auto &name : arms)
+        result.push_back(outputs.at(name));
+    return result;
+}
+
 } // namespace
 
 bool is_arm(std::string_view name) { return std::ranges::find(kArms, name) != kArms.end(); }
 
 Teacher::Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads,
-                 const ObjectiveConfig &config, std::uint64_t seed, bool guard)
+                 const ObjectiveConfig &config, std::uint64_t seed)
     : m_db(db), m_workloads(std::move(workloads)), m_objective(db, m_workloads, config),
-      m_seed(seed), m_guard(guard) {
+      m_seed(seed) {
     const auto &f = m_objective.floors();
     std::cout << std::format("teacher: {} join pairs ({} positive), floors knn {:.4f}, range "
                              "{:.4f}, where-at {:.4f}, join {:.4f}\n",
@@ -495,20 +507,19 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const auto requested = [&](std::string_view name) {
         return std::ranges::find(arms, name) != arms.end();
     };
-    const bool want_original_gate = requested("GATEORIG_a0");
-    const bool want_gate = requested("GATE_a0");
-    const bool want_rdp_allocation = requested("TEACHER_RDP");
-    const bool want_rdp_response = requested("BR_TEACHER_RDP");
-    const bool want_teacher = requested("TEACHER");
-    const bool want_equal_response = requested("BR_a0");
-    const bool want_response = requested("BR_TEACHER");
-    const bool want_shuffled = requested("BR_SHUFFLED");
-    const bool want_iterative = requested("ITER_TEACHER");
-    const bool needs_allocated_candidates =
-        want_teacher || want_response || want_shuffled || want_iterative;
-    const bool needs_allocation =
-        want_rdp_allocation || want_rdp_response || needs_allocated_candidates;
-    const bool needs_response_candidates = want_response || want_shuffled || want_iterative;
+    const bool want_choice = requested("EQUAL_CHOICE");
+    const bool want_guess = requested("EQUAL_CHOICE_RDP_PARTNERS");
+    const bool want_equal_loop = requested("EQUAL_LOOP");
+    const bool want_budget_rdp = requested("BUDGET_RDP");
+    const bool want_budget_choice = requested("BUDGET_CHOICE");
+    const bool want_loop = requested("BUDGET_LOOP");
+    const bool want_reallocate = requested("BUDGET_LOOP_REALLOCATE");
+    const bool want_shuffled = requested("BUDGET_LOOP_SHUFFLED");
+    const bool want_no_update = requested("BUDGET_LOOP_NO_UPDATE");
+    const bool needs_loop_candidates =
+        want_loop || want_reallocate || want_shuffled || want_no_update;
+    const bool needs_budget_candidates = want_budget_choice || needs_loop_candidates;
+    const bool needs_curves = want_budget_rdp || needs_budget_candidates;
 
     const auto &db = m_db;
     const auto &objective = m_objective;
@@ -524,14 +535,11 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         caps[i] = std::min(std::max(cap, equal_budgets[i]), db.trajectory(i).size());
 
     std::map<std::string, Arm, std::less<>> outputs;
-    auto record = [&](std::string_view name, KeptSets kept, const Methods &method, double j_t) {
-        std::cout << std::format("teacher {}: {}, J_T {:.4f}\n", name, wins(method), j_t);
-        outputs[std::string(name)] = {std::string(name), to_simplification(kept), j_t};
-    };
     auto keep = [&](std::string_view name, const Candidates &from, const Methods &method) {
         auto kept = assemble(from, method);
         const double j_t = objective.total(kept);
-        record(name, std::move(kept), method, j_t);
+        std::cout << std::format("teacher {}: {}, J_T {:.4f}\n", name, wins(method), j_t);
+        outputs[std::string(name)] = {std::string(name), to_simplification(kept), j_t};
     };
     auto start = std::chrono::steady_clock::now();
     auto timed = [&](std::string_view step) {
@@ -539,129 +547,128 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         start = std::chrono::steady_clock::now();
     };
     const Methods rdp_methods(db.size(), kRdp);
-    const bool equal_alternatives = want_original_gate || want_gate || want_equal_response;
+    const bool equal_alternatives = want_choice || want_guess || want_equal_loop;
     const auto equal_candidates = make_candidates(objective, equal_budgets, caps,
                                                   equal_alternatives ? nullptr : &rdp_methods);
     timed("candidates");
 
-    if (want_original_gate) {
-        keep("GATEORIG_a0", equal_candidates,
+    if (want_choice) {
+        keep("EQUAL_CHOICE", equal_candidates,
              independent_choice(db, objective, equal_candidates, nullptr));
-        timed("GATEORIG_a0");
+        timed("EQUAL_CHOICE");
     }
+    if (!(want_guess || want_equal_loop || needs_curves))
+        return collect(outputs, arms);
 
-    if (want_gate || want_equal_response || needs_allocation) {
-        Curves curves;
-        if (needs_allocation) {
-            // Partners are fixed at RDP with equal budgets, so trajectories score independently.
-            const bool rdp_only = !(want_gate || want_equal_response || needs_allocated_candidates);
-            curves = build_curves(db, objective, equal_candidates[kRdp], caps, rdp_only);
-            timed(std::format("value curves up to {} points", cap));
+    // Partners are fixed at RDP with equal budgets, so trajectories score independently
+    Curves curves;
+    if (needs_curves) {
+        const bool rdp_only = !(want_guess || want_equal_loop || needs_budget_candidates);
+        curves = build_curves(db, objective, equal_candidates[kRdp], caps, rdp_only);
+        timed(std::format("value curves up to {} points", cap));
+    }
+    if (want_guess || want_equal_loop) {
+        // Fixed budgets only need scores at those budgets, not complete value curves
+        const auto guess = needs_curves ? curve_methods(curves.best, equal_budgets)
+                                        : independent_choice(db, objective, equal_candidates,
+                                                             &equal_candidates[kRdp]);
+        if (want_guess)
+            keep("EQUAL_CHOICE_RDP_PARTNERS", equal_candidates, guess);
+        if (want_equal_loop) {
+            keep("EQUAL_LOOP", equal_candidates,
+                 best_response(db, objective, equal_candidates, guess, m_seed));
+            timed("EQUAL_LOOP");
         }
-
-        if (want_gate || want_equal_response) {
-            // Fixed budgets only need scores at those budgets, not complete value curves.
-            const auto gate_methods =
-                needs_allocation
-                    ? curve_methods(curves.best, equal_budgets)
-                    : independent_choice(db, objective, equal_candidates, &equal_candidates[kRdp]);
-            if (want_gate)
-                keep("GATE_a0", equal_candidates, gate_methods);
-            if (want_equal_response) {
-                keep("BR_a0", equal_candidates,
-                     best_response(db, objective, equal_candidates, gate_methods, m_seed,
-                                   m_guard));
-                timed("BR_a0");
-            }
-        }
-
-        auto report = [&](std::string_view what, const AllocationStats &stats,
-                          const std::vector<std::size_t> &budgets) {
-            std::size_t at_cap = 0;
-            for (std::size_t i = 0; i < budgets.size(); ++i)
-                at_cap += budgets[i] == caps[i] && caps[i] < db.trajectory(i).size();
-            std::cout << std::format("teacher: {}, curve sum {:.4f} -> {:.4f}, {} exchanges, {} "
-                                     "trajectories at the cap\n",
-                                     what, stats.greedy_value, stats.final_value, stats.exchanges,
-                                     at_cap);
-        };
-        if (want_rdp_allocation || want_rdp_response) {
-            AllocationStats stats;
-            const auto budgets = allocate(curves.rdp, total_budget, &stats);
-            report("RDP allocation", stats, budgets);
-            if (want_rdp_allocation)
-                keep("TEACHER_RDP", make_candidates(objective, budgets, caps, &rdp_methods),
-                     rdp_methods);
-            if (want_rdp_response) {
-                const auto rdp_candidates = make_candidates(objective, budgets, caps);
-                keep("BR_TEACHER_RDP", rdp_candidates,
-                     best_response(db, objective, rdp_candidates, rdp_methods, m_seed, m_guard));
-                timed("BR_TEACHER_RDP");
-            }
-        }
-        if (needs_allocated_candidates) {
-            AllocationStats stats;
-            const auto budgets = allocate(curves.best, total_budget, &stats);
-            report("allocation", stats, budgets);
-            const auto teacher_methods = curve_methods(curves.best, budgets);
-            const auto allocated_candidates = make_candidates(
-                objective, budgets, caps, needs_response_candidates ? nullptr : &teacher_methods);
-            if (want_teacher)
-                keep("TEACHER", allocated_candidates, teacher_methods);
-            if (want_response || want_iterative) {
-                const auto response_methods = best_response(
-                    db, objective, allocated_candidates, teacher_methods, m_seed, m_guard);
-                timed("BR_TEACHER");
-                if (want_response)
-                    keep("BR_TEACHER", allocated_candidates, response_methods);
-                if (want_iterative) {
-                    // Each round's curves see the partners as the last round left them, so the
-                    // budgets react to the neighbours too. A round is kept only if J_T rises
-                    auto current_kept = assemble(allocated_candidates, response_methods);
-                    auto current_methods = response_methods;
-                    double current_value = objective.total(current_kept);
-                    for (std::size_t round = 1; round <= kMaxAllocationRounds; ++round) {
-                        const auto round_curves =
-                            build_curves(db, objective, current_kept, caps, false);
-                        AllocationStats round_stats;
-                        const auto round_budgets =
-                            allocate(round_curves.best, total_budget, &round_stats);
-                        const auto next_candidates =
-                            make_candidates(objective, round_budgets, caps);
-                        auto next_methods = best_response(
-                            db, objective, next_candidates,
-                            curve_methods(round_curves.best, round_budgets), m_seed + round);
-                        auto next_kept = assemble(next_candidates, next_methods);
-                        const double next_value = objective.total(next_kept);
-                        std::cout << std::format("teacher: ITER round {}, J_T {:.4f} -> {:.4f}\n",
-                                                 round, current_value, next_value);
-                        if (next_value <= current_value + kMinImprovement)
-                            break;
-                        current_value = next_value;
-                        current_kept = std::move(next_kept);
-                        current_methods = std::move(next_methods);
-                    }
-                    record("ITER_TEACHER", std::move(current_kept), current_methods, current_value);
-                    timed("ITER_TEACHER");
+    }
+    auto report = [&](std::string_view what, double value,
+                      const std::vector<std::size_t> &budgets) {
+        std::size_t at_cap = 0;
+        for (std::size_t i = 0; i < budgets.size(); ++i)
+            at_cap += budgets[i] == caps[i] && caps[i] < db.trajectory(i).size();
+        std::cout << std::format("teacher: {}, curve sum {:.4f}, {} trajectories at the cap\n",
+                                 what, value, at_cap);
+    };
+    if (want_budget_rdp) {
+        double value = 0;
+        const auto budgets = allocate(curves.rdp, total_budget, &value);
+        report("RDP allocation", value, budgets);
+        keep("BUDGET_RDP", make_candidates(objective, budgets, caps, &rdp_methods), rdp_methods);
+    }
+    if (needs_budget_candidates) {
+        double value = 0;
+        const auto budgets = allocate(curves.best, total_budget, &value);
+        report("allocation", value, budgets);
+        const auto choice = curve_methods(curves.best, budgets);
+        const auto candidates =
+            make_candidates(objective, budgets, caps, needs_loop_candidates ? nullptr : &choice);
+        if (want_budget_choice)
+            keep("BUDGET_CHOICE", candidates, choice);
+        if (want_loop || want_reallocate) {
+            const auto looped = best_response(db, objective, candidates, choice, m_seed);
+            timed("BUDGET_LOOP");
+            if (want_loop)
+                keep("BUDGET_LOOP", candidates, looped);
+            if (want_reallocate) {
+                // Each round's curves see the partners as the last round left them. A round is
+                // kept only if J_T rises
+                auto current = assemble(candidates, looped);
+                auto current_methods = looped;
+                double current_value = objective.total(current);
+                for (std::size_t round = 1; round <= kMaxAllocationRounds; ++round) {
+                    const auto round_curves = build_curves(db, objective, current, caps, false);
+                    double round_value = 0;
+                    const auto round_budgets =
+                        allocate(round_curves.best, total_budget, &round_value);
+                    const auto next_candidates = make_candidates(objective, round_budgets, caps);
+                    auto next_methods = best_response(
+                        db, objective, next_candidates,
+                        curve_methods(round_curves.best, round_budgets), m_seed + round);
+                    auto next = assemble(next_candidates, next_methods);
+                    const double next_value = objective.total(next);
+                    std::cout << std::format(
+                        "teacher: reallocation round {}, J_T {:.4f} -> {:.4f}\n", round,
+                        current_value, next_value);
+                    if (next_value <= current_value + kMinImprovement)
+                        break;
+                    current_value = next_value;
+                    current = std::move(next);
+                    current_methods = std::move(next_methods);
                 }
-            }
-            if (want_shuffled) {
-                // Searches on fake partners; keep scores the result on the real ones
-                const auto shuffled = shuffled_partners(db, m_workloads, m_seed);
-                const Objective fake(db, shuffled, objective.config());
-                keep("BR_SHUFFLED", allocated_candidates,
-                     best_response(db, fake, allocated_candidates, teacher_methods, m_seed));
-                timed("BR_SHUFFLED");
+                std::cout << std::format("teacher BUDGET_LOOP_REALLOCATE: {}, J_T {:.4f}\n",
+                                         wins(current_methods), current_value);
+                outputs["BUDGET_LOOP_REALLOCATE"] = {"BUDGET_LOOP_REALLOCATE",
+                                                     to_simplification(current), current_value};
+                timed("BUDGET_LOOP_REALLOCATE");
             }
         }
-        timed("allocation arms");
+        if (want_no_update) {
+            keep("BUDGET_LOOP_NO_UPDATE", candidates,
+                 best_response(db, objective, candidates, choice, m_seed, false));
+            timed("BUDGET_LOOP_NO_UPDATE");
+        }
+        if (want_shuffled) {
+            // Searches on fake partners and neighbours; keep scores the result on the real ones
+            const auto shuffled = shuffled_partners(db, m_workloads, m_seed);
+            const Objective fake(db, shuffled, objective.config());
+            keep("BUDGET_LOOP_SHUFFLED", candidates,
+                 best_response(db, fake, candidates, choice, m_seed));
+            timed("BUDGET_LOOP_SHUFFLED");
+        }
     }
+    return collect(outputs, arms);
+}
 
-    std::vector<Arm> result;
-    result.reserve(arms.size());
-    for (const auto &name : arms)
-        result.push_back(outputs.at(name));
-    return result;
+std::vector<Arm> Teacher::single_recipes(std::size_t total_budget) const {
+    const auto budgets = allocation::create_trajectory_budgets(
+        m_db, allocation::AllocatorType::SizeProportional, total_budget, 0.0);
+    const auto candidates = make_candidates(m_objective, budgets, budgets);
+    std::vector<Arm> arms;
+    for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+        const auto name = std::format("RECIPE_{}", kCandidates[c]);
+        arms.push_back({name, to_simplification(candidates[c]), m_objective.total(candidates[c])});
+        std::cout << std::format("teacher {}: J_T {:.4f}\n", name, arms.back().objective);
+    }
+    return arms;
 }
 
 } // namespace teacher

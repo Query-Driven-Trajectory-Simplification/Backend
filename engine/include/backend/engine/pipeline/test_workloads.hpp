@@ -21,9 +21,12 @@ struct TestWorkloads {
     query::WhereAtWorkload where_at;
     query::RangeWorkload range;
     query::JoinWorkload join;
+    std::vector<query::JoinWorkload> join_grid; // the join at config.join_score_eps_m
     // The database self join next to a held-out join, when config.self_join asks for it
     std::optional<query::JoinWorkload> self_join;
     std::optional<query::RouteClusteringWorkload> clustering;
+    // Route clustering at config.join_score_eps_m, when clustering is enabled
+    std::vector<query::RouteClusteringWorkload> clustering_grid;
 
     // Generates every workload configured in config and prints a summary line for each
     TestWorkloads(const core::TrajectoryDb &database, const core::TrajectoryDb &queries,

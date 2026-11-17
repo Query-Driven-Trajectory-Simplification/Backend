@@ -45,15 +45,9 @@ class PreparedTrajectories {
 struct ObjectiveConfig {
     double min_tolerance_m = 25.0; // where-at average-hit ramp, same as the evaluator
     double max_tolerance_m = 500.0;
-    // kNN hit when i stays within cutoff(e) - Fréchet(e, original i) of its own original, so it
-    // can't be fitted to the teacher's queries. Off: too strict, it lowered test J5 by .03
-    bool knn_by_shape = false;
     // Every 150 m pair, as the compressor knows the whole database. False: only the seen half, to
     // measure how much of the join gain is fitting those specific pairs
     bool all_join_pairs = true;
-    // Weight of the shape term, next to the four metrics' 1/4 each. 0 = off. It rewards keeping
-    // the original shape whatever the query, for kNN queries and join thresholds not trained on
-    double shape_weight = 0.0;
     // Self: both sides of a pair compressed, like the test's self join. HeldOut: each trajectory
     // is also an original query against its compressed partners, the database-only stand-in for a
     // join from the held-out query pool
@@ -65,6 +59,9 @@ struct ObjectiveConfig {
     // competitors are compressed too, and best response tracks it with KnnState. False: the
     // per-trajectory check against original competitors. Value curves use that check either way
     bool ranking_knn = false;
+    // Relative weights of kNN, range, where-at and join in J_T. Equal by default, the J4 mean.
+    // A zero weight leaves a term out of the search
+    std::array<double, 4> term_weights{1.0, 1.0, 1.0, 1.0};
 };
 
 // A join candidate of one trajectory
@@ -110,11 +107,6 @@ class Objective {
     double separable(std::size_t i, std::span<const std::size_t> kept) const;
     double separable(std::size_t i, const core::TrajectoryView &candidate) const;
 
-    // How closely i's original points stay to the simplified line: the mean over the points of
-    // the where-at ramp of each point's distance to the simplified segment spanning its time.
-    // The spatial counterpart of where-at, in [0, 1]
-    double shape(std::size_t i, const core::TrajectoryView &simplified) const;
-
     // A one-pass score for choosing i's points on their own: separable plus i's join F1 against
     // a fixed partner state (empty = original partners), as if each trajectory carried an
     // equal share of the join metric. An approximation, unlike JoinState. With join_mode HeldOut
@@ -128,7 +120,7 @@ class Objective {
     double independent_bound(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners) const;
 
-    // Reuse the range, where-at, shape and join terms when a bound is followed by scoring.
+    // Reuse the range, where-at and join terms when a bound is followed by scoring.
     // Borrows candidate's coordinates; use with this objective while those coordinates live.
     struct IndependentScore {
         double bound = 0.0;
@@ -138,7 +130,7 @@ class Objective {
         std::size_t trajectory = 0;
         core::TrajectoryView candidate{};
         Terms terms{};
-        double shape = 0.0, join = 0.0;
+        double join = 0.0;
     };
     IndependentScore prepare_independent(std::size_t i, const core::TrajectoryView &candidate,
                                          std::span<const core::TrajectoryView> partners) const;
@@ -180,7 +172,6 @@ class Objective {
     struct KnnMembership {
         std::uint32_t query;
         double cutoff;
-        double margin = 0; // cutoff - Fréchet(e, original i), at least 0
     };
 
     Terms raw_separable(std::size_t i, std::span<const std::size_t> kept) const;
@@ -209,11 +200,9 @@ class Objective {
     std::vector<std::size_t> m_truth;           // positives per slot
     std::size_t m_with_truth = 0;               // slots with any positive
 
-    Terms m_floor{};              // global floor of each metric
-    Terms m_scale{};              // 1 / (TermCount * (1 - floor))
-    std::vector<double> m_v0;     // scaled separable terms of each trajectory with endpoints only
-    std::vector<double> m_shape0; // shape of each trajectory with endpoints only
-    double m_shape_scale = 0;     // shape_weight / ((1 - floor) * trajectories)
+    Terms m_floor{};          // global floor of each metric
+    Terms m_scale{};          // 1 / (TermCount * (1 - floor))
+    std::vector<double> m_v0; // scaled separable terms of each trajectory with endpoints only
 };
 
 // The exact join metric under one-at-a-time changes. Keeps every pair's outcome and every
@@ -290,7 +279,7 @@ class KnnState {
     std::vector<std::vector<double>> m_distance;    // per query, in list order
     std::vector<std::size_t> m_hits;                // per query
     std::size_t m_hit_sum = 0;
-    std::vector<std::vector<Watcher>> m_watchers;   // per trajectory
+    std::vector<std::vector<Watcher>> m_watchers; // per trajectory
 };
 
 } // namespace teacher

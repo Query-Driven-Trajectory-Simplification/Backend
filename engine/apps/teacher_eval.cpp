@@ -8,7 +8,8 @@
 // teacher's training pairs, so with join.mode HeldOut it is the in-sample comparison and stays out
 // of J4.
 // --train-eps adds self-join thresholds to the teacher's join term, --held-out-term the held-out
-// form next to a self join, and --eval-eps sets the self-join thresholds in thresholds.csv.
+// form next to a self join, and --eval-eps sets the thresholds in thresholds.csv, where the self
+// join, the held-out join and route clustering (when enabled) are scored at each.
 // Writes results.csv, floors.csv, thresholds.csv, terms.csv, budgets.csv and timings.csv to --out
 // (and knn_check.csv with --knn-check); summarise with teacher_stats.py.
 #include "backend/engine/allocation/budget_allocator.hpp"
@@ -57,13 +58,12 @@ struct Args {
     std::vector<std::string> arms{teacher::kArms.begin(), teacher::kArms.end()};
     bool baselines = true;
     std::optional<bool> all_join_pairs;
-    std::optional<double> shape_weight;
-    std::optional<query::JoinMode> teacher_join;  // config: teacher.join, else join.mode
-    std::optional<std::vector<double>> train_eps; // config: teacher.extra_join_eps_m
-    std::optional<bool> held_out_term;            // config: teacher.held_out_term
-    std::optional<bool> ranking_knn;              // config: teacher.ranking_knn
-    std::optional<bool> guard;                    // config: teacher.guard
-    std::vector<double> eval_eps{100.0, 300.0};
+    std::optional<query::JoinMode> teacher_join;     // config: teacher.join, else join.mode
+    std::optional<std::vector<double>> train_eps;    // config: teacher.extra_join_eps_m
+    std::optional<bool> held_out_term;               // config: teacher.held_out_term
+    std::optional<bool> ranking_knn;                 // config: teacher.ranking_knn
+    std::optional<std::vector<double>> term_weights; // config: teacher.term_weights
+    std::vector<double> eval_eps{100.0, 125.0, 150.0, 175.0, 200.0, 250.0, 300.0};
     bool knn_check = false;
 };
 
@@ -106,16 +106,16 @@ Args parse_args(int argc, char **argv) {
             a.train_eps = parse_list<double>(value());
         else if (key == "--eval-eps")
             a.eval_eps = parse_list<double>(value());
-        else if (key == "--guard")
-            a.guard = true;
-        else if (key == "--ranking-knn")
-            a.ranking_knn = true;
+        else if (key == "--term-weights") {
+            a.term_weights = parse_list<double>(value());
+            if (a.term_weights->size() != 4)
+                throw std::invalid_argument("--term-weights takes kNN,range,where-at,join");
+        } else if (key == "--independent-knn")
+            a.ranking_knn = false;
         else if (key == "--held-out-term")
             a.held_out_term = true;
         else if (key == "--knn-check")
             a.knn_check = true;
-        else if (key == "--shape-weight")
-            a.shape_weight = std::stod(value());
         else if (key == "--teacher-join") {
             const auto mode = value();
             if (mode != "HeldOut" && mode != "Self")
@@ -126,11 +126,11 @@ Args parse_args(int argc, char **argv) {
         else if (key == "--seen-pairs-only")
             a.all_join_pairs = false;
         else
-            throw std::invalid_argument(
-                "unknown argument " + key +
-                " (--config --data --out --cache --seeds --shares --arms --shape-weight "
-                "--teacher-join --train-eps --held-out-term --ranking-knn --guard --eval-eps --knn-check "
-                "--no-baselines --seen-pairs-only)");
+            throw std::invalid_argument("unknown argument " + key +
+                                        " (--config --data --out --cache --seeds --shares --arms "
+                                        "--teacher-join --train-eps --held-out-term "
+                                        "--independent-knn --term-weights --eval-eps --knn-check "
+                                        "--no-baselines --seen-pairs-only)");
     }
     for (const auto &arm : a.arms)
         if (!teacher::is_arm(arm))
@@ -149,8 +149,6 @@ pipeline::Config effective_config(const Args &args) {
         config.budget_shares = *args.shares;
     if (args.all_join_pairs)
         config.teacher.all_join_pairs = *args.all_join_pairs;
-    if (args.shape_weight)
-        config.teacher.shape_weight = *args.shape_weight;
     if (args.teacher_join)
         config.teacher.join = *args.teacher_join;
     if (args.train_eps)
@@ -159,8 +157,8 @@ pipeline::Config effective_config(const Args &args) {
         config.teacher.held_out_term = *args.held_out_term;
     if (args.ranking_knn)
         config.teacher.ranking_knn = *args.ranking_knn;
-    if (args.guard)
-        config.teacher.guard = *args.guard;
+    if (args.term_weights)
+        std::ranges::copy(*args.term_weights, config.teacher.term_weights.begin());
     // The self join is always scored: with a held-out join in J4 it is the in-sample comparison
     config.self_join = true;
     return config;
@@ -414,13 +412,15 @@ int main(int argc, char **argv) try {
         args.out / "results.csv",
         "seed,share,arm,budget,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,"
         "where_at_within_100,join_micro_f1,knn_tau,norm_knn,norm_range,norm_where_at,norm_join,"
-        "norm_clustering,J4,J5,J_fam,J_T,join_recall_seen,join_recall_unseen,predicted_clusters,"
-        "eval_s,join_mode,self_join_f1,norm_self_join,teacher_join_mode");
+        "norm_clustering,J4,J_T,join_recall_seen,join_recall_unseen,predicted_clusters,"
+        "eval_s,join_mode,self_join_f1,norm_self_join,teacher_join_mode,norm_join_main,"
+        "norm_clustering_main");
     auto floors =
         open_csv(args.out / "floors.csv",
                  "seed,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,self_join_f1");
     auto thresholds =
-        open_csv(args.out / "thresholds.csv", "seed,share,arm,eps_m,join_f1,norm_join,recall");
+        open_csv(args.out / "thresholds.csv",
+                 "seed,share,arm,join,eps_m,join_f1,norm_join,recall,teacher_threshold");
     auto terms = open_csv(args.out / "terms.csv",
                           "seed,share,arm,teacher_knn,teacher_range,teacher_where_at,teacher_join,"
                           "norm_knn,norm_range,norm_where_at,norm_join,norm_self_join");
@@ -446,8 +446,7 @@ int main(int argc, char **argv) try {
             db, pipeline::teacher_workload_config(config), seed, config.teacher.cache_dir);
         const auto pairs = workloads.positives;
         const teacher::Teacher model(db, std::move(workloads),
-                                     pipeline::teacher_objective_config(config), seed,
-                                     config.teacher.guard);
+                                     pipeline::teacher_objective_config(config), seed);
         timings << std::format("{},teacher_setup,{:.2f}\n", seed, seconds_since(start));
 
         std::vector<Arm> arms;
@@ -457,10 +456,14 @@ int main(int argc, char **argv) try {
                 arms.push_back({arm.name, share, to_kept(arm.simplification)});
             timings << std::format("{},teacher_{:g},{:.2f}\n", seed, share, seconds_since(start));
         }
-        if (args.baselines)
+        if (args.baselines) {
             for (auto &arm :
                  baseline_arms(db, pairs, config.teacher.all_join_pairs, config.budget_shares))
                 arms.push_back(std::move(arm));
+            for (const double share : config.budget_shares)
+                for (auto &arm : model.single_recipes(total_budget(db, share)))
+                    arms.push_back({arm.name, share, to_kept(arm.simplification)});
+        }
         for (const auto &arm : arms)
             validate(arm, db);
 
@@ -468,10 +471,18 @@ int main(int argc, char **argv) try {
         start = std::chrono::steady_clock::now();
         const auto pool = core::subset(all, parts.queries);
         const pipeline::TestWorkloads test_workloads(db, pool, config);
-        // The self join at thresholds the teacher does not optimise: does its join gain generalise?
+        // Both joins at other thresholds: does the join gain hold beyond the ones trained on?
         std::vector<query::JoinWorkload> other_joins;
-        for (const double eps : args.eval_eps)
+        for (const double eps : args.eval_eps) {
             other_joins.push_back(query::generate_self_join(db, eps, config.join.frechet));
+            other_joins.push_back(
+                query::generate_join_queries(db, pool,
+                                             {.query_count = config.join.query_count,
+                                              .eps_m = eps,
+                                              .mode = query::JoinMode::HeldOut,
+                                              .frechet = config.join.frechet},
+                                             seed));
+        }
         timings << std::format("{},test_workloads,{:.2f}\n", seed, seconds_since(start));
 
         const auto test = test_workloads.view();
@@ -484,6 +495,19 @@ int main(int argc, char **argv) try {
         std::vector<double> other_floor;
         for (const auto &w : other_joins)
             other_floor.push_back(evaluator::evaluate_join(floor_db, w).f1);
+        // Route clustering at each threshold, built on the self join there
+        std::vector<query::RouteClusteringWorkload> other_clusters;
+        std::vector<double> cluster_floor;
+        if (config.clustering.enabled)
+            for (const auto &w : other_joins)
+                if (w.mode == query::JoinMode::Self) {
+                    auto clustering = config.clustering;
+                    clustering.eps_m = w.eps_m;
+                    other_clusters.push_back(query::generate_route_clustering(db, clustering, &w));
+                    cluster_floor.push_back(
+                        evaluator::evaluate_route_clustering(floor_db, other_clusters.back())
+                            .score);
+                }
 
         const auto &objective = model.objective();
         const double db_knn_floor =
@@ -493,27 +517,47 @@ int main(int argc, char **argv) try {
             const auto compressed = core::materialize(db, to_simplification(arm.kept));
             const auto s = evaluator::Evaluator(db, compressed, test, scoring).evaluate().scores;
             const auto n = evaluator::normalize_scores(s, floor);
-            // J5 is the old headline, with clustering, kept so older runs stay comparable
-            const double j5 = (n.knn + n.range + n.where_at + n.join + n.clustering) / 5.0;
-            const double j_fam =
-                (n.knn + n.range + n.where_at + 0.5 * (n.join + n.clustering)) / 4.0;
             const auto recall = pair_recall(compressed, pairs, config.join);
             results << std::format(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
-                "{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
+                "{},{},{},{},{},{}\n",
                 seed, arm.share, arm.name, total_budget(db, arm.share), s.knn.recall_at_k,
                 s.range_f1, s.where_at.average_hit, s.join.f1, s.clustering.score,
                 s.where_at.within_radius, s.join.micro_f1, s.knn.kendalls_tau_topk, n.knn, n.range,
-                n.where_at, n.join, n.clustering, n.combined, j5, j_fam, objective.total(arm.kept),
+                n.where_at, n.join, n.clustering, n.combined, objective.total(arm.kept),
                 recall.seen, recall.unseen, s.clustering.predicted_clusters, seconds_since(start),
                 mode_name(config.join.mode), s.self_join.f1, n.self_join,
-                mode_name(objective.config().join_mode));
+                mode_name(objective.config().join_mode), n.join_f1, n.clustering_score);
 
             for (std::size_t k = 0; k < other_joins.size(); ++k) {
-                const auto js = evaluator::evaluate_join(compressed, other_joins[k]);
-                thresholds << std::format(
-                    "{},{},{},{},{},{},{}\n", seed, arm.share, arm.name, other_joins[k].eps_m,
-                    js.f1, (js.f1 - other_floor[k]) / (1.0 - other_floor[k]), js.recall);
+                const auto &w = other_joins[k];
+                const auto js = evaluator::evaluate_join(compressed, w);
+                // Trained on: one of the teacher's thresholds in the teacher's join mode, or the
+                // held-out term at join.eps_m
+                const auto &extra = config.teacher.extra_join_eps_m;
+                const bool teacher_eps = w.eps_m == config.join.eps_m ||
+                                         std::ranges::find(extra, w.eps_m) != extra.end();
+                const bool teacher_threshold =
+                    (teacher_eps && w.mode == objective.config().join_mode) ||
+                    (w.mode == query::JoinMode::HeldOut && objective.config().held_out_term &&
+                     w.eps_m == config.join.eps_m);
+                thresholds << std::format("{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
+                                          mode_name(w.mode), w.eps_m, js.f1,
+                                          (js.f1 - other_floor[k]) / (1.0 - other_floor[k]),
+                                          js.recall, teacher_threshold ? 1 : 0);
+            }
+            for (std::size_t k = 0; k < other_clusters.size(); ++k) {
+                const auto &w = other_clusters[k];
+                const double score = evaluator::evaluate_route_clustering(compressed, w).score;
+                const auto &extra = config.teacher.extra_join_eps_m;
+                const bool teacher_threshold =
+                    objective.config().join_mode == query::JoinMode::Self &&
+                    (w.eps_m == config.join.eps_m ||
+                     std::ranges::find(extra, w.eps_m) != extra.end());
+                thresholds << std::format("{},{},{},Clustering,{},{},{},,{}\n", seed, arm.share,
+                                          arm.name, w.eps_m, score,
+                                          (score - cluster_floor[k]) / (1.0 - cluster_floor[k]),
+                                          teacher_threshold ? 1 : 0);
             }
             // The teacher's own estimate of each metric, next to the test's. Its join term is
             // like-for-like with norm_join or norm_self_join, whichever its join mode is

@@ -46,6 +46,19 @@ query::JoinWorkload make_join(const core::TrajectoryDb &database, const core::Tr
     return join;
 }
 
+std::vector<query::JoinWorkload> make_join_grid(const core::TrajectoryDb &database,
+                                                const core::TrajectoryDb &queries,
+                                                const Config &config) {
+    std::vector<query::JoinWorkload> grid;
+    for (const double eps : config.join_score_eps_m) {
+        auto join_config = config.join;
+        join_config.eps_m = eps;
+        grid.push_back(query::generate_join_queries(database, queries, join_config, config.seed));
+        print_join(grid.back());
+    }
+    return grid;
+}
+
 // Empty when the join already is the self join
 std::optional<query::JoinWorkload> make_self_join(const core::TrajectoryDb &database,
                                                   const Config &config) {
@@ -71,14 +84,31 @@ std::optional<query::RouteClusteringWorkload> make_clustering(const core::Trajec
     return clustering;
 }
 
+std::vector<query::RouteClusteringWorkload> make_clustering_grid(const core::TrajectoryDb &database,
+                                                                 const Config &config) {
+    std::vector<query::RouteClusteringWorkload> grid;
+    if (!config.clustering.enabled)
+        return grid;
+    for (const double eps : config.join_score_eps_m) {
+        auto clustering = config.clustering;
+        clustering.eps_m = eps;
+        grid.push_back(query::generate_route_clustering(database, clustering));
+        std::cout << "route clustering: " << grid.back().reference.members.size()
+                  << " clusters, eps=" << eps << " m\n";
+    }
+    return grid;
+}
+
 } // namespace
 
 TestWorkloads::TestWorkloads(const core::TrajectoryDb &database, const core::TrajectoryDb &queries,
                              const Config &config)
     : knn(make_knn(database, queries, config)), where_at(make_where_at(database, config)),
       range(make_range(database, config)), join(make_join(database, queries, config)),
+      join_grid(make_join_grid(database, queries, config)),
       self_join(make_self_join(database, config)),
-      clustering(make_clustering(database, self_join ? *self_join : join, config)) {}
+      clustering(make_clustering(database, self_join ? *self_join : join, config)),
+      clustering_grid(make_clustering_grid(database, config)) {}
 
 evaluator::Workloads TestWorkloads::view() const {
     const query::JoinWorkload *self = nullptr;
@@ -91,7 +121,9 @@ evaluator::Workloads TestWorkloads::view() const {
             .range = range.queries,
             .join = &join,
             .clustering = clustering ? &*clustering : nullptr,
-            .self_join = self};
+            .self_join = self,
+            .join_grid = join_grid,
+            .clustering_grid = clustering_grid};
 }
 
 } // namespace pipeline

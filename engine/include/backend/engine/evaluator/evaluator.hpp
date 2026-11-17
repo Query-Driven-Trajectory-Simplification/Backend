@@ -12,6 +12,7 @@
 
 #include <limits>
 #include <span>
+#include <vector>
 
 namespace evaluator {
 
@@ -24,6 +25,10 @@ struct Workloads {
     const query::RouteClusteringWorkload *clustering = nullptr;
     // The database self join as a diagnostic next to a held-out join. May point at join itself.
     const query::JoinWorkload *self_join = nullptr;
+    // The same join at more thresholds, averaged into the combined score's join term
+    std::span<const query::JoinWorkload> join_grid = {};
+    // Route clustering at more thresholds, averaged into its reported score
+    std::span<const query::RouteClusteringWorkload> clustering_grid = {};
 };
 
 // Kendall's tau is in [-1, 1] and the others in [0, 1], or NaN if it could not be computed
@@ -35,6 +40,8 @@ struct Scoretable {
     double range_f1 = std::numeric_limits<double>::quiet_NaN();
     RouteClusteringScores clustering;
     JoinScores self_join;
+    std::vector<JoinScores> join_grid;                  // in Workloads::join_grid order
+    std::vector<RouteClusteringScores> clustering_grid; // in Workloads::clustering_grid order
 };
 
 struct EvaluationResult {

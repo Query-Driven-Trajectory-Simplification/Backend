@@ -59,7 +59,7 @@ std::unique_ptr<teacher::Teacher> make_teacher(const core::TrajectoryDb &databas
         database,
         teacher::load_or_build_workloads(database, teacher_workload_config(config), config.seed,
                                          config.teacher.cache_dir),
-        teacher_objective_config(config), config.seed, config.teacher.guard);
+        teacher_objective_config(config), config.seed);
 }
 
 } // namespace

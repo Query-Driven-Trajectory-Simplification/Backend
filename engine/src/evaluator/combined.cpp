@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <initializer_list>
 #include <limits>
+#include <stdexcept>
 
 namespace evaluator {
 
@@ -46,8 +47,38 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
     result.knn = result.knn_recall_at_k;
     result.range = result.range_f1;
     result.where_at = result.where_at_average_hit;
-    result.join = result.join_f1;
-    result.clustering = result.clustering_score;
+    if (scores.join_grid.size() != floor.join_grid.size())
+        throw std::invalid_argument("normalize_scores: scores and floor hold different join grids");
+    double join_sum = result.join_f1;
+    std::size_t join_count = std::isnan(result.join_f1) ? 0 : 1;
+    if (join_count == 0)
+        join_sum = 0.0;
+    for (std::size_t k = 0; k < scores.join_grid.size(); ++k) {
+        const double v = normalize(scores.join_grid[k].f1, floor.join_grid[k].f1);
+        if (!std::isnan(v)) {
+            join_sum += v;
+            ++join_count;
+        }
+    }
+    result.join = join_count ? join_sum / static_cast<double>(join_count)
+                             : std::numeric_limits<double>::quiet_NaN();
+    if (scores.clustering_grid.size() != floor.clustering_grid.size())
+        throw std::invalid_argument(
+            "normalize_scores: scores and floor hold different clustering grids");
+    {
+        double sum = std::isnan(result.clustering_score) ? 0.0 : result.clustering_score;
+        std::size_t count = std::isnan(result.clustering_score) ? 0 : 1;
+        for (std::size_t k = 0; k < scores.clustering_grid.size(); ++k) {
+            const double v =
+                normalize(scores.clustering_grid[k].score, floor.clustering_grid[k].score);
+            if (!std::isnan(v)) {
+                sum += v;
+                ++count;
+            }
+        }
+        result.clustering =
+            count ? sum / static_cast<double>(count) : std::numeric_limits<double>::quiet_NaN();
+    }
     result.self_join = normalize(scores.self_join.f1, floor.self_join.f1);
 
     // Clustering and the self join stay out (see combined.hpp)

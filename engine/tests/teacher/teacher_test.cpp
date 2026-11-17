@@ -356,8 +356,7 @@ TEST_F(TeacherTest, RankingKnnArmsKeepTheBudget) {
     const teacher::Teacher model(db, std::move(workloads),
                                  {.join_mode = query::JoinMode::HeldOut, .ranking_knn = true}, 11);
     const std::size_t budget = 2 * db.size() + 40;
-    const std::vector<std::string> arms{"GATEORIG_a0", "BR_a0", "TEACHER_RDP", "BR_TEACHER",
-                                        "BR_TEACHER_RDP"};
+    const std::vector<std::string> arms{"EQUAL_CHOICE", "EQUAL_LOOP", "BUDGET_RDP", "BUDGET_LOOP"};
     for (const auto &arm : model.run(budget, arms)) {
         SCOPED_TRACE(arm.name);
         EXPECT_EQ(arm.simplification.num_points(), budget);
@@ -369,30 +368,32 @@ TEST_F(TeacherTest, RankingKnnArmsKeepTheBudget) {
     }
 }
 
-TEST_F(TeacherTest, GuardNeverLowersTheTrackedKnnOrJoin) {
-    const auto db = random_db(3, 30, 25);
+TEST_F(TeacherTest, TermWeightsScaleTheTerms) {
+    const auto db = random_db(2, 24, 20);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    const teacher::Objective equal(db, workloads);
+    const teacher::Objective weighted(db, workloads, {.term_weights = {2.0, 1.0, 1.0, 0.0}});
+    using T = teacher::Objective;
+    // Weights are relative: kNN gets 2/4 instead of 1/4, join drops out
+    EXPECT_NEAR(weighted.scale(T::Knn), 2.0 * equal.scale(T::Knn), 1e-12);
+    EXPECT_NEAR(weighted.scale(T::Range), equal.scale(T::Range), 1e-12);
+    EXPECT_DOUBLE_EQ(weighted.scale(T::Join), 0.0);
+    // Every point kept is perfect on every term, so J_T is the weight share of the terms used
+    EXPECT_NEAR(weighted.total(every_point(db)), (2.0 + 1.0 + 1.0) / 4.0, 1e-9);
+    EXPECT_THROW(teacher::Objective(db, workloads, {.term_weights = {0.0, 0.0, 0.0, 0.0}}),
+                 std::invalid_argument);
+    EXPECT_THROW(teacher::Objective(db, workloads, {.term_weights = {-1.0, 1.0, 1.0, 1.0}}),
+                 std::invalid_argument);
+}
+
+TEST_F(TeacherTest, SeenPairsOnlyRejectsExtraThresholds) {
+    const auto db = random_db(2, 24, 20);
     auto config = small_config();
-    config.frechet = query::FrechetVariant::Discrete;
-    auto workloads = teacher::load_or_build_workloads(db, config, 11, m_dir);
-    const teacher::ObjectiveConfig objective{.join_mode = query::JoinMode::Self,
-                                             .ranking_knn = true};
-    const teacher::Teacher guarded(db, workloads, objective, 11, true);
-    const std::size_t budget = 2 * db.size() + 40;
-    const std::vector<std::string> arms{"TEACHER_RDP", "BR_TEACHER_RDP"};
-    const auto g = guarded.run(budget, arms);
-    const auto &o = guarded.objective();
-    auto kept = [](const teacher::Arm &arm) {
-        teacher::KeptSets k(arm.simplification.size());
-        for (std::size_t i = 0; i < k.size(); ++i)
-            k[i].assign(arm.simplification.trajectory(i).begin(),
-                        arm.simplification.trajectory(i).end());
-        return k;
-    };
-    const auto start = o.metrics(kept(g[0])), after = o.metrics(kept(g[1]));
-    // Lists of 3k cover small databases almost fully; allow for the rare unwatched entry
-    EXPECT_GE(after[teacher::Objective::Knn], start[teacher::Objective::Knn] - 0.02);
-    EXPECT_GE(after[teacher::Objective::Join], start[teacher::Objective::Join] - 1e-12);
-    EXPECT_GE(g[1].objective, g[0].objective - 0.02);
+    config.extra_join_eps_m = {config.join_eps_m * 2.0};
+    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    EXPECT_THROW(teacher::Objective(db, workloads, {.all_join_pairs = false}),
+                 std::invalid_argument);
+    EXPECT_NO_THROW(teacher::Objective(db, workloads, {.all_join_pairs = true}));
 }
 
 TEST_F(TeacherTest, ExtraJoinThresholdsMustBeDistinctAndPositive) {
@@ -442,69 +443,15 @@ TEST_F(TeacherTest, HeldOutJoinScoresOriginalQueriesAgainstCompressedPartners) {
                 sum / static_cast<double>(counted), 1e-12);
 }
 
-TEST_F(TeacherTest, ShapeTermIsZeroAtTheFloorAndSeparable) {
-    const auto db = random_db(6, 24, 30);
-    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 17, m_dir);
-    const teacher::Objective plain(db, workloads);
-    const teacher::Objective shaped(db, workloads, {.shape_weight = 0.25});
-    const auto floor = endpoints(db), full = every_point(db);
-    EXPECT_NEAR(shaped.total(floor), 0.0, 1e-12);
-    // Keeping every point is a perfect shape, so the term adds exactly its weight
-    EXPECT_NEAR(shaped.total(full) - plain.total(full), 0.25, 1e-9);
-    for (std::size_t i = 0; i < db.size(); ++i) {
-        EXPECT_DOUBLE_EQ(shaped.shape(i, db.trajectory(i)), 1.0);
-        auto state = floor;
-        state[i] = full[i];
-        const double change = shaped.total(state) - shaped.total(floor);
-        const double join = plain.total(state) - plain.total(floor) -
-                            (plain.separable(i, full[i]) - plain.separable(i, floor[i]));
-        EXPECT_NEAR(change, shaped.separable(i, full[i]) - shaped.separable(i, floor[i]) + join,
-                    1e-9);
-    }
-}
-
-TEST_F(TeacherTest, ShapeKnnTermNeverCreditsMoreThanTheQueryTerm) {
-    const auto db = random_db(5, 24, 30);
-    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 15, m_dir);
-    const teacher::Objective by_shape(db, workloads, {.knn_by_shape = true});
-    const teacher::Objective by_query(db, workloads);
-    // The shape condition implies the query one, so it can only credit fewer hits
-    std::mt19937_64 rng(6);
-    for (int trial = 0; trial < 20; ++trial) {
-        teacher::KeptSets kept(db.size());
-        for (std::size_t i = 0; i < db.size(); ++i) {
-            const std::size_t n = db.trajectory(i).size();
-            kept[i] = {0, n - 1};
-            for (std::size_t k = 1; k + 1 < n; ++k)
-                if (rng() % 4 == 0)
-                    kept[i].push_back(k);
-            std::ranges::sort(kept[i]);
-        }
-        EXPECT_LE(by_shape.metrics(kept)[teacher::Objective::Knn],
-                  by_query.metrics(kept)[teacher::Objective::Knn] + 1e-12);
-    }
-    EXPECT_GT(by_shape.metrics(every_point(db))[teacher::Objective::Knn], 0.0);
-}
-
 TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) {
     const auto db = random_db(2, 24, 20);
     const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
     std::mt19937_64 rng(74);
-    // {knn_by_shape, shape_weight, held-out join}
-    struct Variant {
-        bool knn_by_shape;
-        double shape_weight;
-        bool held_out;
-    };
-    for (const auto &[knn_by_shape, shape_weight, held_out] :
-         {Variant{false, 0.0, false}, Variant{false, 0.25, false}, Variant{true, 0.0, false},
-          Variant{true, 0.25, false}, Variant{false, 0.0, true}}) {
+    for (const bool held_out : {false, true}) {
         {
             const teacher::Objective objective(
                 db, workloads,
-                {.knn_by_shape = knn_by_shape,
-                 .shape_weight = shape_weight,
-                 .join_mode = held_out ? query::JoinMode::HeldOut : query::JoinMode::Self});
+                {.join_mode = held_out ? query::JoinMode::HeldOut : query::JoinMode::Self});
             std::size_t with_truth = 0;
             for (std::size_t i = 0; i < db.size(); ++i)
                 with_truth += objective.truth(i) != 0;
@@ -585,17 +532,17 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
                 EXPECT_TRUE(std::ranges::is_sorted(kept));
                 EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
             }
-            if (arm.name == "GATEORIG_a0")
+            if (arm.name == "EQUAL_CHOICE")
                 gate_orig_jt = arm.objective;
-            if (arm.name == "GATE_a0")
+            if (arm.name == "EQUAL_CHOICE_RDP_PARTNERS")
                 gate_jt = arm.objective;
-            if (arm.name == "BR_a0")
+            if (arm.name == "EQUAL_LOOP")
                 br_a0_jt = arm.objective;
-            if (arm.name == "TEACHER")
+            if (arm.name == "BUDGET_CHOICE")
                 teacher_jt = arm.objective;
-            if (arm.name == "BR_TEACHER")
+            if (arm.name == "BUDGET_LOOP")
                 br_jt = arm.objective;
-            if (arm.name == "ITER_TEACHER")
+            if (arm.name == "BUDGET_LOOP_REALLOCATE")
                 iter_jt = arm.objective;
         }
         EXPECT_GE(br_a0_jt, gate_jt - 1e-12);
@@ -659,10 +606,24 @@ TEST_F(TeacherTest, ExtremeBudgetsKeepEndpointsOrEveryPointForEveryArm) {
     }
 }
 
+TEST_F(TeacherTest, SingleRecipesKeepTheBudget) {
+    const auto db = random_db(3, 30, 25);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
+    const teacher::Teacher model(db, std::move(workloads), {}, 11);
+    const std::size_t budget = 2 * db.size() + 40;
+    const auto recipes = model.single_recipes(budget);
+    ASSERT_EQ(recipes.size(), 6u);
+    EXPECT_EQ(recipes.front().name, "RECIPE_RDP");
+    for (const auto &arm : recipes) {
+        SCOPED_TRACE(arm.name);
+        EXPECT_EQ(arm.simplification.num_points(), budget);
+    }
+}
+
 TEST(Teacher, RejectsUnknownArms) {
-    EXPECT_TRUE(teacher::is_arm("GATE_a0"));
+    EXPECT_TRUE(teacher::is_arm("EQUAL_CHOICE_RDP_PARTNERS"));
     EXPECT_FALSE(teacher::is_arm("gate_a0"));
-    EXPECT_TRUE(teacher::is_arm("TEACHER"));
+    EXPECT_TRUE(teacher::is_arm("BUDGET_CHOICE"));
     EXPECT_FALSE(teacher::is_arm("TEACHER_A0"));
 }
 

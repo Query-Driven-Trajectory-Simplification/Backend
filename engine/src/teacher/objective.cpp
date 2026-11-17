@@ -98,6 +98,18 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
         throw std::invalid_argument("objective: kNN workload does not match the database");
     if (!(config.min_tolerance_m < config.max_tolerance_m))
         throw std::invalid_argument("objective: min_tolerance_m must be below max_tolerance_m");
+    double weight_sum = 0;
+    for (const double w : config.term_weights) {
+        if (!std::isfinite(w) || w < 0)
+            throw std::invalid_argument("objective: term weights must be finite and not negative");
+        weight_sum += w;
+    }
+    if (weight_sum <= 0)
+        throw std::invalid_argument("objective: at least one term weight must be positive");
+    // Extra thresholds use every pair, which would train on the pairs held back as unseen
+    if (!config.all_join_pairs && !workloads.extra_joins.empty())
+        throw std::invalid_argument(
+            "objective: seen-pairs-only training cannot use extra join thresholds");
 
     // kNN: invert each query's top k
     m_knn.resize(n);
@@ -112,19 +124,6 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     }
     m_knn_weight =
         valid ? 1.0 / (static_cast<double>(workloads.k) * static_cast<double>(valid)) : 0.0;
-    if (config.knn_by_shape)
-        core::parallel_for(n, [&](std::size_t i) {
-            // Discrete Fréchet bounds the continuous one from above, so either way the margin is
-            // never too large. Values at or above the cutoff leave no margin
-            std::vector<double> prev, curr;
-            for (auto &m : m_knn[i]) {
-                const double limit = m.cutoff * m.cutoff * (1.0 + 1e-12);
-                const double d2 = query::get_squared_frechet_distance(
-                    db.trajectory(m.query), db.trajectory(i), limit, prev, curr);
-                m.margin = d2 < limit ? std::max(0.0, m.cutoff - std::sqrt(d2)) : 0.0;
-            }
-            std::ranges::sort(m_knn[i], std::greater{}, &KnnMembership::margin);
-        });
 
     // Range: invert each box's reference. Recall per box, averaged over boxes like range F1
     m_range.resize(n);
@@ -203,7 +202,7 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     for (std::size_t m = 0; m < TermCount; ++m) {
         if (m_floor[m] >= 1.0)
             throw std::runtime_error("objective: a metric is already perfect with endpoints only");
-        m_scale[m] = 1.0 / (static_cast<double>(TermCount) * (1.0 - m_floor[m]));
+        m_scale[m] = config.term_weights[m] / (weight_sum * (1.0 - m_floor[m]));
     }
     m_v0.assign(n, 0.0);
     core::parallel_for(n, [&](std::size_t i) {
@@ -212,39 +211,6 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
         for (const auto m : {Knn, Range, WhereAt})
             m_v0[i] += m_scale[m] * t[m];
     });
-    if (config.shape_weight > 0) {
-        m_shape0.assign(n, 0.0);
-        core::parallel_for(n, [&](std::size_t i) {
-            m_shape0[i] = shape(i, PreparedTrajectory(db.trajectory(i), endpoints[i]).view());
-        });
-        const double floor =
-            std::accumulate(m_shape0.begin(), m_shape0.end(), 0.0) / static_cast<double>(n);
-        if (floor >= 1.0)
-            throw std::runtime_error("objective: shape is already perfect with endpoints only");
-        m_shape_scale = config.shape_weight / ((1.0 - floor) * static_cast<double>(n));
-    }
-}
-
-double Objective::shape(std::size_t i, const core::TrajectoryView &s) const {
-    const auto v = m_db.trajectory(i);
-    if (v.size() == 0 || s.size() < 2)
-        return 1.0;
-    double sum = 0;
-    std::size_t seg = 0;
-    for (std::size_t k = 0; k < v.size(); ++k) {
-        while (seg + 2 < s.size() && s.t[seg + 1] <= v.t[k])
-            ++seg;
-        const double ax = s.x[seg], ay = s.y[seg];
-        const double dx = s.x[seg + 1] - ax, dy = s.y[seg + 1] - ay;
-        const double len2 = dx * dx + dy * dy;
-        const double u =
-            len2 > 0 ? std::clamp(((v.x[k] - ax) * dx + (v.y[k] - ay) * dy) / len2, 0.0, 1.0) : 0.0;
-        const double error = std::hypot(ax + u * dx - v.x[k], ay + u * dy - v.y[k]);
-        sum += std::clamp((m_config.max_tolerance_m - error) /
-                              (m_config.max_tolerance_m - m_config.min_tolerance_m),
-                          0.0, 1.0);
-    }
-    return sum / static_cast<double>(v.size());
 }
 
 bool Objective::match(const core::TrajectoryView &a, const core::TrajectoryView &b,
@@ -260,21 +226,7 @@ Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryV
                                           bool knn) const {
     Terms t{};
 
-    if (knn && m_config.knn_by_shape) {
-        // Margins are sorted largest first, so the hits are a prefix: binary search for its end
-        const auto &members = m_knn[i];
-        const auto original = m_db.trajectory(i);
-        std::size_t lo = 0, hi = members.size();
-        while (lo < hi) {
-            const std::size_t mid = (lo + hi) / 2;
-            if (members[mid].margin > 0 &&
-                query::frechet_within(s, original, members[mid].margin, m_workloads.frechet))
-                lo = mid + 1;
-            else
-                hi = mid;
-        }
-        t[Knn] = m_knn_weight * static_cast<double>(lo);
-    } else if (knn) {
+    if (knn) {
         for (const auto &m : m_knn[i])
             if (query::frechet_within(m_db.trajectory(m.query), s, m.cutoff, m_workloads.frechet))
                 t[Knn] += m_knn_weight;
@@ -309,10 +261,8 @@ double Objective::separable(std::size_t i, std::span<const std::size_t> kept) co
 
 double Objective::separable(std::size_t i, const core::TrajectoryView &candidate) const {
     const auto t = raw_separable(i, candidate, !m_config.ranking_knn);
-    const double shape_part =
-        m_shape_scale > 0 ? m_shape_scale * (shape(i, candidate) - m_shape0[i]) : 0.0;
     return m_scale[Knn] * t[Knn] + m_scale[Range] * t[Range] + m_scale[WhereAt] * t[WhereAt] -
-           m_v0[i] + shape_part;
+           m_v0[i];
 }
 
 double Objective::independent_value(std::size_t i, const core::TrajectoryView &candidate,
@@ -327,7 +277,7 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
     IndependentScore score;
     score.trajectory = i;
     score.candidate = candidate;
-    score.terms = raw_separable(i, candidate, m_config.knn_by_shape);
+    score.terms = raw_separable(i, candidate, false);
     std::array<std::size_t, kMaxJoinTerms> hits{}, found{};
     for (const auto &link : m_links[i]) {
         // Held out: the partner is the original query and i the database side
@@ -346,7 +296,6 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
             f1_sum += f1_of(hits[k], found[k], m_truth[slot(i, k)]);
     score.join =
         m_with_truth != 0 ? m_scale[Join] * f1_sum / static_cast<double>(m_with_truth) : 0.0;
-    score.shape = m_shape_scale > 0 ? m_shape_scale * (shape(i, candidate) - m_shape0[i]) : 0.0;
     score.bound = independent_sum(score, score.terms[Knn]) +
                   m_scale[Knn] * m_knn_weight * static_cast<double>(m_knn[i].size());
     return score;
@@ -355,16 +304,13 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
 double Objective::independent_sum(const IndependentScore &score, double knn) const {
     // Same sums in the same order as separable, so the value is identical to the last bit
     return m_scale[Knn] * knn + m_scale[Range] * score.terms[Range] +
-           m_scale[WhereAt] * score.terms[WhereAt] - m_v0[score.trajectory] + score.shape +
-           score.join;
+           m_scale[WhereAt] * score.terms[WhereAt] - m_v0[score.trajectory] + score.join;
 }
 
 double Objective::independent_value(const IndependentScore &score, double beat) const {
     const auto i = score.trajectory;
     double knn = score.terms[Knn];
     auto value = [&] { return independent_sum(score, knn); };
-    if (m_config.knn_by_shape)
-        return value();
     // Each check can add at most one hit. Stop once even all of the rest cannot beat beat; the
     // slack keeps rounding from cutting a candidate that would just win
     const double per_hit = m_scale[Knn] * m_knn_weight;
@@ -465,14 +411,6 @@ double Objective::total(const KeptSets &kept) const {
     double j = 0;
     for (std::size_t k = 0; k < TermCount; ++k)
         j += m_scale[k] * (m[k] - m_floor[k]);
-    if (m_shape_scale > 0) {
-        std::vector<double> gain(kept.size());
-        core::parallel_for(kept.size(), [&](std::size_t i) {
-            gain[i] =
-                shape(i, PreparedTrajectory(m_db.trajectory(i), kept[i]).view()) - m_shape0[i];
-        });
-        j += m_shape_scale * std::accumulate(gain.begin(), gain.end(), 0.0);
-    }
     return j;
 }
 
@@ -665,11 +603,10 @@ std::size_t KnnState::hits(std::size_t e, std::size_t position, double distance)
     for (std::size_t p = 0; p < list.size(); ++p)
         order[p] = {p == position ? distance : m_distance[e][p], static_cast<std::uint32_t>(p)};
     // Ties go to the lower database index, like query::knn
-    std::ranges::partial_sort(order, order.begin() + static_cast<std::ptrdiff_t>(k),
-                              [&](const auto &a, const auto &b) {
-                                  return a.first < b.first ||
-                                         (a.first == b.first && list[a.second] < list[b.second]);
-                              });
+    std::ranges::partial_sort(
+        order, order.begin() + static_cast<std::ptrdiff_t>(k), [&](const auto &a, const auto &b) {
+            return a.first < b.first || (a.first == b.first && list[a.second] < list[b.second]);
+        });
     std::size_t count = 0;
     for (std::size_t p = 0; p < k; ++p)
         count += order[p].second < members;

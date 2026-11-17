@@ -16,6 +16,10 @@ namespace evaluator {
 // join, so including it would count pair preservation twice.
 // The self join is a diagnostic too, scored next to a held-out join: its pairs are database pairs,
 // which anything fitted to the database has already seen.
+// The join term is join F1 at the join's own threshold, averaged with the same join at the
+// thresholds in Scoretable::join_grid, each normalised against its own floor. join_f1 keeps the
+// first threshold alone. Clustering is averaged over Scoretable::clustering_grid the same way, and
+// clustering_score keeps its own threshold alone.
 struct NormalizedScores {
     static constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 

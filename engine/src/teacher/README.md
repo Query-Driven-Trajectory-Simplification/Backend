@@ -1,7 +1,7 @@
 # The teacher
 
 The teacher is a slow, query-aware simplifier. It searches how many points each trajectory gets
-and which candidate keeps them: RDP, SED, UNIFORM or one of four greedy variants. Its output is
+and which candidate keeps them: RDP, SED, UNIFORM or one of three greedy variants. Its output is
 meant to be a target that a learned model can later imitate.
 
 It sees **only the database** (the 85% split) and workloads built from it with their own seeds. It
@@ -17,14 +17,15 @@ pipeline::run                                    (pipeline.cpp)
  │    └─ Objective(db, workloads)                 objective.cpp: inverts workloads, computes floors
  └─ per budget share:
       Teacher::run(budget, arms)
-       ├─ make_candidates                         seven candidate recipes at equal budgets
-       ├─ GATEORIG_a0: independent_choice         best method, partners original
-       ├─ GATE_a0 / BR_a0                         fixed budgets, selection / best response
+       ├─ make_candidates                         six candidate recipes at equal budgets
+       ├─ EQUAL_CHOICE: independent_choice        best candidate, partners original
+       ├─ EQUAL_CHOICE_RDP_PARTNERS / EQUAL_LOOP  equal budgets: partners guessed as RDP / the loop
        ├─ build_curves → allocate                 partners fixed at equal-budget RDP
-       │   ├─ TEACHER_RDP                         allocation using RDP alone
-       │   ├─ TEACHER → BR_TEACHER                 best candidates, then best response
-       │   └─ BR_SHUFFLED                         control with relabelled join partners
-       └─ ITER_TEACHER                            rebuild curves, reallocate, best response
+       │   ├─ BUDGET_RDP                          searched budgets, RDP's points
+       │   ├─ BUDGET_CHOICE → BUDGET_LOOP         best candidates, then the loop: the teacher
+       │   ├─ BUDGET_LOOP_REALLOCATE              rebuild curves, re-search budgets, loop again
+       │   ├─ BUDGET_LOOP_NO_UPDATE               control: one look at the start, no reacting
+       │   └─ BUDGET_LOOP_SHUFFLED                control: partners and neighbours relabelled
       → each arm evaluated and exported like RDP and SED
 ```
 
@@ -33,7 +34,7 @@ Files:
 | File | Contents |
 |---|---|
 | `workloads.hpp/.cpp` | The teacher's training workloads, and the cache that saves the slow part |
-| `objective.hpp/.cpp` | J_T, the score the teacher maximises, and `JoinState` for fast exact join updates |
+| `objective.hpp/.cpp` | J_T, the score the teacher maximises, and `JoinState` and `KnnState` for fast exact join and kNN updates |
 | `curves.hpp/.cpp` | Value curves and the budget allocator |
 | `greedy.hpp/.cpp` | Query-aware point selection, with optional classic-method seeds |
 | `teacher.hpp/.cpp` | The `Teacher` class and the selection steps |
@@ -56,9 +57,15 @@ Files:
   the seen / unseen recall and the 100 / 300 m thresholds) and is not part of J4. Results quoted
   below predate this and have the self join inside the score.
 - **J5:** the earlier headline, J4 plus clustering. Results quoted below from earlier runs use it;
-  `teacher_eval` still writes it so old and new runs can be compared.
-- **J_T:** the teacher's own score on its training workloads. It has the same shape as J4. kNN and range use training proxies; an optional shape term can also be
-  enabled.
+  `teacher_eval` no longer writes it.
+- **J_T:** the teacher's own score on its training workloads. It has the same shape as J4. kNN
+  and range use training proxies.
+- **J_T's kNN term:** with `teacher.ranking_knn` (the default) it is recall@k of the teacher's
+  database queries answered on the compressed database, so competitors are compressed too, like
+  the test. The loop tracks it with `KnnState`. Value curves still use the per-trajectory check
+  against original competitors, which `teacher_eval --independent-knn` restores everywhere as the
+  ablation. The per-trajectory check misleads the teacher: it credited the teacher with beating
+  RDP on kNN where held-out queries showed it did not.
 - **J_T's join term:** follows `join.mode`, so the teacher trains on the kind of join it is
   scored on. `Self`: both sides of a pair compressed, the self join. `HeldOut`: every database
   trajectory also acts as an original query against its compressed partners, so each pair is
@@ -66,7 +73,7 @@ Files:
   This is the database-only stand-in for the held-out join, as the kNN proxy is for held-out
   kNN; the teacher still never sees the query pool. `teacher.join` (or `teacher_eval
   --teacher-join Self|HeldOut`) overrides it, e.g. to train on the self join for the self-join
-  experiment. Held out, `GATE_a0` and `GATEORIG_a0` are the same arm, and best response is
+  experiment. Held out, `EQUAL_CHOICE_RDP_PARTNERS` and `EQUAL_CHOICE` are the same arm, and best response is
   coupled only through each query's F1. Everything below describing the join term as "both
   sides compressed" is the `Self` mode.
 - **Join terms:** the join term can pool several terms. `teacher.extra_join_eps_m` (or
@@ -79,16 +86,17 @@ Files:
   all of it. The pairs are also split in half (seen / unseen); with `all_join_pairs = false` the
   teacher only gets the seen half, which shows how much of its join gain is fitting those
   specific pairs. Whether the join gain generalises is tested at other thresholds (100 m, 300 m).
-- **Arm:** one named output of the teacher, e.g. `GATE_a0`.
+- **Arm:** one named output of the teacher, e.g. `EQUAL_CHOICE_RDP_PARTNERS`.
 
 ---
 
 ## How selection works, in plain terms
 
 ### What is being chosen
-- At a given budget, the teacher chooses **one candidate per trajectory**. The seven recipes are
-  RDP, SED, UNIFORM, unseeded greedy, greedy seeded with a quarter or half of the interior budget
-  from SED, and greedy seeded with half from RDP. Seeded candidates combine classic and greedy
+- At a given budget, the teacher chooses **one candidate per trajectory**. The six recipes are
+  RDP, SED, UNIFORM, unseeded greedy, and greedy seeded with half of the interior budget from
+  SED or from RDP. A variant seeded with a quarter from SED was removed: at small budgets it
+  kept the same points as unseeded greedy. Seeded candidates combine classic and greedy
   point selection. Different recipes can produce identical kept sets.
 - The fixed-budget arms use equal shares (α = 0). Allocation arms search per-trajectory budgets
   using value curves, while keeping the total fixed.
@@ -112,12 +120,12 @@ depends on what its join partners chose.
 The fixed-budget arms illustrate two stages, which differ in how the join partners are seen:
 
 ```
-Stage 1, GATE_a0:  one round, every trajectory on its own, partners ASSUMED to be RDP
-Stage 2, BR_a0:    starts from stage 1, partners are their ACTUAL current choices
+Stage 1, EQUAL_CHOICE_RDP_PARTNERS:  one round, every trajectory on its own, partners ASSUMED to be RDP
+Stage 2, EQUAL_LOOP:    starts from stage 1, partners are their ACTUAL current choices
                    pass 1, pass 2, ... until a pass makes no switches
 ```
 
-| | Stage 1 (GATE_a0) | Stage 2 (BR) |
+| | Stage 1 (EQUAL_CHOICE_RDP_PARTNERS) | Stage 2 (BR) |
 |---|---|---|
 | Points per trajectory | fixed budget | fixed budget |
 | Methods tried for i | all 7 recipes | other distinct kept sets |
@@ -131,7 +139,7 @@ Stage 1 is not needed for correctness: BR could start from all-RDP and still cli
 good starting point, and it is a result of its own (the independent, one-pass teacher), which
 shows how much stage 2 adds.
 
-### Stage 1: GATE_a0 (`independent_choice`, or `curve_methods`)
+### Stage 1: EQUAL_CHOICE_RDP_PARTNERS (`independent_choice`, or `curve_methods`)
 For each trajectory i, independently, score its candidates at its equal budget with
 `independent_value`, with join partners fixed at equal-budget RDP. Choose the highest score;
 ties go to the earlier candidate. If allocation arms also need curves, read the same choice from
@@ -142,12 +150,20 @@ actual J_T once both sides of every join pair use their chosen candidates.
 
 ### Allocation arms
 `build_curves` scores budgets from 2 up to a per-trajectory cap. `allocate` fills the total budget
-with greedy additions, then improves the curve sum by moving up to three points between a donor
-and a receiver. `TEACHER_RDP` uses RDP-only curves; `TEACHER` uses the best of all candidates.
-`BR_TEACHER` applies best response at those allocated budgets. `BR_SHUFFLED` is a control that
-searches with relabelled partners, then scores the result against the real workloads.
+with greedy additions of up to three points at a time. `BUDGET_RDP` uses RDP-only curves; `BUDGET_CHOICE` uses the best of all candidates.
+`BUDGET_LOOP` applies best response at those allocated budgets. `BUDGET_LOOP_SHUFFLED` is a control that
+searches with relabelled partners and kNN neighbours, then scores the result against the real
+workloads. `BUDGET_LOOP_NO_UPDATE` is the second control: one pass from the same start in which
+every trajectory picks its best candidate against the others' starting state and never sees their
+switches. The gap between it and `BUDGET_LOOP` is what reacting adds to looking once.
 
-`ITER_TEACHER` starts from `BR_TEACHER`. Each round rebuilds curves against the current partner
+`Teacher::single_recipes` gives the matching baselines: each candidate recipe for every trajectory
+at equal budgets (`RECIPE_RDP`, …, `RECIPE_GREEDY_RDP2`). `teacher_eval` writes them with the
+other baselines. `RECIPE_RDP`, `RECIPE_SED` and `RECIPE_UNIFORM` equal `RDP_a0`, `SED_a0` and
+`UNI_a0`; the greedy recipes are the query-aware single recipes that choosing per trajectory must
+beat.
+
+`BUDGET_LOOP_REALLOCATE` starts from `BUDGET_LOOP`. Each round rebuilds curves against the current partner
 state, reallocates and runs best response. A round is accepted only if the exact J_T improves by
 more than 1e-12; at most three rounds are tried.
 
@@ -187,7 +203,7 @@ A reduced example using only the three classic candidates: trajectories 1–4; (
 join pair, and 1 is also paired with 2.
 
 ```
-stage 1 (GATE_a0): 1=RDP  2=RDP  3=SED  4=SED
+stage 1 (EQUAL_CHOICE_RDP_PARTNERS): 1=RDP  2=RDP  3=SED  4=SED
   1 chose RDP assuming its partner 4 would be RDP, but 4 actually chose SED,
   so the pair (1, 4) doesn't match.
 
@@ -223,7 +239,7 @@ switch only rescores that trajectory's own pairs (usually a handful) instead of 
 pairs, and the result is exact: the tests check it against a full recompute.
 
 ### What it shows
-In an earlier three-candidate run, seed 42 at 0.25%: GATE_a0 0.506 → BR_a0 0.544 J5, with the same
+In an earlier three-candidate run, seed 42 at 0.25%: EQUAL_CHOICE_RDP_PARTNERS 0.506 → EQUAL_LOOP 0.544 J5, with the same
 methods and budgets. The gain is in join (0.522 → 0.621) and clustering. The only difference is using the
 partners' actual choices. Part of the join gain is in-sample, though: recall on unseen pairs falls
 below seen pairs (0.78 against 0.89).
@@ -421,15 +437,15 @@ trajectory can't have a point in a box the original had none in.
 - **Why:** the value curves need one number per (trajectory, candidate), computed without knowing
   what the other trajectories will choose.
 - **Input:** trajectory index, a prepared candidate view, and fixed partner views. An empty
-  partner span means original partners (the `GATEORIG_a0` arm); otherwise the views contain RDP
-  at equal budgets for `GATE_a0`.
+  partner span means original partners (the `EQUAL_CHOICE` arm); otherwise the views contain RDP
+  at equal budgets for `EQUAL_CHOICE_RDP_PARTNERS`.
 - **Computation:** `separable(i, candidate)` plus i's own join F1 against those fixed partners: count
   `found` and `hits` over i's links using `match`, then add
   `m_scale[Join] · F1_i / (trajectories with truth)`.
 - **Output:** an approximate per-trajectory score. It's approximate because the real join depends
   on partners' actual choices and counts each pair on both sides. That is exactly what
   `best_response` corrects.
-- `prepare_independent` computes the range, where-at, shape and join terms once, together with
+- `prepare_independent` computes the range, where-at and join terms once, together with
   the upper bound used to order candidates. `independent_value(score, beat)` reuses those terms
   while checking kNN, so a candidate is not rescored just because its bound was promising. The
   prepared score borrows its candidate's coordinates and must be used before they change.
@@ -522,9 +538,10 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
 - **Note:** Fréchet thresholds flip on and off, so a curve is a step function and need not rise at
   every step.
 
-`allocate(curves, total_budget, stats)` starts with endpoints, fills the remaining budget with
-greedy steps of up to three points, then makes improving donor/receiver exchanges of up to three
-points. It preserves the exact total budget and respects every curve's maximum budget. It is a
+`allocate(curves, total_budget, value)` starts with endpoints and fills the remaining budget with
+greedy steps of up to three points, taking the best gain per point each time. A donor/receiver
+exchange pass used to follow; across the runs of November 2026 it never changed the curve sum by
+more than 0.0001, so it was removed. It preserves the exact total budget and respects every curve's maximum budget. It is a
 heuristic search of the curve sum, which is distinct from the exact J_T with both partners
 simplified.
 
@@ -536,13 +553,14 @@ simplified.
 
 | Name | Meaning |
 |---|---|
-| `CandidateIndex`, `kCandidates` | Named indices and labels for the seven candidate recipes. The index is the "method". |
-| `kArms` | the eight valid arm names, listed in `teacher.hpp` |
-| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `shape_weight`, `join` (optional, default: the pipeline's `join.mode`), `extra_join_eps_m`, `held_out_term` |
+| `CandidateIndex`, `kCandidates` | Named indices and labels for the six candidate recipes. The index is the "method". |
+| `kArms` | the nine valid arm names, listed in `teacher.hpp` |
+| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `join` (optional, default: the pipeline's `join.mode`), `extra_join_eps_m`, `held_out_term`, `ranking_knn` (default true), `term_weights` (kNN, range, where-at, join; equal by default) |
 | `Arm` | one result: `name`, `simplification` (for the pipeline), `objective` (its J_T) |
 | `Candidates` | `candidates[c][i]` = trajectory i simplified with method c |
 | `Methods` | one method index per trajectory, i.e. a selection |
 | `kMaxResponsePasses` | at most 10 best-response passes |
+| `kKnnWatchFactor` | each kNN query watches its 3k nearest trajectories under each candidate state |
 | `kMaxAllocationRounds` | at most 3 iterative reallocation rounds |
 | `kMinImprovement` | strict gain threshold, 1e-12 |
 
@@ -563,11 +581,11 @@ simplified.
      Curves are capped at about four times the mean interior budget, at least six interior
      points, never below the equal budget and never above trajectory length.
   3. `make_candidates` at those budgets, building only RDP if no fixed-budget arm needs alternatives.
-  4. **`GATEORIG_a0`** (if requested): `independent_choice` with `partners = nullptr`.
-  5. **`GATE_a0` and `BR_a0`** (if either is requested):
+  4. **`EQUAL_CHOICE`** (if requested): `independent_choice` with `partners = nullptr`.
+  5. **`EQUAL_CHOICE_RDP_PARTNERS` and `EQUAL_LOOP`** (if either is requested):
      - score candidates directly against equal-budget RDP partners, or reuse curves if allocation
-       arms also need them, to obtain `GATE_a0`;
-     - `best_response` starting from `GATE_a0`, which gives `BR_a0`.
+       arms also need them, to obtain `EQUAL_CHOICE_RDP_PARTNERS`;
+     - `best_response` starting from `EQUAL_CHOICE_RDP_PARTNERS`, which gives `EQUAL_LOOP`.
   6. Allocation arms build curves against equal-budget RDP, allocate the total budget, and select
      candidates. Response arms refine that selection; iterative rounds rebuild against the current
      partners and keep only improvements in exact J_T.
@@ -580,7 +598,7 @@ simplified.
 
 - **Why:** each candidate is simplified once, then reused by every step.
 - **Input:** objective, per-trajectory budgets and caps, and optionally selected method indices.
-- **Computation:** in parallel, `CandidateMaker` builds all seven recipes, or only the selected
+- **Computation:** in parallel, `CandidateMaker` builds all six recipes, or only the selected
   recipe for each trajectory. Classic sequences and greedy sequences with the same seed are reused.
 - **Output:** `Candidates`.
 
@@ -597,7 +615,7 @@ simplified.
 - **Input:** candidates, and the partner state for `independent_value`.
 - **Computation:** in parallel, for each trajectory, the method with the highest
   `independent_value`. Ties go to the earlier method, so RDP wins when nothing differs.
-- **Output:** `Methods`. With `partners = nullptr` this gives `GATEORIG_a0`. Original partners
+- **Output:** `Methods`. With `partners = nullptr` this gives `EQUAL_CHOICE`. Original partners
   hide the effect of simplifying both sides of a join pair.
 
 ### `build_curves(db, objective, partners, caps, rdp_only)` — internal
@@ -612,11 +630,11 @@ simplified.
   - score each with `independent_value` against the fixed partner reference;
   - record the best value and method.
 - **Output:** RDP-only and best-candidate curves per trajectory.
-- Runs requesting only `GATE_a0` and/or `BR_a0` score their fixed budgets directly and skip full
+- Runs requesting only `EQUAL_CHOICE_RDP_PARTNERS` and/or `EQUAL_LOOP` score their fixed budgets directly and skip full
   curve construction.
 - **Why partners as RDP:** a fixed, plausible guess at how partners will look. It still scores each
   trajectory on its own, but it rewards matching how partners will likely be simplified. This took
-  J5 from 0.446 (`GATEORIG_a0`) to 0.506 (`GATE_a0`) in the earlier three-candidate experiment.
+  J5 from 0.446 (`EQUAL_CHOICE`) to 0.506 (`EQUAL_CHOICE_RDP_PARTNERS`) in the earlier three-candidate experiment.
 
 ### `curve_methods(curves, budgets)` — internal
 
@@ -629,14 +647,15 @@ simplified.
 - **Why:** this step uses the partners' **actual** choices instead of a guess. A trajectory's best
   method depends on what its join partners chose, so the teacher revisits trajectories until no
   single change helps.
-- **Input:** candidates, a starting selection (`GATE_a0` or `TEACHER`), and the seed.
+- **Input:** candidates, a starting selection (`EQUAL_CHOICE_RDP_PARTNERS` or `BUDGET_CHOICE`), and the seed.
 - **Computation:**
-  1. `order` = the trajectories with any join link. Only they can gain, since the other terms
-     don't depend on anyone else.
+  1. `order` = the trajectories with any join link or, with the ranking kNN term, a watching
+     query. Only they can gain, since the other terms don't depend on anyone else.
   2. Prepares candidate views, caches their separable scores, and builds the starting `JoinState`.
   3. For up to 10 passes, in a seeded random order:
      - for each trajectory i, and each other method c: gain = `separable(c) − separable(current)`
-       + `join.propose(c).gain`. That's the exact change in J_T;
+       + `join.propose(c).gain` + `knn.propose(c)`. That's the exact change in J_T, up to
+       trajectories outside a query's watch list entering its top k;
      - switches to the best c only if its gain beats 1e-12 (strictly positive, so ties can't
        cycle), and calls `join.apply`.
   4. Stops after a pass with no switches.
@@ -666,7 +685,7 @@ simplified.
 
 ## Earlier three-candidate results (Geolife, 0.25%, seed 42)
 
-These predate J4 and use J5, which includes clustering.
+These predate J4 and use J5, which includes clustering. Arm names are the old ones: `GATEORIG_a0` is now `EQUAL_CHOICE`, `GATE_a0` is `EQUAL_CHOICE_RDP_PARTNERS` and `BR_a0` is `EQUAL_LOOP`.
 
 | Arm | J_T | J5 |
 |---|---:|---:|
@@ -689,7 +708,12 @@ These timings predate the seven-candidate teacher, allocation search and cache c
   real change in J_T.
 - `SeveralJoinTermsAreTrackedExactly`: the same exactness with two extra thresholds, with and
   without the held-out term.
+- `RankingKnnIsTrackedExactly`: when every query watches every trajectory, `KnnState`'s tracked
+  recall equals a full recompute after random switches, and the kNN, join and separable changes
+  together predict the real change in J_T.
+- `RankingKnnArmsKeepTheBudget`: the arms keep exactly the budget with the ranking kNN term.
+- `SingleRecipesKeepTheBudget`: the six single-recipe baselines each keep exactly the budget.
 - `ArmsKeepTheBudgetAndBestResponseOnlyImproves`: every arm keeps exactly the budget, endpoints
-  kept, indices sorted; and `BR_a0`'s J_T ≥ `GATE_a0`'s.
+  kept, indices sorted; and `EQUAL_LOOP`'s J_T ≥ `EQUAL_CHOICE_RDP_PARTNERS`'s.
 
 `engine/tests/config_test.cpp` has the three teacher config tests.

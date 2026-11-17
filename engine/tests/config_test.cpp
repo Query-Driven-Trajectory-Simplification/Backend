@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -244,10 +246,11 @@ TEST(Config, TeacherIsOffByDefault) {
         pipeline::load_config(write_config("teacher_default.json", R"({"data_path": "d"})"));
     EXPECT_FALSE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "cache");
-    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"TEACHER", "BR_TEACHER"}));
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"BUDGET_CHOICE", "BUDGET_LOOP"}));
     EXPECT_TRUE(config.teacher.all_join_pairs);
     EXPECT_TRUE(config.teacher.extra_join_eps_m.empty());
     EXPECT_FALSE(pipeline::teacher_objective_config(config).held_out_term);
+    EXPECT_TRUE(pipeline::teacher_objective_config(config).ranking_knn);
     // The teacher's join term follows the join it is scored on
     EXPECT_FALSE(config.teacher.join);
     EXPECT_EQ(pipeline::teacher_objective_config(config).join_mode, query::JoinMode::HeldOut);
@@ -259,35 +262,52 @@ TEST(Config, TeacherIsOffByDefault) {
 TEST(Config, ReadsTheTeacherSection) {
     const auto config = pipeline::load_config(write_config("teacher.json", R"({
         "data_path": "d",
-        "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["GATEORIG_a0", "BR_a0"],
-                    "range_query_count": 1000, "all_join_pairs": false, "shape_weight": 0.25,
+        "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["EQUAL_CHOICE", "EQUAL_LOOP"],
+                    "range_query_count": 1000, "all_join_pairs": false,
                     "join": "Self", "extra_join_eps_m": [100, 300], "held_out_term": true,
-                    "ranking_knn": true, "guard": true}
+                    "ranking_knn": false, "term_weights": [2, 1, 1, 0]}
     })"));
     EXPECT_EQ(pipeline::teacher_objective_config(config).join_mode, query::JoinMode::Self);
     EXPECT_TRUE(pipeline::teacher_objective_config(config).held_out_term);
-    EXPECT_TRUE(pipeline::teacher_objective_config(config).ranking_knn);
-    EXPECT_TRUE(config.teacher.guard);
+    EXPECT_FALSE(pipeline::teacher_objective_config(config).ranking_knn);
+    EXPECT_EQ(pipeline::teacher_objective_config(config).term_weights,
+              (std::array<double, 4>{2.0, 1.0, 1.0, 0.0}));
     EXPECT_EQ(pipeline::teacher_workload_config(config).extra_join_eps_m,
               (std::vector<double>{100.0, 300.0}));
     EXPECT_TRUE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "my_cache");
-    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"GATEORIG_a0", "BR_a0"}));
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"EQUAL_CHOICE", "EQUAL_LOOP"}));
     EXPECT_EQ(config.teacher.range_query_count, 1000u);
     EXPECT_FALSE(config.teacher.all_join_pairs);
-    EXPECT_DOUBLE_EQ(config.teacher.shape_weight, 0.25);
 }
 
 TEST(Config, RejectsBadTeacherSections) {
     for (const auto &section :
          {R"({"enabled": true, "arms": ["DP"]})", R"({"enabled": true, "arms": []})",
-          R"({"arms": ["GATE_a0", "GATE_a0"]})", R"({"cache_dir": ""})",
-          R"({"range_query_count": 0})", R"({"shape_weight": -1})", R"({"seed": 7})",
-          R"({"join": "Both"})", R"({"extra_join_eps_m": [0]})",
+          R"({"arms": ["EQUAL_CHOICE_RDP_PARTNERS", "EQUAL_CHOICE_RDP_PARTNERS"]})",
+          R"({"cache_dir": ""})", R"({"range_query_count": 0})", R"({"shape_weight": 0.25})",
+          R"({"term_weights": [0, 0, 0, 0]})", R"({"term_weights": [-1, 1, 1, 1]})",
+          R"({"seed": 7})", R"({"join": "Both"})", R"({"extra_join_eps_m": [0]})",
           R"({"extra_join_eps_m": [-100]})"}) {
         SCOPED_TRACE(section);
         const auto contents = std::string(R"({"data_path": "d", "teacher": )") + section + "}";
         EXPECT_THROW(pipeline::load_config(write_config("bad_teacher.json", contents)),
+                     std::invalid_argument);
+    }
+}
+
+TEST(Config, ReadsTheJoinScoreThresholds) {
+    const auto config = pipeline::load_config(write_config(
+        "join_grid.json",
+        R"({"data_path": "d", "join": {"eps_m": 150, "score_eps_m": [100, 200, 300]}})"));
+    EXPECT_EQ(config.join_score_eps_m, (std::vector<double>{100.0, 200.0, 300.0}));
+    EXPECT_TRUE(pipeline::load_config(write_config("join_plain.json", R"({"data_path": "d"})"))
+                    .join_score_eps_m.empty());
+    for (const auto &grid : {"[150]", "[0]", "[100, 100]"}) {
+        SCOPED_TRACE(grid);
+        const auto contents = std::string(R"({"data_path": "d", "join": {"eps_m": 150, )") +
+                              R"("score_eps_m": )" + grid + "}}";
+        EXPECT_THROW(pipeline::load_config(write_config("bad_join_grid.json", contents)),
                      std::invalid_argument);
     }
 }

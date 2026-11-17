@@ -35,6 +35,7 @@
         "mode": "HeldOut",
         "query_count": 0,
         "eps_m": 150.0,
+        "score_eps_m": [100.0, 200.0, 300.0],
         "self_join": true
     },
     "clustering": {
@@ -46,11 +47,11 @@
     "teacher": {
         "enabled": false,
         "cache_dir": "cache",
-        "arms": ["TEACHER", "BR_TEACHER"],
+        "arms": ["BUDGET_CHOICE", "BUDGET_LOOP"],
         "range_query_count": 64000,
-        "extra_join_eps_m": [],
+        "extra_join_eps_m": [100.0, 125.0, 200.0, 300.0],
         "held_out_term": false,
-        "ranking_knn": false,
-        "guard": false
+        "ranking_knn": true,
+        "term_weights": [1.0, 1.0, 1.0, 1.0]
     }
 }

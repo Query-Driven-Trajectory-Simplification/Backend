@@ -14,7 +14,7 @@ from pathlib import Path
 from collections import defaultdict
 
 T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
-METRICS = ["J4", "J5", "J_fam", "norm_knn", "norm_range", "norm_where_at", "norm_join", "norm_clustering", "norm_self_join"]
+METRICS = ["J4", "norm_knn", "norm_range", "norm_where_at", "norm_join", "norm_clustering", "norm_self_join"]
 CHEAP = ["RDP_a0", "RDP_a025", "PARTNER_l0.5", "PARTNER_l1"]
 
 
@@ -67,6 +67,8 @@ def main():
     other = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))  # share, arm, eps, seed
     if (run / "thresholds.csv").exists():
         for r in csv.DictReader(open(run / "thresholds.csv")):
+            if r.get("join", "Self") != "Self":
+                continue
             v = num(r["norm_join"])
             if v is not None:
                 other[r["share"]][r["arm"]][float(r["eps_m"])][int(r["seed"])] = v
@@ -91,16 +93,16 @@ def main():
         for arm in sorted(arms):
             if arm != "RDP_a0" and "RDP_a0" in arms:
                 out.append(f"| {arm} − RDP_a0 | {fmt(paired(arms[arm]['J4'], arms['RDP_a0']['J4']))} |")
-        if best and "TEACHER" in arms:
-            gate = paired(arms["TEACHER"]["J4"], arms[best]["J4"])
-            out.append(f"| **TEACHER − {best} (gate: ≥ .03, CI above 0)** | {fmt(gate)} |")
-        if all(a in arms for a in ["RDP_a0", "GATE_a0", "TEACHER_RDP", "TEACHER"]):
-            j = {a: arms[a]["J4"] for a in ["RDP_a0", "GATE_a0", "TEACHER_RDP", "TEACHER"]}
+        if best and "BUDGET_CHOICE" in arms:
+            gate = paired(arms["BUDGET_CHOICE"]["J4"], arms[best]["J4"])
+            out.append(f"| **BUDGET_CHOICE − {best} (gate: ≥ .03, CI above 0)** | {fmt(gate)} |")
+        if all(a in arms for a in ["RDP_a0", "EQUAL_CHOICE_RDP_PARTNERS", "BUDGET_RDP", "BUDGET_CHOICE"]):
+            j = {a: arms[a]["J4"] for a in ["RDP_a0", "EQUAL_CHOICE_RDP_PARTNERS", "BUDGET_RDP", "BUDGET_CHOICE"]}
             seeds = set.intersection(*(set(v) for v in j.values()))
-            inter = {s: j["TEACHER"][s] - j["GATE_a0"][s] - j["TEACHER_RDP"][s] + j["RDP_a0"][s] for s in seeds}
-            out.append(f"| Interaction (TEACHER − GATE_a0 − TEACHER_RDP + RDP_a0) | {fmt(paired(inter, {s: 0.0 for s in seeds}))} |")
-        for a, b in [("BR_TEACHER", "TEACHER"), ("ITER_TEACHER", "BR_TEACHER"), ("ITER_TEACHER", "TEACHER"),
-                     ("BR_a0", "GATE_a0"), ("BR_TEACHER", "BR_SHUFFLED")]:
+            inter = {s: j["BUDGET_CHOICE"][s] - j["EQUAL_CHOICE_RDP_PARTNERS"][s] - j["BUDGET_RDP"][s] + j["RDP_a0"][s] for s in seeds}
+            out.append(f"| Interaction (BUDGET_CHOICE − EQUAL_CHOICE_RDP_PARTNERS − BUDGET_RDP + RDP_a0) | {fmt(paired(inter, {s: 0.0 for s in seeds}))} |")
+        for a, b in [("BUDGET_LOOP", "BUDGET_CHOICE"), ("BUDGET_LOOP_REALLOCATE", "BUDGET_LOOP"),
+                     ("EQUAL_LOOP", "EQUAL_CHOICE_RDP_PARTNERS"), ("BUDGET_LOOP", "BUDGET_LOOP_SHUFFLED")]:
             if a in arms and b in arms:
                 out.append(f"| {a} − {b} | {fmt(paired(arms[a]['J4'], arms[b]['J4']))} |")
         out.append("")
