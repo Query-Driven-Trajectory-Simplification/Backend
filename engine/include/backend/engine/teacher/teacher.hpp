@@ -29,7 +29,9 @@ namespace teacher {
 //   BUDGET_LOOP               the loop from BUDGET_CHOICE: the teacher
 //   BUDGET_LOOP_REALLOCATE    BUDGET_LOOP, then rounds of value curves against the current state,
 //                             budget search and the loop again, as long as J_T rises, so budgets
-//                             react to the neighbours too
+//                             react to the neighbours too. With only held-out join terms the curves do not
+//                             depend on the partners, so each round only reruns the loop from
+//                             the same start in a new visit order
 //   BUDGET_LOOP_SHUFFLED      the same loop with join partners and kNN neighbours relabelled
 //                             among nearby trajectories, scored on the real ones (control)
 //   BUDGET_LOOP_NO_UPDATE     one pass from BUDGET_CHOICE in which every trajectory picks its best

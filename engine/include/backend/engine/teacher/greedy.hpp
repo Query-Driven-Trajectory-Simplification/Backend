@@ -12,7 +12,7 @@ namespace teacher {
 // BKH's workload-driven selector for one trajectory: from the endpoints plus a seed, repeatedly
 // keep the point that raises the trajectory's range and where-at terms of J_T the most. kNN and
 // join are left out, they are too costly here and get scored when the candidates are compared.
-// Once no point gains anything, the rest is taken from fill, in order
+// Once no point gains anything, the rest is taken from fill, in order, skipping kept points
 class Greedy {
   public:
     Greedy(const Objective &objective, std::size_t i);

@@ -118,11 +118,14 @@ class CandidateMaker {
         // Classic-only requests do not need the greedy workload index or its fill candidates.
         if (!m_greedy) {
             m_greedy.emplace(m_objective, m_index);
-            for (const auto type :
-                 {AlgorithmType::SED, AlgorithmType::RDP, AlgorithmType::UNIFORM}) {
-                const auto fill_points = simplify(type, m_cap);
-                m_fill.insert(m_fill.end(), fill_points.begin(), fill_points.end());
-            }
+            // SED's and RDP's points in their own order of importance, then UNIFORM's; greedy
+            // skips points it already keeps
+            m_fill = selection::sed::sequence(m_original, m_cap);
+            const auto rdp_order = selection::rdp::sequence(m_original, m_cap);
+            m_fill.insert(m_fill.end(), rdp_order.begin(), rdp_order.end());
+            const auto uniform =
+                selection::simplify_trajectory(m_original, AlgorithmType::UNIFORM, m_cap);
+            m_fill.insert(m_fill.end(), uniform.begin(), uniform.end());
         }
         // The sequence depends on its seed, not which candidate requested it. In particular,
         // all unseeded variants and equal-sized SED seeds share the same greedy work.
@@ -300,102 +303,133 @@ Methods curve_methods(const std::vector<Curve> &curves, const std::vector<std::s
 // links or, with the ranking kNN term, a watching query can gain, since nothing else depends on
 // the state. Every switch strictly raises the tracked J_T, so it stops
 // update = false: one pass against the starting state, nobody seeing anyone else's switch
+// Built once per start and candidate set; run() copies the trackers, so the loop and its controls
+// can share the setup
+class Search {
+  public:
+    Search(const core::TrajectoryDb &db, const Objective &objective, const Candidates &candidates,
+           const Methods &method)
+        : m_start(method) {
+        // With the ranking kNN term, a trajectory also matters to the queries that watch it
+        if (objective.config().ranking_knn)
+            m_knn.emplace(objective, assemble(candidates, method), candidates,
+                          kKnnWatchFactor * objective.workloads().k);
+        const auto active = [&](std::size_t i) {
+            return !objective.links(i).empty() || (m_knn && m_knn->watched(i));
+        };
+        for (std::size_t i = 0; i < db.size(); ++i)
+            if (active(i))
+                m_order.push_back(i);
+        m_prepared.resize(db.size());
+        for (auto &v : m_views)
+            v.resize(db.size());
+        m_separable.resize(db.size());
+        m_representative.resize(db.size());
+        m_knn_distances.resize(db.size());
+        core::parallel_for(db.size(), [&](std::size_t i) {
+            auto &owned = m_prepared[i];
+            const auto original = db.trajectory(i);
+            if (!active(i)) {
+                // Isolated trajectories never switch; only their selected state is needed.
+                owned.emplace_back(original, candidates[method[i]][i]);
+                m_views[method[i]][i] = owned.back().view();
+                return;
+            }
+            // Reserve before taking borrowed views, so adding another candidate cannot move them.
+            owned.reserve(kCandidates.size());
+            for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+                std::size_t first = 0;
+                while (first < c && candidates[first][i] != candidates[c][i])
+                    ++first;
+                m_representative[i][c] = first;
+                if (first == c) {
+                    owned.emplace_back(original, candidates[c][i]);
+                    m_views[c][i] = owned.back().view();
+                    m_separable[i][c] = objective.separable(i, m_views[c][i]);
+                    if (m_knn)
+                        m_knn_distances[i][c] = m_knn->distances(i, m_views[c][i]);
+                } else {
+                    m_views[c][i] = m_views[first][i];
+                    m_separable[i][c] = m_separable[i][first];
+                }
+            }
+        });
+        m_state.resize(db.size());
+        for (std::size_t i = 0; i < db.size(); ++i)
+            m_state[i] = m_views[method[i]][i];
+        m_join.emplace(objective, m_state);
+    }
+    Search(const Search &) = delete;
+    Search &operator=(const Search &) = delete;
+
+    // update = false: one pass against the starting state, nobody seeing anyone else's switch
+    Methods run(std::uint64_t seed, bool update = true) const {
+        auto method = m_start;
+        auto state = m_state;
+        auto join = *m_join;
+        auto knn = m_knn;
+        auto order = m_order;
+        std::mt19937_64 rng(seed + kOrderSeedOffset);
+
+        for (std::size_t pass = 1; pass <= kMaxResponsePasses; ++pass) {
+            std::ranges::shuffle(order, rng);
+            std::size_t switches = 0;
+            for (const auto i : order) {
+                const double here = m_separable[i][method[i]];
+                std::size_t best = method[i];
+                JoinState::Proposal best_proposal;
+                double best_gain = kMinImprovement; // strict gains only, so ties cannot cycle
+                for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+                    if (m_representative[i][c] != c ||
+                        m_representative[i][c] == m_representative[i][method[i]])
+                        continue;
+                    auto proposal = join.propose(i, m_views[c][i], state);
+                    const double knn_gain = knn ? knn->propose(i, m_knn_distances[i][c]) : 0.0;
+                    const double gain = m_separable[i][c] - here + proposal.gain + knn_gain;
+                    if (gain > best_gain) {
+                        best = c;
+                        best_gain = gain;
+                        best_proposal = std::move(proposal);
+                    }
+                }
+                if (best == method[i])
+                    continue;
+                method[i] = best;
+                ++switches;
+                if (!update)
+                    continue;
+                state[i] = m_views[best][i];
+                join.apply(best_proposal);
+                if (knn)
+                    knn->apply(i, m_knn_distances[i][best]);
+            }
+            std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}{}\n", pass,
+                                     switches, join.metric(),
+                                     knn ? std::format(", knn {:.4f}", knn->metric()) : "");
+            if (switches == 0 || !update)
+                break;
+        }
+        return method;
+    }
+
+  private:
+    Methods m_start;
+    std::vector<std::size_t> m_order;
+    std::vector<std::vector<PreparedTrajectory>> m_prepared;
+    std::array<std::vector<core::TrajectoryView>, kCandidates.size()> m_views;
+    // These terms depend only on the candidate, never on the partners' current choices
+    std::vector<std::array<double, kCandidates.size()>> m_separable;
+    std::vector<std::array<std::size_t, kCandidates.size()>> m_representative;
+    std::vector<std::array<std::vector<double>, kCandidates.size()>> m_knn_distances;
+    std::optional<KnnState> m_knn;
+    std::vector<core::TrajectoryView> m_state;
+    std::optional<JoinState> m_join;
+};
+
 Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
                       const Candidates &candidates, Methods method, std::uint64_t seed,
                       bool update = true) {
-    // With the ranking kNN term, a trajectory also matters to the queries that watch it
-    std::optional<KnnState> knn;
-    if (objective.config().ranking_knn)
-        knn.emplace(objective, assemble(candidates, method), candidates,
-                    kKnnWatchFactor * objective.workloads().k);
-    const auto active = [&](std::size_t i) {
-        return !objective.links(i).empty() || (knn && knn->watched(i));
-    };
-    std::vector<std::size_t> order;
-    for (std::size_t i = 0; i < db.size(); ++i)
-        if (active(i))
-            order.push_back(i);
-    std::vector<std::vector<PreparedTrajectory>> prepared(db.size());
-    std::array<std::vector<core::TrajectoryView>, kCandidates.size()> views;
-    for (auto &v : views)
-        v.resize(db.size());
-    // These terms depend only on the candidate, never on the partners' current choices.
-    std::vector<std::array<double, kCandidates.size()>> separable(db.size());
-    std::vector<std::array<std::size_t, kCandidates.size()>> representative(db.size());
-    std::vector<std::array<std::vector<double>, kCandidates.size()>> knn_distances(db.size());
-    core::parallel_for(db.size(), [&](std::size_t i) {
-        auto &owned = prepared[i];
-        const auto original = db.trajectory(i);
-        if (!active(i)) {
-            // Isolated trajectories never switch; only their selected state is needed.
-            owned.emplace_back(original, candidates[method[i]][i]);
-            views[method[i]][i] = owned.back().view();
-            return;
-        }
-        // Reserve before taking borrowed views, so adding another candidate cannot move them.
-        owned.reserve(kCandidates.size());
-        for (std::size_t c = 0; c < kCandidates.size(); ++c) {
-            std::size_t first = 0;
-            while (first < c && candidates[first][i] != candidates[c][i])
-                ++first;
-            representative[i][c] = first;
-            if (first == c) {
-                owned.emplace_back(original, candidates[c][i]);
-                views[c][i] = owned.back().view();
-                separable[i][c] = objective.separable(i, views[c][i]);
-                if (knn)
-                    knn_distances[i][c] = knn->distances(i, views[c][i]);
-            } else {
-                views[c][i] = views[first][i];
-                separable[i][c] = separable[i][first];
-            }
-        }
-    });
-    std::mt19937_64 rng(seed + kOrderSeedOffset);
-    std::vector<core::TrajectoryView> state(db.size());
-    for (std::size_t i = 0; i < db.size(); ++i)
-        state[i] = views[method[i]][i];
-    JoinState join(objective, state);
-
-    for (std::size_t pass = 1; pass <= kMaxResponsePasses; ++pass) {
-        std::ranges::shuffle(order, rng);
-        std::size_t switches = 0;
-        for (const auto i : order) {
-            const double here = separable[i][method[i]];
-            std::size_t best = method[i];
-            JoinState::Proposal best_proposal;
-            double best_gain = kMinImprovement; // strict gains only, so ties cannot cycle
-            for (std::size_t c = 0; c < kCandidates.size(); ++c) {
-                if (representative[i][c] != c ||
-                    representative[i][c] == representative[i][method[i]])
-                    continue;
-                auto proposal = join.propose(i, views[c][i], state);
-                const double knn_gain = knn ? knn->propose(i, knn_distances[i][c]) : 0.0;
-                const double gain = separable[i][c] - here + proposal.gain + knn_gain;
-                if (gain > best_gain) {
-                    best = c;
-                    best_gain = gain;
-                    best_proposal = std::move(proposal);
-                }
-            }
-            if (best == method[i])
-                continue;
-            method[i] = best;
-            ++switches;
-            if (!update)
-                continue;
-            state[i] = views[best][i];
-            join.apply(best_proposal);
-            if (knn)
-                knn->apply(i, knn_distances[i][best]);
-        }
-        std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}{}\n", pass,
-                                 switches, join.metric(),
-                                 knn ? std::format(", knn {:.4f}", knn->metric()) : "");
-        if (switches == 0 || !update)
-            break;
-    }
-    return method;
+    return Search(db, objective, candidates, method).run(seed, update);
 }
 
 // The same workloads with trajectories relabelled at random among those that start and end in the
@@ -603,8 +637,12 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             make_candidates(objective, budgets, caps, needs_loop_candidates ? nullptr : &choice);
         if (want_budget_choice)
             keep("BUDGET_CHOICE", candidates, choice);
+        // The loop and its no-update control start from the same state and share the setup
+        std::optional<Search> search;
+        if (want_loop || want_reallocate || want_no_update)
+            search.emplace(db, objective, candidates, choice);
         if (want_loop || want_reallocate) {
-            const auto looped = best_response(db, objective, candidates, choice, m_seed);
+            const auto looped = search->run(m_seed);
             timed("BUDGET_LOOP");
             if (want_loop)
                 keep("BUDGET_LOOP", candidates, looped);
@@ -642,8 +680,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             }
         }
         if (want_no_update) {
-            keep("BUDGET_LOOP_NO_UPDATE", candidates,
-                 best_response(db, objective, candidates, choice, m_seed, false));
+            keep("BUDGET_LOOP_NO_UPDATE", candidates, search->run(m_seed, false));
             timed("BUDGET_LOOP_NO_UPDATE");
         }
         if (want_shuffled) {

@@ -166,6 +166,7 @@ beat.
 `BUDGET_LOOP_REALLOCATE` starts from `BUDGET_LOOP`. Each round rebuilds curves against the current partner
 state, reallocates and runs best response. A round is accepted only if the exact J_T improves by
 more than 1e-12; at most three rounds are tried.
+With only held-out join terms (the outside-query teacher) the curves do not depend on how partners are compressed, so rebuilding them gives the same curves and budgets, and each round only reruns the loop from the same start in a new visit order. Re-budgeting only reacts to neighbours when the teacher has a self join term.
 
 ### Stage 2: BR (`best_response`)
 **In one sentence:** go through the trajectories one at a time, and let each switch to whichever

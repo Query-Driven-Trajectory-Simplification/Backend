@@ -629,12 +629,14 @@ TEST(Teacher, RejectsUnknownArms) {
 
 TEST_F(TeacherTest, IndividualArmsMatchCombinedRun) {
     const auto db = random_db(3, 30, 25);
-    for (const auto variant :
-         {query::FrechetVariant::Discrete, query::FrechetVariant::Continuous}) {
+    for (const auto [variant, ranking] : {std::pair{query::FrechetVariant::Discrete, false},
+                                          std::pair{query::FrechetVariant::Continuous, false},
+                                          std::pair{query::FrechetVariant::Continuous, true}}) {
+        SCOPED_TRACE(ranking ? "ranking kNN" : "per-trajectory kNN");
         auto config = small_config();
         config.frechet = variant;
         auto workloads = teacher::load_or_build_workloads(db, config, 11, m_dir);
-        const teacher::Teacher model(db, std::move(workloads), {}, 11);
+        const teacher::Teacher model(db, std::move(workloads), {.ranking_knn = ranking}, 11);
         const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
         const std::size_t budget = 2 * db.size() + 40;
         const auto combined = model.run(budget, arms);
