@@ -90,11 +90,15 @@ void parse_where_at_scoring_config(Config &config, const json &scoring) {
 }
 
 void parse_join_config(Config &config, const json &join) {
-    validate_keys(join, {"query_count", "eps_m", "mode"}, "join");
+    validate_keys(join, {"query_count", "eps_m", "mode", "self_join", "score_eps_m"}, "join");
+    config.self_join = join.value("self_join", config.self_join);
     if (join.contains("mode"))
         config.join.mode = parse_enum<query::JoinMode>(join["mode"]);
     config.join.query_count = join.value("query_count", config.join.query_count);
     config.join.eps_m = join.value("eps_m", config.join.eps_m);
+    config.join_score_eps_m = join.value("score_eps_m", config.join_score_eps_m);
+    query::check_extra_thresholds(config.join_score_eps_m, config.join.eps_m,
+                                  "config: join.score_eps_m");
 }
 
 void parse_clustering_config(Config &config, const json &clustering) {
@@ -110,11 +114,40 @@ void parse_clustering_config(Config &config, const json &clustering) {
     }
 }
 
+void parse_teacher_config(Config &config, const json &section) {
+    validate_keys(section,
+                  {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs", "join",
+                   "extra_join_eps_m", "held_out_term", "ranking_knn", "term_weights"},
+                  "teacher");
+    auto &t = config.teacher;
+    t.enabled = section.value("enabled", t.enabled);
+    t.cache_dir = section.value("cache_dir", t.cache_dir.string());
+    t.arms = section.value("arms", t.arms);
+    t.range_query_count = section.value("range_query_count", t.range_query_count);
+    t.all_join_pairs = section.value("all_join_pairs", t.all_join_pairs);
+    if (section.contains("join"))
+        t.join = parse_enum<query::JoinMode>(section["join"]);
+    t.extra_join_eps_m = section.value("extra_join_eps_m", t.extra_join_eps_m);
+    t.held_out_term = section.value("held_out_term", t.held_out_term);
+    t.ranking_knn = section.value("ranking_knn", t.ranking_knn);
+    t.term_weights = section.value("term_weights", t.term_weights);
+    teacher::check_term_weights(t.term_weights);
+    query::check_extra_thresholds(t.extra_join_eps_m, config.join.eps_m,
+                                  "config: teacher.extra_join_eps_m");
+    if (t.cache_dir.empty())
+        throw std::invalid_argument("config: teacher.cache_dir must not be empty");
+    if (t.enabled && t.arms.empty())
+        throw std::invalid_argument("config: teacher.arms must not be empty when enabled");
+    teacher::check_arms(t.arms);
+    if (t.range_query_count == 0)
+        throw std::invalid_argument("config: teacher.range_query_count must be positive");
+}
+
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
                    "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
-                   "where_at_scoring", "join", "clustering", "frechet"},
+                   "where_at_scoring", "join", "clustering", "frechet", "teacher"},
                   "root");
     Config config;
 
@@ -149,6 +182,7 @@ Config parse_config(const json &data) {
     parse_where_at_scoring_config(config, data.value("where_at_scoring", json::object()));
     parse_join_config(config, data.value("join", json::object()));
     parse_clustering_config(config, data.value("clustering", json::object()));
+    parse_teacher_config(config, data.value("teacher", json::object()));
     // One distance for every Fréchet-based query, so both sides of each comparison agree
     if (data.contains("frechet")) {
         const auto variant = parse_enum<query::FrechetVariant>(data["frechet"]);
@@ -173,6 +207,28 @@ Config load_config(const std::filesystem::path &path) {
         // Wrong types and malformed JSON
         throw std::invalid_argument(std::string("config: ") + e.what());
     }
+}
+
+teacher::WorkloadConfig teacher_workload_config(const Config &config) {
+    auto range = config.range;
+    range.query_count = config.teacher.range_query_count;
+    return {.k = config.knn.k,
+            .join_eps_m = config.join.eps_m,
+            .extra_join_eps_m = config.teacher.extra_join_eps_m,
+            .frechet = config.join.frechet,
+            .range = range,
+            .where_at = config.where_at};
+}
+
+teacher::ObjectiveConfig teacher_objective_config(const Config &config) {
+    return {.min_tolerance_m = config.where_at_scoring.min_tolerance_m,
+            .max_tolerance_m = config.where_at_scoring.max_tolerance_m,
+            .all_join_pairs = config.teacher.all_join_pairs,
+            // Trains on the kind of join it is scored on, unless told otherwise
+            .join_mode = config.teacher.join.value_or(config.join.mode),
+            .held_out_term = config.teacher.held_out_term,
+            .ranking_knn = config.teacher.ranking_knn,
+            .term_weights = config.teacher.term_weights};
 }
 
 } // namespace pipeline

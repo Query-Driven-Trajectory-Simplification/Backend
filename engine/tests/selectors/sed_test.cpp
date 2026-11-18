@@ -107,3 +107,26 @@ TEST(Sed, ReturnsBudgetAndStaysNearBruteForce) {
         }
     }
 }
+
+TEST(Sed, ReverseRemovalPrefixesMatchEachBudgetIncludingTies) {
+    std::mt19937_64 rng(42);
+    for (int trial = 0; trial < 20; ++trial) {
+        std::vector<double> x(30), y(30);
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            x[i] = static_cast<double>(i);
+            y[i] = trial == 0 ? 0.0 : static_cast<double>(rng() % 10);
+        }
+        const Trajectory traj(x, y);
+        for (const std::size_t cap : {2u, 5u, 30u}) {
+            const auto sequence = selection::sed::sequence(traj.view(), cap);
+            ASSERT_EQ(sequence.size(), cap);
+            for (std::size_t b = 2; b <= cap; ++b) {
+                Indices kept(sequence.begin(), sequence.begin() + b);
+                std::ranges::sort(kept);
+                EXPECT_EQ(kept, selection::sed::simplify(traj.view(), b));
+            }
+        }
+    }
+    EXPECT_TRUE(selection::sed::sequence(Trajectory({}, {}).view(), 5).empty());
+    EXPECT_EQ(selection::sed::sequence(Trajectory({0}, {0}).view(), 5), (Indices{0}));
+}

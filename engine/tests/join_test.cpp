@@ -110,7 +110,8 @@ TEST(Join, MatchesBruteForce) {
                 if (frechet(queries.trajectory(q), db.trajectory(i)) <= eps)
                     expected.push_back(i);
             }
-            EXPECT_EQ(query::join(db, queries.trajectory(q), eps), expected)
+            EXPECT_EQ(query::join(db, queries.trajectory(q), eps, query::FrechetVariant::Discrete),
+                      expected)
                 << "query " << q << ", eps " << eps;
         }
     }
@@ -306,7 +307,7 @@ TEST(SelfJoin, MatchesIndependentFullGridOnAllOriginalAndCompressedPairs) {
     }
     const auto compressed = core::materialize(db, s);
     for (double eps : {100., 500., 1500.}) {
-        const auto workload = query::generate_self_join(db, eps);
+        const auto workload = query::generate_self_join(db, eps, query::FrechetVariant::Discrete);
         std::size_t truth = 0, predicted = 0, hits = 0;
         for (std::size_t i = 0; i < db.size(); ++i) {
             std::vector<std::size_t> expected;

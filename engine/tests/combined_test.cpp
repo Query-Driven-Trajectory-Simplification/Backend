@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace {
 
@@ -46,6 +47,40 @@ TEST(NormalizeScores, FloorScoresZeroAndPerfectScoresOne) {
     const auto floor = all_scores(0.4);
     EXPECT_DOUBLE_EQ(evaluator::normalize_scores(floor, floor).combined, 0.0);
     EXPECT_DOUBLE_EQ(evaluator::normalize_scores(all_scores(1.0), floor).combined, 1.0);
+}
+
+TEST(NormalizeScores, AveragesTheJoinOverItsThresholds) {
+    auto floor = all_scores(0.0);
+    auto scores = all_scores(0.0);
+    floor.join.f1 = 0.5;
+    scores.join.f1 = 1.0;
+    floor.join_grid.resize(2);
+    scores.join_grid.resize(2);
+    floor.join_grid[0].f1 = 0.0;
+    scores.join_grid[0].f1 = 0.5;
+    floor.join_grid[1].f1 = 0.2;
+    scores.join_grid[1].f1 = 0.2;
+    const auto normalized = evaluator::normalize_scores(scores, floor);
+    EXPECT_DOUBLE_EQ(normalized.join_f1, 1.0); // the main threshold alone
+    EXPECT_DOUBLE_EQ(normalized.join, (1.0 + 0.5 + 0.0) / 3.0);
+    EXPECT_DOUBLE_EQ(normalized.combined, normalized.join / 4.0);
+    floor.join_grid.pop_back();
+    EXPECT_THROW(evaluator::normalize_scores(scores, floor), std::invalid_argument);
+}
+
+TEST(NormalizeScores, AveragesClusteringOverItsThresholdsOutsideTheCombinedScore) {
+    auto floor = all_scores(0.0);
+    auto scores = all_scores(0.0);
+    floor.clustering.score = 0.0;
+    scores.clustering.score = 1.0;
+    floor.clustering_grid.resize(1);
+    scores.clustering_grid.resize(1);
+    floor.clustering_grid[0].score = 0.5;
+    scores.clustering_grid[0].score = 0.5;
+    const auto normalized = evaluator::normalize_scores(scores, floor);
+    EXPECT_DOUBLE_EQ(normalized.clustering_score, 1.0);
+    EXPECT_DOUBLE_EQ(normalized.clustering, 0.5);
+    EXPECT_DOUBLE_EQ(normalized.combined, 0.0); // clustering stays out of J4
 }
 
 TEST(NormalizeScores, WeighsQueryTypesEquallyNotScores) {
@@ -98,6 +133,19 @@ TEST(NormalizeScores, DiagnosticsNeverChangePrimaryScores) {
     scores.where_at.average_hit = missing;
     scores.join.f1 = missing;
     EXPECT_TRUE(std::isnan(evaluator::normalize_scores(scores, floor).combined));
+}
+
+TEST(NormalizeScores, SelfJoinIsNormalisedButStaysOutOfCombined) {
+    auto floor = all_scores(0.0);
+    auto scores = all_scores(0.5);
+    floor.self_join.f1 = 0.2;
+    scores.self_join.f1 = 0.6;
+    const auto normalized = evaluator::normalize_scores(scores, floor);
+    EXPECT_DOUBLE_EQ(normalized.self_join, 0.5);
+    EXPECT_DOUBLE_EQ(normalized.join, 0.5);
+    scores.self_join.f1 = 1.0;
+    EXPECT_DOUBLE_EQ(evaluator::normalize_scores(scores, floor).combined, normalized.combined);
+    EXPECT_TRUE(std::isnan(evaluator::normalize_scores(all_scores(0.5), floor).self_join));
 }
 
 TEST(NormalizeScores, WhereAtUsesAverageHitAndItsOwnEndpointFloor) {

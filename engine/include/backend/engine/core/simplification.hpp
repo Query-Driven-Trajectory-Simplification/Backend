@@ -43,9 +43,19 @@ class Simplification {
     std::vector<std::size_t> m_kept;
 };
 
+// Kept point indices per trajectory, sorted, endpoints included
+using KeptSets = std::vector<std::vector<std::size_t>>;
+
+Simplification to_simplification(const KeptSets &kept);
+KeptSets to_kept(const Simplification &simplification);
+
+// First and last point of each trajectory, fewer for trajectories shorter than 2 points
+KeptSets endpoints_only(const TrajectoryDb &trajectories);
+
 // Builds a database holding only the kept points, with the same trajectories in the same order.
 // Copies projected coordinates and rebuilds bounding boxes from the retained points.
 // Kept indices must be in range and strictly increasing within each trajectory.
 TrajectoryDb materialize(const TrajectoryDb &trajectories, const Simplification &simplification);
+TrajectoryDb materialize(const TrajectoryDb &trajectories, const KeptSets &kept);
 
 } // namespace core

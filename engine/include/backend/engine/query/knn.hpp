@@ -18,7 +18,7 @@ struct KnnConfig {
     std::size_t k = 5;
     std::size_t query_count = 10; // 0 = use every trajectory in the query pool
     double p = 0.5; // top-k tau penalty for a pair one list holds neither of, in [0, 1]
-    FrechetVariant frechet = FrechetVariant::Discrete;
+    FrechetVariant frechet = FrechetVariant::Continuous;
 };
 
 struct KnnWorkload {
@@ -26,7 +26,7 @@ struct KnnWorkload {
     std::vector<KnnQuery> entries;
     std::size_t k;
     double p = 0.5;
-    FrechetVariant frechet = FrechetVariant::Discrete;
+    FrechetVariant frechet = FrechetVariant::Continuous;
 };
 
 // Samples query_count trajectories from query_pool (the held-out split) and stores their k
@@ -40,6 +40,6 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
 // as equal.
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectories,
                              const core::TrajectoryView &query, std::size_t k,
-                             FrechetVariant variant = FrechetVariant::Discrete);
+                             FrechetVariant variant = FrechetVariant::Continuous);
 
 } // namespace query

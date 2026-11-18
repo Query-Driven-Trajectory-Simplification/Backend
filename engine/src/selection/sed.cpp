@@ -73,8 +73,11 @@ double synchronous_distance(const core::TrajectoryView &trajectory, std::size_t 
     return std::sqrt(squared_synchronous_distance(trajectory, first, last, point));
 }
 
-std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
-                                  std::size_t points_to_keep) {
+namespace {
+
+std::vector<std::size_t> simplify_impl(const core::TrajectoryView &trajectory,
+                                       std::size_t points_to_keep,
+                                       std::vector<std::size_t> *removed) {
     const std::size_t n = trajectory.size();
 
     if (points_to_keep >= n || n <= 2) {
@@ -108,6 +111,8 @@ std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
         points[prev].next = next;
         points[next].prev = prev;
         kept_points--;
+        if (removed)
+            removed->push_back(top.index);
 
         for (const std::size_t curr : {prev, next}) {
             if (curr == 0 || curr == n - 1)
@@ -126,6 +131,27 @@ std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
             simplified_trajectory.push_back(i);
     }
     return simplified_trajectory;
+}
+
+} // namespace
+
+std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
+                                  std::size_t points_to_keep) {
+    return simplify_impl(trajectory, points_to_keep, nullptr);
+}
+
+std::vector<std::size_t> sequence(const core::TrajectoryView &trajectory, std::size_t limit) {
+    const auto n = trajectory.size();
+    if (n <= 2)
+        return simplify(trajectory, n);
+    limit = std::clamp(limit, std::size_t{2}, n);
+    std::vector<std::size_t> removed;
+    removed.reserve(n - 2);
+    auto indices = simplify_impl(trajectory, 2, &removed);
+    indices.reserve(limit);
+    // Reverse removal order: the last removed point is the first to restore above budget two.
+    indices.insert(indices.end(), removed.rbegin(), removed.rbegin() + (limit - 2));
+    return indices;
 }
 
 } // namespace selection::sed

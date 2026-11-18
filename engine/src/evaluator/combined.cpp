@@ -1,15 +1,20 @@
 #include "backend/engine/evaluator/combined.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
-#include <initializer_list>
 #include <limits>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace evaluator {
 
 namespace {
 
-double mean_ignoring_nan(std::initializer_list<double> values) {
+double mean_ignoring_nan(std::span<const double> values) {
     double sum = 0.0;
     std::size_t count = 0;
     for (const double value : values) {
@@ -19,6 +24,20 @@ double mean_ignoring_nan(std::initializer_list<double> values) {
         }
     }
     return count == 0 ? std::numeric_limits<double>::quiet_NaN() : sum / static_cast<double>(count);
+}
+
+// The main normalised score averaged with each grid entry, normalised against its own floor,
+// skipping NaNs. raw(entry) reads an entry's unnormalised score
+template <typename Entry, typename Raw>
+double grid_mean(double main, const std::vector<Entry> &scores, const std::vector<Entry> &floors,
+                 Raw raw, std::string_view grid) {
+    if (scores.size() != floors.size())
+        throw std::invalid_argument("normalize_scores: scores and floor hold different " +
+                                    std::string(grid) + " grids");
+    std::vector<double> values{main};
+    for (std::size_t k = 0; k < scores.size(); ++k)
+        values.push_back(normalize(raw(scores[k]), raw(floors[k])));
+    return mean_ignoring_nan(values);
 }
 
 } // namespace
@@ -46,11 +65,17 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
     result.knn = result.knn_recall_at_k;
     result.range = result.range_f1;
     result.where_at = result.where_at_average_hit;
-    result.join = result.join_f1;
-    result.clustering = result.clustering_score;
+    result.join = grid_mean(
+        result.join_f1, scores.join_grid, floor.join_grid,
+        [](const JoinScores &join) { return join.f1; }, "join");
+    result.clustering = grid_mean(
+        result.clustering_score, scores.clustering_grid, floor.clustering_grid,
+        [](const RouteClusteringScores &clustering) { return clustering.score; }, "clustering");
+    result.self_join = normalize(scores.self_join.f1, floor.self_join.f1);
 
-    result.combined = mean_ignoring_nan(
-        {result.knn, result.range, result.where_at, result.join, result.clustering});
+    // Clustering and the self join stay out (see combined.hpp)
+    result.combined =
+        mean_ignoring_nan(std::array{result.knn, result.range, result.where_at, result.join});
     return result;
 }
 

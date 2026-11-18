@@ -72,12 +72,25 @@ EvaluationResult Evaluator::evaluate() const {
         }
     }
 
+    std::vector<JoinScores> join_grid;
+    for (const auto &w : m_workloads.join_grid)
+        join_grid.push_back(evaluate_join(m_simplified, w));
+    std::vector<RouteClusteringScores> clustering_grid;
+    for (const auto &w : m_workloads.clustering_grid)
+        clustering_grid.push_back(evaluate_route_clustering(m_simplified, w));
+
     return {.scores = {.knn = knn.scores,
                        .range_recall = range.recall,
                        .where_at = get_where_at_scores(),
                        .join = join.scores,
                        .range_f1 = range.f1,
-                       .clustering = clustering},
+                       .clustering = clustering,
+                       // The same workload is not evaluated twice
+                       .self_join = m_workloads.self_join == m_workloads.join
+                                        ? join.scores
+                                        : get_self_join_scores(),
+                       .join_grid = std::move(join_grid),
+                       .clustering_grid = std::move(clustering_grid)},
             .knn = std::move(knn.answers),
             .range = std::move(range.answers),
             .join = std::move(join.pairs),
@@ -102,6 +115,11 @@ WhereAtScores Evaluator::get_where_at_scores() const {
 
 JoinScores Evaluator::get_join_scores() const {
     return m_workloads.join ? evaluate_join(m_simplified, *m_workloads.join) : JoinScores{};
+}
+
+JoinScores Evaluator::get_self_join_scores() const {
+    return m_workloads.self_join ? evaluate_join(m_simplified, *m_workloads.self_join)
+                                 : JoinScores{};
 }
 
 RouteClusteringScores Evaluator::get_clustering_scores() const {
