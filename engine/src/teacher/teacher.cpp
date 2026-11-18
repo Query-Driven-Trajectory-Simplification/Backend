@@ -2,6 +2,7 @@
 
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/parallel.hpp"
+#include "backend/engine/core/timer.hpp"
 #include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/sed.hpp"
 #include "backend/engine/selection/selector.hpp"
@@ -41,12 +42,6 @@ constexpr std::size_t kMaxResponsePasses = 10;
 constexpr std::size_t kKnnWatchFactor = 3;
 constexpr std::size_t kMaxAllocationRounds = 3;
 constexpr double kMinImprovement = 1e-12;
-constexpr std::uint64_t kOrderSeedOffset = 7004;
-constexpr std::uint64_t kShuffleSeedOffset = 7006;
-
-double seconds_since(std::chrono::steady_clock::time_point start) {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-}
 
 // candidates[c][i]: trajectory i simplified by kCandidates[c] at budgets[i]
 using Candidates = std::array<KeptSets, kCandidates.size()>;
@@ -55,6 +50,14 @@ using Methods = std::vector<std::size_t>; // per trajectory
 std::vector<std::size_t> interior(const std::vector<std::size_t> &kept) {
     return kept.size() <= 2 ? std::vector<std::size_t>{}
                             : std::vector<std::size_t>(kept.begin() + 1, kept.end() - 1);
+}
+
+// The first candidate up to c that keeps the same points as c, kept(k) giving candidate k's set
+template <typename Kept> std::size_t first_equal(std::size_t c, Kept &&kept) {
+    std::size_t first = 0;
+    while (first < c && kept(first) != kept(c))
+        ++first;
+    return first;
 }
 
 // One trajectory's candidates up to cap. A candidate depends only on (i, c, b, cap), so curves
@@ -192,12 +195,12 @@ Pick pick(const Objective &objective, std::size_t i,
     }
     std::ranges::sort(order, std::greater{});
     for (const auto &[bound, k] : order) {
-        if (bound < best.value - 1e-15)
+        if (bound < best.value - kBoundSlack)
             break;
         const auto c = options[k].first;
-        const double v = objective.independent_value(scores[k - 1], best.value);
-        if (v > best.value || (v == best.value && c < best.method)) {
-            best.value = v;
+        const double value = objective.independent_value(scores[k - 1], best.value);
+        if (value > best.value || (value == best.value && c < best.method)) {
+            best.value = value;
             best.method = c;
         }
     }
@@ -245,26 +248,23 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
         best.method.reserve(max_b - 1);
         rdp.value.reserve(max_b - 1);
         rdp.method.reserve(max_b - 1);
-        std::vector<std::vector<std::size_t>> seen;
+        std::array<std::vector<std::size_t>, kCandidates.size()> kept;
         std::vector<PreparedTrajectory> owned;
         std::vector<std::pair<std::size_t, core::TrajectoryView>> options;
-        seen.reserve(kCandidates.size());
         owned.reserve(kCandidates.size());
         options.reserve(kCandidates.size());
         for (std::size_t b = 2; b <= max_b; ++b) {
-            seen.clear();
             options.clear();
             for (std::size_t c = 0; c < (rdp_only ? 1 : kCandidates.size()); ++c) {
-                auto kept = maker.make(c, b);
-                if (std::ranges::find(seen, kept) != seen.end())
+                kept[c] = maker.make(c, b);
+                if (first_equal(c, [&](std::size_t k) -> const auto & { return kept[k]; }) != c)
                     continue;
                 const auto slot = options.size();
                 if (slot == owned.size())
-                    owned.emplace_back(db.trajectory(i), kept);
+                    owned.emplace_back(db.trajectory(i), kept[c]);
                 else
-                    owned[slot].assign(db.trajectory(i), kept);
+                    owned[slot].assign(db.trajectory(i), kept[c]);
                 options.push_back({c, owned[slot].view()});
-                seen.push_back(std::move(kept));
             }
             const auto chosen = pick(objective, i, options, partner_views);
             rdp.value.push_back(chosen.rdp);
@@ -303,8 +303,8 @@ class Search {
             if (active(i))
                 m_order.push_back(i);
         m_prepared.resize(db.size());
-        for (auto &v : m_views)
-            v.resize(db.size());
+        for (auto &views : m_views)
+            views.resize(db.size());
         m_separable.resize(db.size());
         m_representative.resize(db.size());
         m_knn_distances.resize(db.size());
@@ -319,9 +319,8 @@ class Search {
             // Reserve first: views borrow from these
             owned.reserve(kCandidates.size());
             for (std::size_t c = 0; c < kCandidates.size(); ++c) {
-                std::size_t first = 0;
-                while (first < c && candidates[first][i] != candidates[c][i])
-                    ++first;
+                const auto first =
+                    first_equal(c, [&](std::size_t k) -> const auto & { return candidates[k][i]; });
                 m_representative[i][c] = first;
                 if (first == c) {
                     owned.emplace_back(original, candidates[c][i]);
@@ -361,8 +360,10 @@ class Search {
                 JoinState::Proposal best_proposal;
                 double best_gain = kMinImprovement; // strict gains only, so ties cannot cycle
                 for (std::size_t c = 0; c < kCandidates.size(); ++c) {
-                    if (m_representative[i][c] != c ||
-                        m_representative[i][c] == m_representative[i][method[i]])
+                    // Each distinct kept set is tried once, and never the one i already has
+                    const bool duplicate = m_representative[i][c] != c;
+                    const bool current = m_representative[i][c] == m_representative[i][method[i]];
+                    if (duplicate || current)
                         continue;
                     auto proposal = join.propose(i, m_views[c][i], state);
                     const double knn_gain = knn ? knn->propose(i, m_knn_distances[i][c]) : 0.0;
@@ -419,9 +420,12 @@ TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWo
     constexpr double kCell = 1000.0;
     std::map<std::array<long, 4>, std::vector<std::uint32_t>> buckets;
     for (std::size_t i = 0; i < db.size(); ++i) {
-        const auto v = db.trajectory(i);
-        auto cell = [&](double c) { return static_cast<long>(std::floor(c / kCell)); };
-        buckets[{cell(v.x.front()), cell(v.y.front()), cell(v.x.back()), cell(v.y.back())}]
+        const auto trajectory = db.trajectory(i);
+        auto cell = [&](double coordinate) {
+            return static_cast<long>(std::floor(coordinate / kCell));
+        };
+        buckets[{cell(trajectory.x.front()), cell(trajectory.y.front()), cell(trajectory.x.back()),
+                 cell(trajectory.y.back())}]
             .push_back(static_cast<std::uint32_t>(i));
     }
     std::vector<std::uint32_t> label(db.size());
@@ -435,8 +439,8 @@ TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWo
 
     auto result = workloads;
     std::set<std::pair<std::uint32_t, std::uint32_t>> real;
-    for (const auto &p : workloads.positives)
-        real.insert({p.i, p.j});
+    for (const auto &pair : workloads.positives)
+        real.insert({pair.i, pair.j});
     std::size_t kept_real = 0;
     std::vector<std::vector<JoinPair> *> lists{&result.positives, &result.negatives};
     for (auto &extra : result.extra_joins) {
@@ -444,11 +448,11 @@ TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWo
         lists.push_back(&extra.negatives);
     }
     for (auto *pairs : lists)
-        for (auto &p : *pairs) {
-            const auto a = label[p.i], b = label[p.j];
-            p.i = std::min(a, b);
-            p.j = std::max(a, b);
-            kept_real += pairs == &result.positives && real.contains({p.i, p.j});
+        for (auto &pair : *pairs) {
+            const auto first = label[pair.i], second = label[pair.j];
+            pair.i = std::min(first, second);
+            pair.j = std::max(first, second);
+            kept_real += pairs == &result.positives && real.contains({pair.i, pair.j});
         }
     std::size_t kept_neighbours = 0, neighbours = 0;
     for (std::size_t e = 0; e < result.knn.size(); ++e) {
@@ -469,17 +473,10 @@ TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWo
     return result;
 }
 
-core::Simplification to_simplification(const KeptSets &kept) {
-    core::Simplification s;
-    for (const auto &k : kept)
-        s.add_trajectory(k);
-    return s;
-}
-
 std::string wins(const Methods &method) {
     std::array<std::size_t, kCandidates.size()> count{};
-    for (const auto m : method)
-        ++count[m];
+    for (const auto candidate : method)
+        ++count[candidate];
     std::string out;
     for (std::size_t c = 0; c < kCandidates.size(); ++c)
         out += std::format("{}{} {}", c ? ", " : "", kCandidates[c], count[c]);
@@ -499,22 +496,29 @@ std::vector<Arm> collect(const std::map<std::string, Arm, std::less<>> &outputs,
 
 bool is_arm(std::string_view name) { return std::ranges::find(kArms, name) != kArms.end(); }
 
+void check_arms(std::span<const std::string> arms) {
+    for (auto a = arms.begin(); a != arms.end(); ++a) {
+        if (!is_arm(*a))
+            throw std::invalid_argument("unknown teacher arm '" + *a + "'");
+        if (std::find(arms.begin(), a, *a) != a)
+            throw std::invalid_argument("teacher arm '" + *a + "' listed twice");
+    }
+}
+
 Teacher::Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads,
                  const ObjectiveConfig &config, std::uint64_t seed)
     : m_db(db), m_workloads(std::move(workloads)), m_objective(db, m_workloads, config),
       m_seed(seed) {
-    const auto &f = m_objective.floors();
+    const auto &floors = m_objective.floors();
     std::cout << std::format("teacher: {} join pairs ({} positive), floors knn {:.4f}, range "
                              "{:.4f}, where-at {:.4f}, join {:.4f}\n",
                              m_objective.pair_count(), m_objective.positive_count(),
-                             f[Objective::Knn], f[Objective::Range], f[Objective::WhereAt],
-                             f[Objective::Join]);
+                             floors[Objective::Knn], floors[Objective::Range],
+                             floors[Objective::WhereAt], floors[Objective::Join]);
 }
 
 std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::string> arms) const {
-    for (const auto &a : arms)
-        if (!is_arm(a))
-            throw std::invalid_argument("teacher: unknown arm " + a);
+    check_arms(arms);
     const auto requested = [&](std::string_view name) {
         return std::ranges::find(arms, name) != arms.end();
     };
@@ -549,11 +553,11 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         auto kept = assemble(from, method);
         const double j_t = objective.total(kept);
         std::cout << std::format("teacher {}: {}, J_T {:.4f}\n", name, wins(method), j_t);
-        outputs[std::string(name)] = {std::string(name), to_simplification(kept), j_t};
+        outputs[std::string(name)] = {std::string(name), core::to_simplification(kept), j_t};
     };
     auto start = std::chrono::steady_clock::now();
     auto timed = [&](std::string_view step) {
-        std::cout << std::format("teacher: {} {:.1f} s\n", step, seconds_since(start));
+        std::cout << std::format("teacher: {} {:.1f} s\n", step, core::seconds_since(start));
         start = std::chrono::steady_clock::now();
     };
     const Methods rdp_methods(db.size(), kRdp);
@@ -648,8 +652,8 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                 }
                 std::cout << std::format("teacher BUDGET_LOOP_REALLOCATE: {}, J_T {:.4f}\n",
                                          wins(current_methods), current_value);
-                outputs["BUDGET_LOOP_REALLOCATE"] = {"BUDGET_LOOP_REALLOCATE",
-                                                     to_simplification(current), current_value};
+                outputs["BUDGET_LOOP_REALLOCATE"] = {
+                    "BUDGET_LOOP_REALLOCATE", core::to_simplification(current), current_value};
                 timed("BUDGET_LOOP_REALLOCATE");
             }
         }
@@ -676,7 +680,8 @@ std::vector<Arm> Teacher::single_recipes(std::size_t total_budget) const {
     std::vector<Arm> arms;
     for (std::size_t c = 0; c < kCandidates.size(); ++c) {
         const auto name = std::format("RECIPE_{}", kCandidates[c]);
-        arms.push_back({name, to_simplification(candidates[c]), m_objective.total(candidates[c])});
+        arms.push_back(
+            {name, core::to_simplification(candidates[c]), m_objective.total(candidates[c])});
         std::cout << std::format("teacher {}: J_T {:.4f}\n", name, arms.back().objective);
     }
     return arms;

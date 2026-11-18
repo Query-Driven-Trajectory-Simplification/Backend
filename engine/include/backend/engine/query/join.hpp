@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <string_view>
 #include <vector>
 
 namespace query {
@@ -44,6 +46,11 @@ JoinWorkload generate_join_queries(const core::TrajectoryDb &original,
 // No held-out queries or sampling. Nonempty trajectories must retain their endpoints/IDs/order.
 JoinWorkload generate_self_join(const core::TrajectoryDb &original, double eps_m = 500.0,
                                 FrechetVariant variant = FrechetVariant::Continuous);
+
+// Throws std::invalid_argument unless every threshold in eps_m is finite, positive, distinct and
+// differs from main_eps_m. name says which setting in the message
+void check_extra_thresholds(std::span<const double> eps_m, double main_eps_m,
+                            std::string_view name);
 
 std::vector<std::size_t> join(const core::TrajectoryDb &trajectories,
                               const core::TrajectoryView &query, double eps,

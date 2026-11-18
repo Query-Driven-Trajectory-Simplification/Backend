@@ -13,7 +13,7 @@ struct Curve {
     std::vector<std::uint8_t> method; // the candidate that reached value[k]
 
     std::size_t max_budget() const { return value.size() + 1; }
-    double at(std::size_t b) const { return value[b - 2]; }
+    double at(std::size_t budget) const { return value[budget - 2]; }
 };
 
 // Maximises sum curves[i].at(b_i) with sum b_i = total_budget, greedily on the best gain per point

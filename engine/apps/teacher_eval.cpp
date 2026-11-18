@@ -6,6 +6,7 @@
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/parallel.hpp"
 #include "backend/engine/core/simplification.hpp"
+#include "backend/engine/core/timer.hpp"
 #include "backend/engine/evaluator/combined.hpp"
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/join.hpp"
@@ -22,6 +23,7 @@
 #include "backend/engine/teacher/workloads.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -36,8 +38,11 @@
 
 namespace {
 
-using teacher::KeptSets;
+using core::KeptSets;
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+constexpr std::array kEvalEps{100.0, 125.0, 150.0, 175.0, 200.0, 250.0, 300.0};
+constexpr double kRdpAlpha = 0.25; // RDP_a025
+constexpr std::array kPartnerLambdas{0.5, 1.0};
 // Unset options keep the config's value; arms default to all teacher arms
 struct Args {
     std::filesystem::path config = "engine/configs/geolife.json";
@@ -54,24 +59,24 @@ struct Args {
     std::optional<bool> held_out_term;               // config: teacher.held_out_term
     std::optional<bool> ranking_knn;                 // config: teacher.ranking_knn
     std::optional<std::vector<double>> term_weights; // config: teacher.term_weights
-    std::vector<double> eval_eps{100.0, 125.0, 150.0, 175.0, 200.0, 250.0, 300.0};
+    std::vector<double> eval_eps{kEvalEps.begin(), kEvalEps.end()};
     bool knn_check = false;
 };
 
-template <typename T> std::vector<T> parse_list(const std::string &s) {
-    std::vector<T> r;
-    std::stringstream ss(s);
-    for (std::string item; std::getline(ss, item, ',');) {
+template <typename T> std::vector<T> parse_list(const std::string &text) {
+    std::vector<T> items;
+    std::stringstream stream(text);
+    for (std::string item; std::getline(stream, item, ',');) {
         if constexpr (std::is_same_v<T, std::string>)
-            r.push_back(item);
+            items.push_back(item);
         else
-            r.push_back(static_cast<T>(std::stod(item)));
+            items.push_back(static_cast<T>(std::stod(item)));
     }
-    return r;
+    return items;
 }
 
 Args parse_args(int argc, char **argv) {
-    Args a;
+    Args args;
     for (int k = 1; k < argc; ++k) {
         const std::string key = argv[k];
         auto value = [&] {
@@ -80,42 +85,42 @@ Args parse_args(int argc, char **argv) {
             return std::string(argv[++k]);
         };
         if (key == "--config")
-            a.config = value();
+            args.config = value();
         else if (key == "--data")
-            a.data = value();
+            args.data = value();
         else if (key == "--out")
-            a.out = value();
+            args.out = value();
         else if (key == "--cache")
-            a.cache = value();
+            args.cache = value();
         else if (key == "--seeds")
-            a.seeds = parse_list<std::uint64_t>(value());
+            args.seeds = parse_list<std::uint64_t>(value());
         else if (key == "--shares")
-            a.shares = parse_list<double>(value());
+            args.shares = parse_list<double>(value());
         else if (key == "--arms")
-            a.arms = parse_list<std::string>(value());
+            args.arms = parse_list<std::string>(value());
         else if (key == "--train-eps")
-            a.train_eps = parse_list<double>(value());
+            args.train_eps = parse_list<double>(value());
         else if (key == "--eval-eps")
-            a.eval_eps = parse_list<double>(value());
+            args.eval_eps = parse_list<double>(value());
         else if (key == "--term-weights") {
-            a.term_weights = parse_list<double>(value());
-            if (a.term_weights->size() != 4)
+            args.term_weights = parse_list<double>(value());
+            if (args.term_weights->size() != teacher::kTermCount)
                 throw std::invalid_argument("--term-weights takes kNN,range,where-at,join");
         } else if (key == "--independent-knn")
-            a.ranking_knn = false;
+            args.ranking_knn = false;
         else if (key == "--held-out-term")
-            a.held_out_term = true;
+            args.held_out_term = true;
         else if (key == "--knn-check")
-            a.knn_check = true;
+            args.knn_check = true;
         else if (key == "--teacher-join") {
             const auto mode = value();
             if (mode != "HeldOut" && mode != "Self")
                 throw std::invalid_argument("--teacher-join must be HeldOut or Self");
-            a.teacher_join = mode == "Self" ? query::JoinMode::Self : query::JoinMode::HeldOut;
+            args.teacher_join = mode == "Self" ? query::JoinMode::Self : query::JoinMode::HeldOut;
         } else if (key == "--no-baselines")
-            a.baselines = false;
+            args.baselines = false;
         else if (key == "--seen-pairs-only")
-            a.all_join_pairs = false;
+            args.all_join_pairs = false;
         else
             throw std::invalid_argument("unknown argument " + key +
                                         " (--config --data --out --cache --seeds --shares --arms "
@@ -123,10 +128,8 @@ Args parse_args(int argc, char **argv) {
                                         "--independent-knn --term-weights --eval-eps --knn-check "
                                         "--no-baselines --seen-pairs-only)");
     }
-    for (const auto &arm : a.arms)
-        if (!teacher::is_arm(arm))
-            throw std::invalid_argument("unknown teacher arm " + arm);
-    return a;
+    teacher::check_arms(args.arms);
+    return args;
 }
 
 pipeline::Config effective_config(const Args &args) {
@@ -157,54 +160,23 @@ const char *mode_name(query::JoinMode mode) {
     return mode == query::JoinMode::Self ? "Self" : "HeldOut";
 }
 
-double seconds_since(std::chrono::steady_clock::time_point start) {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-}
-
-std::size_t total_budget(const core::TrajectoryDb &db, double share) {
-    const std::size_t endpoints = 2 * db.size();
-    const double extra = share * static_cast<double>(db.num_points() - endpoints);
-    return endpoints + static_cast<std::size_t>(std::llround(extra));
-}
-
-core::Simplification to_simplification(const KeptSets &kept) {
-    core::Simplification s;
-    for (const auto &k : kept)
-        s.add_trajectory(k);
-    return s;
-}
-
-KeptSets to_kept(const core::Simplification &s) {
-    KeptSets kept(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i)
-        kept[i].assign(s.trajectory(i).begin(), s.trajectory(i).end());
-    return kept;
-}
-
-KeptSets endpoints_only(const core::TrajectoryDb &db) {
-    KeptSets kept(db.size());
-    for (std::size_t i = 0; i < db.size(); ++i)
-        kept[i] = {0, db.trajectory(i).size() - 1};
-    return kept;
-}
-
 // Interior points shared in proportion to w, capped at each trajectory's interior, the rest by
 // largest remainder. Budgets include the endpoints
 std::vector<std::size_t> weighted_budgets(const core::TrajectoryDb &db,
-                                          const std::vector<double> &w,
+                                          const std::vector<double> &weights,
                                           std::size_t interior_total) {
     const std::size_t n = db.size();
-    std::vector<std::size_t> cap(n), q(n, 0);
+    std::vector<std::size_t> cap(n), interior(n, 0);
     for (std::size_t i = 0; i < n; ++i)
         cap[i] = db.trajectory(i).size() >= 2 ? db.trajectory(i).size() - 2 : 0;
     std::vector<char> open(n, 1);
     std::size_t left = interior_total;
     while (left > 0) {
-        double sw = 0;
+        double weight_sum = 0;
         for (std::size_t i = 0; i < n; ++i)
             if (open[i])
-                sw += w[i];
-        if (sw <= 0)
+                weight_sum += weights[i];
+        if (weight_sum <= 0)
             break;
         std::vector<double> frac(n, 0);
         std::size_t given = 0;
@@ -212,16 +184,16 @@ std::vector<std::size_t> weighted_budgets(const core::TrajectoryDb &db,
         for (std::size_t i = 0; i < n; ++i) {
             if (!open[i])
                 continue;
-            const double want = static_cast<double>(left) * w[i] / sw;
+            const double want = static_cast<double>(left) * weights[i] / weight_sum;
             auto add = static_cast<std::size_t>(want);
-            if (q[i] + add >= cap[i]) {
-                add = cap[i] - q[i];
+            if (interior[i] + add >= cap[i]) {
+                add = cap[i] - interior[i];
                 open[i] = 0;
                 capped = true;
             } else {
                 frac[i] = want - static_cast<double>(add);
             }
-            q[i] += add;
+            interior[i] += add;
             given += add;
         }
         left -= given;
@@ -235,17 +207,17 @@ std::vector<std::size_t> weighted_budgets(const core::TrajectoryDb &db,
             return frac[a] > frac[b] || (frac[a] == frac[b] && a < b);
         });
         for (std::size_t k = 0; k < idx.size() && left > 0; ++k) {
-            ++q[idx[k]];
+            ++interior[idx[k]];
             --left;
-            if (q[idx[k]] == cap[idx[k]])
+            if (interior[idx[k]] == cap[idx[k]])
                 open[idx[k]] = 0;
         }
         if (given == 0 && idx.empty())
             break;
     }
     for (std::size_t i = 0; i < n; ++i)
-        q[i] += std::min<std::size_t>(2, db.trajectory(i).size());
-    return q;
+        interior[i] += std::min<std::size_t>(2, db.trajectory(i).size());
+    return interior;
 }
 
 KeptSets select(const core::TrajectoryDb &db, selection::AlgorithmType algorithm,
@@ -269,28 +241,28 @@ std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
                                std::span<const double> shares) {
     using selection::AlgorithmType;
     std::vector<char> partnered(db.size(), 0);
-    for (const auto &p : pairs)
-        if (all_join_pairs || p.seen)
-            partnered[p.i] = partnered[p.j] = 1;
+    for (const auto &pair : pairs)
+        if (all_join_pairs || pair.seen)
+            partnered[pair.i] = partnered[pair.j] = 1;
     std::vector<Arm> arms;
     for (const double share : shares) {
-        const auto budget = total_budget(db, share);
+        const auto budget = allocation::total_budget(db, share);
         auto geometric = [&](double alpha) {
             return allocation::create_trajectory_budgets(
                 db, allocation::AllocatorType::SizeProportional, budget, alpha);
         };
         const auto equal = geometric(0.0);
         arms.push_back({"RDP_a0", share, select(db, AlgorithmType::RDP, equal)});
-        arms.push_back({"RDP_a025", share, select(db, AlgorithmType::RDP, geometric(0.25))});
+        arms.push_back({"RDP_a025", share, select(db, AlgorithmType::RDP, geometric(kRdpAlpha))});
         arms.push_back({"SED_a0", share, select(db, AlgorithmType::SED, equal)});
         arms.push_back({"UNI_a0", share, select(db, AlgorithmType::UNIFORM, equal)});
-        for (const double lambda : {0.5, 1.0}) {
-            std::vector<double> w(db.size());
+        for (const double lambda : kPartnerLambdas) {
+            std::vector<double> weights(db.size());
             for (std::size_t i = 0; i < db.size(); ++i)
-                w[i] = 1.0 + (partnered[i] ? lambda : 0.0);
-            arms.push_back(
-                {std::format("PARTNER_l{:g}", lambda), share,
-                 select(db, AlgorithmType::RDP, weighted_budgets(db, w, budget - 2 * db.size()))});
+                weights[i] = 1.0 + (partnered[i] ? lambda : 0.0);
+            arms.push_back({std::format("PARTNER_l{:g}", lambda), share,
+                            select(db, AlgorithmType::RDP,
+                                   weighted_budgets(db, weights, budget - 2 * db.size()))});
         }
     }
     return arms;
@@ -301,17 +273,17 @@ void validate(const Arm &arm, const core::TrajectoryDb &db) {
         throw std::runtime_error(arm.name + ": wrong number of trajectories");
     std::size_t total = 0;
     for (std::size_t i = 0; i < db.size(); ++i) {
-        const auto &k = arm.kept[i];
+        const auto &kept = arm.kept[i];
         const auto n = db.trajectory(i).size();
-        if (k.size() < 2 || k.front() != 0 || k.back() != n - 1 || !std::ranges::is_sorted(k) ||
-            std::ranges::adjacent_find(k) != k.end())
+        if (kept.size() < 2 || kept.front() != 0 || kept.back() != n - 1 ||
+            !std::ranges::is_sorted(kept) || std::ranges::adjacent_find(kept) != kept.end())
             throw std::runtime_error(
                 std::format("{}: invalid kept set for trajectory {}", arm.name, i));
-        total += k.size();
+        total += kept.size();
     }
-    if (total != total_budget(db, arm.share))
-        throw std::runtime_error(
-            std::format("{}: {} points, budget {}", arm.name, total, total_budget(db, arm.share)));
+    const auto budget = allocation::total_budget(db, arm.share);
+    if (total != budget)
+        throw std::runtime_error(std::format("{}: {} points, budget {}", arm.name, total, budget));
 }
 
 struct PairRecall {
@@ -350,30 +322,16 @@ PairRecall pair_recall(const core::TrajectoryDb &compressed,
     return result;
 }
 
-// Recall@k of the teacher's database kNN queries on the compressed database
-double db_knn_recall(const core::TrajectoryDb &db, const core::TrajectoryDb &compressed,
-                     const teacher::TeacherWorkloads &w) {
-    std::vector<double> recall(db.size(), kNan);
-    core::parallel_for(db.size(), [&](std::size_t e) {
-        const auto &q = w.knn[e];
-        if (!q.valid)
-            return;
-        auto found = query::knn(compressed, db.trajectory(e), w.k + 1, w.frechet);
-        std::erase(found, e);
-        found.resize(std::min(found.size(), w.k));
-        std::size_t hits = 0;
-        for (const auto i : q.top)
-            hits += std::ranges::find(found, std::size_t{i}) != found.end();
-        recall[e] = static_cast<double>(hits) / static_cast<double>(w.k);
-    });
-    double sum = 0;
-    std::size_t count = 0;
-    for (const double r : recall)
-        if (!std::isnan(r)) {
-            sum += r;
-            ++count;
-        }
-    return count ? sum / static_cast<double>(count) : kNan;
+// Whether the teacher trained on the join at eps_m in mode: one of its thresholds in its own join
+// mode, or its held-out term at join.eps_m
+bool trained_on(const pipeline::Config &config, const teacher::ObjectiveConfig &objective,
+                double eps_m, query::JoinMode mode) {
+    const auto &extra = config.teacher.extra_join_eps_m;
+    const bool teacher_eps =
+        eps_m == config.join.eps_m || std::ranges::find(extra, eps_m) != extra.end();
+    const bool held_out_term =
+        objective.held_out_term && mode == query::JoinMode::HeldOut && eps_m == config.join.eps_m;
+    return (teacher_eps && mode == objective.join_mode) || held_out_term;
 }
 
 std::ofstream open_csv(const std::filesystem::path &file, const std::string &header) {
@@ -432,22 +390,23 @@ int main(int argc, char **argv) try {
         const auto pairs = workloads.positives;
         const teacher::Teacher model(db, std::move(workloads),
                                      pipeline::teacher_objective_config(config), seed);
-        timings << std::format("{},teacher_setup,{:.2f}\n", seed, seconds_since(start));
+        timings << std::format("{},teacher_setup,{:.2f}\n", seed, core::seconds_since(start));
 
         std::vector<Arm> arms;
         for (const double share : config.budget_shares) {
             start = std::chrono::steady_clock::now();
-            for (auto &arm : model.run(total_budget(db, share), args.arms))
-                arms.push_back({arm.name, share, to_kept(arm.simplification)});
-            timings << std::format("{},teacher_{:g},{:.2f}\n", seed, share, seconds_since(start));
+            for (auto &arm : model.run(allocation::total_budget(db, share), args.arms))
+                arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
+            timings << std::format("{},teacher_{:g},{:.2f}\n", seed, share,
+                                   core::seconds_since(start));
         }
         if (args.baselines) {
             for (auto &arm :
                  baseline_arms(db, pairs, config.teacher.all_join_pairs, config.budget_shares))
                 arms.push_back(std::move(arm));
             for (const double share : config.budget_shares)
-                for (auto &arm : model.single_recipes(total_budget(db, share)))
-                    arms.push_back({arm.name, share, to_kept(arm.simplification)});
+                for (auto &arm : model.single_recipes(allocation::total_budget(db, share)))
+                    arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
         }
         for (const auto &arm : arms)
             validate(arm, db);
@@ -468,96 +427,97 @@ int main(int argc, char **argv) try {
                                               .frechet = config.join.frechet},
                                              seed));
         }
-        timings << std::format("{},test_workloads,{:.2f}\n", seed, seconds_since(start));
+        timings << std::format("{},test_workloads,{:.2f}\n", seed, core::seconds_since(start));
 
         const auto test = test_workloads.view();
         const auto &scoring = config.where_at_scoring;
-        const auto floor_db = core::materialize(db, to_simplification(endpoints_only(db)));
+        const auto floor_db = core::materialize(db, core::endpoints_only(db));
         const auto floor = evaluator::Evaluator(db, floor_db, test, scoring).evaluate().scores;
         floors << std::format("{},{},{},{},{},{},{}\n", seed, floor.knn.recall_at_k, floor.range_f1,
                               floor.where_at.average_hit, floor.join.f1, floor.clustering.score,
                               floor.self_join.f1);
         std::vector<double> other_floor;
-        for (const auto &w : other_joins)
-            other_floor.push_back(evaluator::evaluate_join(floor_db, w).f1);
+        for (const auto &workload : other_joins)
+            other_floor.push_back(evaluator::evaluate_join(floor_db, workload).f1);
         // Route clustering at each threshold, built on the self join there
         std::vector<query::RouteClusteringWorkload> other_clusters;
         std::vector<double> cluster_floor;
         if (config.clustering.enabled)
-            for (const auto &w : other_joins)
-                if (w.mode == query::JoinMode::Self) {
+            for (const auto &workload : other_joins)
+                if (workload.mode == query::JoinMode::Self) {
                     auto clustering = config.clustering;
-                    clustering.eps_m = w.eps_m;
-                    other_clusters.push_back(query::generate_route_clustering(db, clustering, &w));
+                    clustering.eps_m = workload.eps_m;
+                    other_clusters.push_back(
+                        query::generate_route_clustering(db, clustering, &workload));
                     cluster_floor.push_back(
                         evaluator::evaluate_route_clustering(floor_db, other_clusters.back())
                             .score);
                 }
 
         const auto &objective = model.objective();
-        const double db_knn_floor =
-            args.knn_check ? db_knn_recall(db, floor_db, objective.workloads()) : kNan;
+        const double db_knn_floor = args.knn_check ? objective.knn_recall(floor_db) : kNan;
         for (const auto &arm : arms) {
             start = std::chrono::steady_clock::now();
-            const auto compressed = core::materialize(db, to_simplification(arm.kept));
-            const auto s = evaluator::Evaluator(db, compressed, test, scoring).evaluate().scores;
-            const auto n = evaluator::normalize_scores(s, floor);
+            const auto compressed = core::materialize(db, arm.kept);
+            const auto scores =
+                evaluator::Evaluator(db, compressed, test, scoring).evaluate().scores;
+            const auto normalized = evaluator::normalize_scores(scores, floor);
             const auto recall = pair_recall(compressed, pairs, config.join);
             results << std::format(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
                 "{},{},{},{},{},{}\n",
-                seed, arm.share, arm.name, total_budget(db, arm.share), s.knn.recall_at_k,
-                s.range_f1, s.where_at.average_hit, s.join.f1, s.clustering.score,
-                s.where_at.within_radius, s.join.micro_f1, s.knn.kendalls_tau_topk, n.knn, n.range,
-                n.where_at, n.join, n.clustering, n.combined, objective.total(arm.kept),
-                recall.seen, recall.unseen, s.clustering.predicted_clusters, seconds_since(start),
-                mode_name(config.join.mode), s.self_join.f1, n.self_join,
-                mode_name(objective.config().join_mode), n.join_f1, n.clustering_score);
+                seed, arm.share, arm.name, allocation::total_budget(db, arm.share),
+                scores.knn.recall_at_k, scores.range_f1, scores.where_at.average_hit,
+                scores.join.f1, scores.clustering.score, scores.where_at.within_radius,
+                scores.join.micro_f1, scores.knn.kendalls_tau_topk, normalized.knn,
+                normalized.range, normalized.where_at, normalized.join, normalized.clustering,
+                normalized.combined, objective.total(arm.kept), recall.seen, recall.unseen,
+                scores.clustering.predicted_clusters, core::seconds_since(start),
+                mode_name(config.join.mode), scores.self_join.f1, normalized.self_join,
+                mode_name(objective.config().join_mode), normalized.join_f1,
+                normalized.clustering_score);
 
             for (std::size_t k = 0; k < other_joins.size(); ++k) {
-                const auto &w = other_joins[k];
-                const auto js = evaluator::evaluate_join(compressed, w);
-                // Trained on: one of the teacher's thresholds in the teacher's join mode, or the
-                // held-out term at join.eps_m
-                const auto &extra = config.teacher.extra_join_eps_m;
-                const bool teacher_eps = w.eps_m == config.join.eps_m ||
-                                         std::ranges::find(extra, w.eps_m) != extra.end();
+                const auto &workload = other_joins[k];
+                const auto join_scores = evaluator::evaluate_join(compressed, workload);
                 const bool teacher_threshold =
-                    (teacher_eps && w.mode == objective.config().join_mode) ||
-                    (w.mode == query::JoinMode::HeldOut && objective.config().held_out_term &&
-                     w.eps_m == config.join.eps_m);
+                    trained_on(config, objective.config(), workload.eps_m, workload.mode);
                 thresholds << std::format("{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
-                                          mode_name(w.mode), w.eps_m, js.f1,
-                                          (js.f1 - other_floor[k]) / (1.0 - other_floor[k]),
-                                          js.recall, teacher_threshold ? 1 : 0);
+                                          mode_name(workload.mode), workload.eps_m, join_scores.f1,
+                                          (join_scores.f1 - other_floor[k]) /
+                                              (1.0 - other_floor[k]),
+                                          join_scores.recall, teacher_threshold ? 1 : 0);
             }
             for (std::size_t k = 0; k < other_clusters.size(); ++k) {
-                const auto &w = other_clusters[k];
-                const double score = evaluator::evaluate_route_clustering(compressed, w).score;
-                const auto &extra = config.teacher.extra_join_eps_m;
+                const auto &workload = other_clusters[k];
+                const double score =
+                    evaluator::evaluate_route_clustering(compressed, workload).score;
+                // Clustering is built on the self join at its threshold
                 const bool teacher_threshold =
-                    objective.config().join_mode == query::JoinMode::Self &&
-                    (w.eps_m == config.join.eps_m ||
-                     std::ranges::find(extra, w.eps_m) != extra.end());
+                    trained_on(config, objective.config(), workload.eps_m, query::JoinMode::Self);
                 thresholds << std::format("{},{},{},Clustering,{},{},{},,{}\n", seed, arm.share,
-                                          arm.name, w.eps_m, score,
+                                          arm.name, workload.eps_m, score,
                                           (score - cluster_floor[k]) / (1.0 - cluster_floor[k]),
                                           teacher_threshold ? 1 : 0);
             }
             // The teacher's own estimate of each metric, next to the test's
-            const auto m = objective.metrics(arm.kept);
-            const auto &f = objective.floors();
-            auto norm = [&](teacher::Objective::Term t) { return (m[t] - f[t]) / (1.0 - f[t]); };
+            const auto teacher_metrics = objective.metrics(arm.kept);
+            const auto &teacher_floors = objective.floors();
+            auto norm = [&](teacher::Objective::Term t) {
+                return (teacher_metrics[t] - teacher_floors[t]) / (1.0 - teacher_floors[t]);
+            };
             terms << std::format("{},{},{},{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
                                  norm(teacher::Objective::Knn), norm(teacher::Objective::Range),
                                  norm(teacher::Objective::WhereAt), norm(teacher::Objective::Join),
-                                 n.knn, n.range, n.where_at, n.join, n.self_join);
+                                 normalized.knn, normalized.range, normalized.where_at,
+                                 normalized.join, normalized.self_join);
             if (args.knn_check) {
-                const double db_knn = db_knn_recall(db, compressed, objective.workloads());
+                const double db_knn = objective.knn_recall(compressed);
                 knn_check << std::format("{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
-                                         m[teacher::Objective::Knn], db_knn, s.knn.recall_at_k,
-                                         norm(teacher::Objective::Knn),
-                                         (db_knn - db_knn_floor) / (1.0 - db_knn_floor), n.knn);
+                                         teacher_metrics[teacher::Objective::Knn], db_knn,
+                                         scores.knn.recall_at_k, norm(teacher::Objective::Knn),
+                                         (db_knn - db_knn_floor) / (1.0 - db_knn_floor),
+                                         normalized.knn);
                 knn_check.flush();
             }
             if (teacher::is_arm(arm.name))
@@ -567,7 +527,8 @@ int main(int argc, char **argv) try {
             for (auto *out : {&results, &thresholds, &terms, &budgets})
                 out->flush();
             std::cerr << std::format("seed {} {} {:g}: J4 {:.4f}, join {:.4f}, self join {:.4f}\n",
-                                     seed, arm.name, arm.share, n.combined, n.join, n.self_join);
+                                     seed, arm.name, arm.share, normalized.combined,
+                                     normalized.join, normalized.self_join);
         }
         timings.flush();
         floors.flush();

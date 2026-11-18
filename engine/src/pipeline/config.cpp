@@ -97,14 +97,8 @@ void parse_join_config(Config &config, const json &join) {
     config.join.query_count = join.value("query_count", config.join.query_count);
     config.join.eps_m = join.value("eps_m", config.join.eps_m);
     config.join_score_eps_m = join.value("score_eps_m", config.join_score_eps_m);
-    for (std::size_t a = 0; a < config.join_score_eps_m.size(); ++a) {
-        const double eps = config.join_score_eps_m[a];
-        const auto before = config.join_score_eps_m.begin() + static_cast<std::ptrdiff_t>(a);
-        if (!std::isfinite(eps) || eps <= 0 || eps == config.join.eps_m ||
-            std::find(config.join_score_eps_m.begin(), before, eps) != before)
-            throw std::invalid_argument("config: join.score_eps_m must be positive, distinct and "
-                                        "differ from join.eps_m");
-    }
+    query::check_extra_thresholds(config.join_score_eps_m, config.join.eps_m,
+                                  "config: join.score_eps_m");
 }
 
 void parse_clustering_config(Config &config, const json &clustering) {
@@ -137,28 +131,14 @@ void parse_teacher_config(Config &config, const json &section) {
     t.held_out_term = section.value("held_out_term", t.held_out_term);
     t.ranking_knn = section.value("ranking_knn", t.ranking_knn);
     t.term_weights = section.value("term_weights", t.term_weights);
-    double weight_sum = 0;
-    for (const double w : t.term_weights) {
-        if (!std::isfinite(w) || w < 0)
-            throw std::invalid_argument("config: teacher.term_weights must not be negative");
-        weight_sum += w;
-    }
-    if (weight_sum <= 0)
-        throw std::invalid_argument("config: teacher.term_weights must not all be zero");
-    for (const double eps : t.extra_join_eps_m)
-        if (!std::isfinite(eps) || eps <= 0)
-            throw std::invalid_argument("config: teacher.extra_join_eps_m must be positive");
+    teacher::check_term_weights(t.term_weights);
+    query::check_extra_thresholds(t.extra_join_eps_m, config.join.eps_m,
+                                  "config: teacher.extra_join_eps_m");
     if (t.cache_dir.empty())
         throw std::invalid_argument("config: teacher.cache_dir must not be empty");
     if (t.enabled && t.arms.empty())
         throw std::invalid_argument("config: teacher.arms must not be empty when enabled");
-    for (std::size_t a = 0; a < t.arms.size(); ++a) {
-        if (!teacher::is_arm(t.arms[a]))
-            throw std::invalid_argument("config: unknown teacher arm '" + t.arms[a] + "'");
-        if (std::find(t.arms.begin(), t.arms.begin() + static_cast<std::ptrdiff_t>(a), t.arms[a]) !=
-            t.arms.begin() + static_cast<std::ptrdiff_t>(a))
-            throw std::invalid_argument("config: teacher arm '" + t.arms[a] + "' listed twice");
-    }
+    teacher::check_arms(t.arms);
     if (t.range_query_count == 0)
         throw std::invalid_argument("config: teacher.range_query_count must be positive");
 }

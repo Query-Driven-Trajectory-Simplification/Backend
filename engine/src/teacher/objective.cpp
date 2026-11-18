@@ -59,34 +59,31 @@ std::vector<core::TrajectoryView> PreparedTrajectories::views() const {
 
 namespace {
 
-bool inside(const query::RangeBox &box, const core::TrajectoryView &v, std::size_t p) {
-    return v.t[p] >= box.t_min && v.t[p] <= box.t_max && v.x[p] >= box.x_min &&
-           v.x[p] <= box.x_max && v.y[p] >= box.y_min && v.y[p] <= box.y_max;
+bool inside(const query::RangeBox &box, const core::TrajectoryView &trajectory, std::size_t p) {
+    return trajectory.t[p] >= box.t_min && trajectory.t[p] <= box.t_max &&
+           trajectory.x[p] >= box.x_min && trajectory.x[p] <= box.x_max &&
+           trajectory.y[p] >= box.y_min && trajectory.y[p] <= box.y_max;
 }
 
 constexpr std::size_t kMaxJoinTerms = 8;
-
-core::TrajectoryDb materialize(const core::TrajectoryDb &db, const KeptSets &kept) {
-    core::Simplification simplification;
-    for (const auto &k : kept)
-        simplification.add_trajectory(k);
-    return core::materialize(db, simplification);
-}
-
-double frechet(const core::TrajectoryView &a, const core::TrajectoryView &b,
-               query::FrechetVariant variant) {
-    const double discrete = query::frechet_distance(a, b);
-    // Discrete Fréchet bounds the continuous distance from above
-    return variant == query::FrechetVariant::Continuous
-               ? query::continuous_frechet_distance(a, b, 0.0, discrete)
-               : discrete;
-}
 
 double f1_of(std::size_t hits, std::size_t found, std::size_t expected) {
     return 2.0 * static_cast<double>(hits) / static_cast<double>(found + expected);
 }
 
 } // namespace
+
+double check_term_weights(const TermWeights &weights) {
+    double sum = 0;
+    for (const double weight : weights) {
+        if (!std::isfinite(weight) || weight < 0)
+            throw std::invalid_argument("term weights must be finite and not negative");
+        sum += weight;
+    }
+    if (sum <= 0)
+        throw std::invalid_argument("at least one term weight must be positive");
+    return sum;
+}
 
 Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workloads,
                      const ObjectiveConfig &config)
@@ -96,14 +93,7 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
         throw std::invalid_argument("objective: kNN workload does not match the database");
     if (!(config.min_tolerance_m < config.max_tolerance_m))
         throw std::invalid_argument("objective: min_tolerance_m must be below max_tolerance_m");
-    double weight_sum = 0;
-    for (const double w : config.term_weights) {
-        if (!std::isfinite(w) || w < 0)
-            throw std::invalid_argument("objective: term weights must be finite and not negative");
-        weight_sum += w;
-    }
-    if (weight_sum <= 0)
-        throw std::invalid_argument("objective: at least one term weight must be positive");
+    const double weight_sum = check_term_weights(config.term_weights);
     // Extra thresholds use every pair, which would train on the pairs held back as unseen
     if (!config.all_join_pairs && !workloads.extra_joins.empty())
         throw std::invalid_argument(
@@ -113,12 +103,12 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     m_knn.resize(n);
     std::size_t valid = 0;
     for (std::size_t e = 0; e < n; ++e) {
-        const auto &q = workloads.knn[e];
-        if (!q.valid)
+        const auto &query = workloads.knn[e];
+        if (!query.valid)
             continue;
         ++valid;
-        for (const auto i : q.top)
-            m_knn[i].push_back({static_cast<std::uint32_t>(e), q.cutoff});
+        for (const auto i : query.top)
+            m_knn[i].push_back({static_cast<std::uint32_t>(e), query.cutoff});
     }
     m_knn_weight =
         valid ? 1.0 / (static_cast<double>(workloads.k) * static_cast<double>(valid)) : 0.0;
@@ -126,8 +116,8 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     // Range: invert each box's reference
     m_range.resize(n);
     std::size_t scored = 0;
-    for (const auto &q : workloads.range.queries)
-        scored += !q.reference.empty();
+    for (const auto &query : workloads.range.queries)
+        scored += !query.reference.empty();
     for (std::size_t b = 0; b < workloads.range.queries.size(); ++b) {
         const auto &ref = workloads.range.queries[b].reference;
         for (const auto i : ref)
@@ -141,7 +131,8 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     for (std::size_t k = 0; k < workloads.where_at.queries.size(); ++k)
         m_probes[workloads.where_at.queries[k].trajectory_index].push_back(
             static_cast<std::uint32_t>(k));
-    const auto with_probes = std::ranges::count_if(m_probes, [](auto &p) { return !p.empty(); });
+    const auto with_probes =
+        std::ranges::count_if(m_probes, [](auto &probes) { return !probes.empty(); });
     m_where_at_weight = with_probes ? 1.0 / static_cast<double>(with_probes) : 0.0;
 
     // Join terms: join_eps_m, the extra thresholds, then the held-out form of the first. Pairs are
@@ -167,47 +158,45 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
         throw std::invalid_argument("objective: too many join terms");
     m_links.resize(n);
     m_truth.assign(n * terms.size(), 0);
-    auto add = [&](const JoinPair &p, bool positive, std::size_t term) {
-        if (!config.all_join_pairs && !p.seen)
+    auto add = [&](const JoinPair &join_pair, bool positive, std::size_t term) {
+        if (!config.all_join_pairs && !join_pair.seen)
             return;
         const auto pair = static_cast<std::uint32_t>(m_pair_i.size());
         const auto k = static_cast<std::uint8_t>(term);
-        m_pair_i.push_back(p.i);
-        m_pair_j.push_back(p.j);
+        m_pair_i.push_back(join_pair.i);
+        m_pair_j.push_back(join_pair.j);
         m_pair_term.push_back(k);
-        m_links[p.i].push_back({p.j, pair, positive, k});
-        m_links[p.j].push_back({p.i, pair, positive, k});
+        m_links[join_pair.i].push_back({join_pair.j, pair, positive, k});
+        m_links[join_pair.j].push_back({join_pair.i, pair, positive, k});
         if (positive) {
-            ++m_truth[slot(p.i, term)];
-            ++m_truth[slot(p.j, term)];
+            ++m_truth[slot(join_pair.i, term)];
+            ++m_truth[slot(join_pair.j, term)];
         }
     };
     for (std::size_t k = 0; k < terms.size(); ++k)
-        for (const auto &p : *terms[k].positives)
-            add(p, true, k);
+        for (const auto &join_pair : *terms[k].positives)
+            add(join_pair, true, k);
     m_positive_count = m_pair_i.size();
     for (std::size_t k = 0; k < terms.size(); ++k)
-        for (const auto &p : *terms[k].negatives)
-            add(p, false, k);
-    m_with_truth =
-        static_cast<std::size_t>(std::ranges::count_if(m_truth, [](auto c) { return c > 0; }));
+        for (const auto &join_pair : *terms[k].negatives)
+            add(join_pair, false, k);
+    m_with_truth = static_cast<std::size_t>(
+        std::ranges::count_if(m_truth, [](auto count) { return count > 0; }));
 
     // Floors: endpoints only, partners included, like the J4 floor
-    KeptSets endpoints(n);
-    for (std::size_t i = 0; i < n; ++i)
-        endpoints[i] = {0, db.trajectory(i).size() - 1};
+    const auto endpoints = core::endpoints_only(db);
     m_floor = metrics(endpoints);
     for (std::size_t m = 0; m < TermCount; ++m) {
         if (m_floor[m] >= 1.0)
             throw std::runtime_error("objective: a metric is already perfect with endpoints only");
         m_scale[m] = config.term_weights[m] / (weight_sum * (1.0 - m_floor[m]));
     }
-    m_v0.assign(n, 0.0);
+    m_endpoint_separable.assign(n, 0.0);
     core::parallel_for(n, [&](std::size_t i) {
-        const auto t = raw_separable(i, PreparedTrajectory(db.trajectory(i), endpoints[i]).view(),
-                                     !config.ranking_knn);
+        const auto endpoint_terms = raw_separable(
+            i, PreparedTrajectory(db.trajectory(i), endpoints[i]).view(), !config.ranking_knn);
         for (const auto m : {Knn, Range, WhereAt})
-            m_v0[i] += m_scale[m] * t[m];
+            m_endpoint_separable[i] += m_scale[m] * endpoint_terms[m];
     });
 }
 
@@ -220,21 +209,22 @@ Objective::Terms Objective::raw_separable(std::size_t i, std::span<const std::si
     return raw_separable(i, PreparedTrajectory(m_db.trajectory(i), kept).view());
 }
 
-Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryView &s,
+Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryView &candidate,
                                           bool knn) const {
-    Terms t{};
+    Terms terms{};
 
     if (knn) {
-        for (const auto &m : m_knn[i])
-            if (query::frechet_within(m_db.trajectory(m.query), s, m.cutoff, m_workloads.frechet))
-                t[Knn] += m_knn_weight;
+        for (const auto &membership : m_knn[i])
+            if (query::frechet_within(m_db.trajectory(membership.query), candidate,
+                                      membership.cutoff, m_workloads.frechet))
+                terms[Knn] += m_knn_weight;
     }
 
-    for (const auto &[b, w] : m_range[i]) {
+    for (const auto &[b, weight] : m_range[i]) {
         const auto &box = m_workloads.range.queries[b].box;
-        for (std::size_t k = 0; k < s.size(); ++k)
-            if (inside(box, s, k)) {
-                t[Range] += w;
+        for (std::size_t k = 0; k < candidate.size(); ++k)
+            if (inside(box, candidate, k)) {
+                terms[Range] += weight;
                 break;
             }
     }
@@ -243,14 +233,15 @@ Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryV
         double sum = 0;
         for (const auto k : m_probes[i]) {
             const auto &probe = m_workloads.where_at.queries[k];
-            const double error = core::distance(core::position_at(s, probe.t), probe.reference);
+            const double error =
+                core::distance(core::position_at(candidate, probe.t), probe.reference);
             sum += std::clamp((m_config.max_tolerance_m - error) /
                                   (m_config.max_tolerance_m - m_config.min_tolerance_m),
                               0.0, 1.0);
         }
-        t[WhereAt] = m_where_at_weight * sum / static_cast<double>(m_probes[i].size());
+        terms[WhereAt] = m_where_at_weight * sum / static_cast<double>(m_probes[i].size());
     }
-    return t;
+    return terms;
 }
 
 double Objective::separable(std::size_t i, std::span<const std::size_t> kept) const {
@@ -260,7 +251,7 @@ double Objective::separable(std::size_t i, std::span<const std::size_t> kept) co
 double Objective::separable(std::size_t i, const core::TrajectoryView &candidate) const {
     const auto t = raw_separable(i, candidate, !m_config.ranking_knn);
     return m_scale[Knn] * t[Knn] + m_scale[Range] * t[Range] + m_scale[WhereAt] * t[WhereAt] -
-           m_v0[i];
+           m_endpoint_separable[i];
 }
 
 double Objective::independent_value(std::size_t i, const core::TrajectoryView &candidate,
@@ -302,7 +293,8 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
 double Objective::independent_sum(const IndependentScore &score, double knn) const {
     // Same sums in the same order as separable, so the value is identical to the last bit
     return m_scale[Knn] * knn + m_scale[Range] * score.terms[Range] +
-           m_scale[WhereAt] * score.terms[WhereAt] - m_v0[score.trajectory] + score.join;
+           m_scale[WhereAt] * score.terms[WhereAt] - m_endpoint_separable[score.trajectory] +
+           score.join;
 }
 
 double Objective::independent_value(const IndependentScore &score, double beat) const {
@@ -313,7 +305,7 @@ double Objective::independent_value(const IndependentScore &score, double beat) 
     const double per_hit = m_scale[Knn] * m_knn_weight;
     std::size_t left = m_knn[i].size();
     for (const auto &m : m_knn[i]) {
-        if (value() + per_hit * static_cast<double>(left) < beat - 1e-15)
+        if (value() + per_hit * static_cast<double>(left) < beat - kBoundSlack)
             return value();
         --left;
         if (query::frechet_within(m_db.trajectory(m.query), score.candidate, m.cutoff,
@@ -345,15 +337,15 @@ double Objective::join_metric(std::span<const core::TrajectoryView> state) const
     std::vector<std::size_t> hits(m_truth.size(), 0), found(m_truth.size(), 0);
     for (std::size_t p = 0; p < m_pair_i.size(); ++p) {
         const bool positive = p < m_positive_count;
-        const auto si = slot(m_pair_i[p], m_pair_term[p]);
-        const auto sj = slot(m_pair_j[p], m_pair_term[p]);
+        const auto slot_i = slot(m_pair_i[p], m_pair_term[p]);
+        const auto slot_j = slot(m_pair_j[p], m_pair_term[p]);
         if (matched[p]) {
-            ++found[si];
-            hits[si] += positive;
+            ++found[slot_i];
+            hits[slot_i] += positive;
         }
         if (reverse[p]) {
-            ++found[sj];
-            hits[sj] += positive;
+            ++found[slot_j];
+            hits[slot_j] += positive;
         }
     }
     double sum = 0;
@@ -376,39 +368,38 @@ Objective::Terms Objective::metrics(const KeptSets &kept) const {
         per[i] = raw_separable(i, views[i], !m_config.ranking_knn);
     });
     Terms total{};
-    for (const auto &t : per)
+    for (const auto &terms : per)
         for (const auto m : {Knn, Range, WhereAt})
-            total[m] += t[m];
+            total[m] += terms[m];
     total[Join] = join_metric(views);
     if (m_config.ranking_knn)
-        total[Knn] = ranking_knn(kept);
+        total[Knn] = knn_recall(core::materialize(m_db, kept));
     return total;
 }
 
-double Objective::ranking_knn(const KeptSets &kept) const {
-    const auto compressed = materialize(m_db, kept);
+double Objective::knn_recall(const core::TrajectoryDb &compressed) const {
     const std::size_t k = m_workloads.k;
     std::vector<std::size_t> hits(m_db.size(), 0);
     core::parallel_for(m_db.size(), [&](std::size_t e) {
-        const auto &q = m_workloads.knn[e];
-        if (!q.valid)
+        const auto &entry = m_workloads.knn[e];
+        if (!entry.valid)
             return;
         auto found = query::knn(compressed, m_db.trajectory(e), std::min(k + 1, m_db.size()),
                                 m_workloads.frechet);
         std::erase(found, e);
         found.resize(std::min(found.size(), k));
-        for (const auto i : q.top)
+        for (const auto i : entry.top)
             hits[e] += std::ranges::find(found, std::size_t{i}) != found.end();
     });
     return m_knn_weight * static_cast<double>(std::accumulate(hits.begin(), hits.end(), 0ul));
 }
 
 double Objective::total(const KeptSets &kept) const {
-    const auto m = metrics(kept);
-    double j = 0;
+    const auto values = metrics(kept);
+    double sum = 0;
     for (std::size_t k = 0; k < TermCount; ++k)
-        j += m_scale[k] * (m[k] - m_floor[k]);
-    return j;
+        sum += m_scale[k] * (values[k] - m_floor[k]);
+    return sum;
 }
 
 JoinState::JoinState(const Objective &objective, std::span<const core::TrajectoryView> state)
@@ -475,22 +466,23 @@ JoinState::Proposal JoinState::propose(std::size_t i, const core::TrajectoryView
         proposal.matched.push_back(then);
         if (now == then)
             continue;
-        const long d = then ? 1 : -1;
+        const long delta = then ? 1 : -1;
         const std::array<std::size_t, 2> touched{count(link.other, link), count(i, link)};
         for (const auto t : std::span(touched).first(sides(link))) {
-            auto &[h, f] = change[t];
-            f += d;
-            h += link.positive ? d : 0;
+            auto &[hits, found] = change[t];
+            found += delta;
+            hits += link.positive ? delta : 0;
         }
     }
     if (change.empty())
         return proposal;
     double sum = m_sum;
     long n_counted = static_cast<long>(m_counted);
-    for (const auto &[t, c] : change) {
+    for (const auto &[t, counts] : change) {
         const auto old_found = m_found[t], old_hits = m_hits[t];
-        const auto new_found = static_cast<std::size_t>(static_cast<long>(old_found) + c.second);
-        const auto new_hits = static_cast<std::size_t>(static_cast<long>(old_hits) + c.first);
+        const auto new_found =
+            static_cast<std::size_t>(static_cast<long>(old_found) + counts.second);
+        const auto new_hits = static_cast<std::size_t>(static_cast<long>(old_hits) + counts.first);
         if (counted(t, old_found)) {
             sum -= f1(t, old_hits, old_found);
             --n_counted;
@@ -517,16 +509,16 @@ void JoinState::apply(const Proposal &proposal) {
         if (now == then)
             continue;
         m_matched[slot(i, link)] = then;
-        const long d = then ? 1 : -1;
+        const long delta = then ? 1 : -1;
         const std::array<std::size_t, 2> touched{count(link.other, link), count(i, link)};
         for (const auto t : std::span(touched).first(sides(link))) {
             if (counted(t, m_found[t])) {
                 m_sum -= f1(t, m_hits[t], m_found[t]);
                 --m_counted;
             }
-            m_found[t] = static_cast<std::size_t>(static_cast<long>(m_found[t]) + d);
+            m_found[t] = static_cast<std::size_t>(static_cast<long>(m_found[t]) + delta);
             if (link.positive)
-                m_hits[t] = static_cast<std::size_t>(static_cast<long>(m_hits[t]) + d);
+                m_hits[t] = static_cast<std::size_t>(static_cast<long>(m_hits[t]) + delta);
             if (counted(t, m_found[t])) {
                 m_sum += f1(t, m_hits[t], m_found[t]);
                 ++m_counted;
@@ -539,29 +531,30 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state,
                    std::span<const KeptSets> watch_states, std::size_t watch)
     : m_objective(objective) {
     const auto &db = objective.db();
-    const auto &w = objective.workloads();
+    const auto &workloads = objective.workloads();
     const std::size_t n = db.size();
     m_list.resize(n);
     m_distance.resize(n);
     m_hits.assign(n, 0);
     m_watchers.resize(n);
     std::vector<core::TrajectoryDb> compressed;
-    compressed.push_back(materialize(db, state));
-    for (const auto &s : watch_states)
-        compressed.push_back(materialize(db, s));
+    compressed.push_back(core::materialize(db, state));
+    for (const auto &watch_state : watch_states)
+        compressed.push_back(core::materialize(db, watch_state));
     core::parallel_for(n, [&](std::size_t e) {
-        const auto &q = w.knn[e];
-        if (!q.valid)
+        const auto &entry = workloads.knn[e];
+        if (!entry.valid)
             return;
         auto &list = m_list[e];
-        list.assign(q.top.begin(), q.top.end());
-        for (const auto &c : compressed)
-            for (const auto j : query::knn(c, db.trajectory(e), std::min(watch + 1, n), w.frechet))
+        list.assign(entry.top.begin(), entry.top.end());
+        for (const auto &compressed_db : compressed)
+            for (const auto j : query::knn(compressed_db, db.trajectory(e), std::min(watch + 1, n),
+                                           workloads.frechet))
                 if (j != e && std::ranges::find(list, j) == list.end())
                     list.push_back(static_cast<std::uint32_t>(j));
     });
     for (std::size_t e = 0; e < n; ++e) {
-        m_valid += w.knn[e].valid;
+        m_valid += workloads.knn[e].valid;
         m_distance[e].assign(m_list[e].size(), 0.0);
         for (std::size_t p = 0; p < m_list[e].size(); ++p)
             m_watchers[m_list[e][p]].push_back(
@@ -572,8 +565,9 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state,
     std::vector<std::vector<double>> own(n);
     core::parallel_for(n, [&](std::size_t i) { own[i] = distances(i, views[i]); });
     for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t s = 0; s < m_watchers[i].size(); ++s)
-            m_distance[m_watchers[i][s].query][m_watchers[i][s].position] = own[i][s];
+        for (std::size_t watch_state = 0; watch_state < m_watchers[i].size(); ++watch_state)
+            m_distance[m_watchers[i][watch_state].query][m_watchers[i][watch_state].position] =
+                own[i][watch_state];
     core::parallel_for(n, [&](std::size_t e) {
         if (!m_list[e].empty())
             m_hits[e] = hits(e, m_list[e].size(), 0.0);
@@ -584,12 +578,12 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state,
 std::vector<double> KnnState::distances(std::size_t i,
                                         const core::TrajectoryView &candidate) const {
     const auto &db = m_objective.db();
-    std::vector<double> d;
-    d.reserve(m_watchers[i].size());
+    std::vector<double> result;
+    result.reserve(m_watchers[i].size());
     for (const auto &watcher : m_watchers[i])
-        d.push_back(
-            frechet(db.trajectory(watcher.query), candidate, m_objective.workloads().frechet));
-    return d;
+        result.push_back(query::frechet_distance(db.trajectory(watcher.query), candidate,
+                                                 m_objective.workloads().frechet));
+    return result;
 }
 
 std::size_t KnnState::hits(std::size_t e, std::size_t position, double distance) const {

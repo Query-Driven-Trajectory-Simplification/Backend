@@ -15,8 +15,8 @@ class Greedy {
   public:
     Greedy(const Objective &objective, std::size_t i);
 
-    // Exactly min(b, n) points, sorted, endpoints and seed included
-    std::vector<std::size_t> run(std::size_t b, std::span<const std::size_t> seed,
+    // Exactly min(budget, n) points, sorted, endpoints and seed included
+    std::vector<std::size_t> run(std::size_t budget, std::span<const std::size_t> seed,
                                  std::span<const std::size_t> fill) const;
 
     // In the order kept: its first b points are run(b)
@@ -24,7 +24,7 @@ class Greedy {
                                       std::span<const std::size_t> fill) const;
 
   private:
-    core::TrajectoryView m_v;
+    core::TrajectoryView m_trajectory;
     std::vector<std::vector<std::uint32_t>> m_box_points; // points inside each of i's boxes
     std::vector<double> m_box_weight;                     // scaled J_T weight of each box
     std::vector<std::uint64_t> m_offsets;                 // boxes of each point, CSR

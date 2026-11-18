@@ -35,12 +35,6 @@ Databases load_split(const Config &config) {
             .queries = core::subset(all, parts.queries)};
 }
 
-std::size_t total_budget(const core::TrajectoryDb &trajectories, double share) {
-    const std::size_t endpoints = 2 * trajectories.size();
-    const double extra = share * static_cast<double>(trajectories.num_points() - endpoints);
-    return endpoints + static_cast<std::size_t>(std::llround(extra));
-}
-
 // alpha = 1 keeps the old name, which the Travis frontend expects
 std::string baseline_name(selection::AlgorithmType algorithm, double share, double alpha) {
     std::string name = std::format("{}_{:g}pct", magic_enum::enum_name(algorithm), share * 100);
@@ -78,7 +72,7 @@ void run(const Config &config) {
     const auto teacher = make_teacher(database, config);
 
     for (const double share : config.budget_shares) {
-        const std::size_t budget = total_budget(database, share);
+        const std::size_t budget = allocation::total_budget(database, share);
 
         for (const double alpha : config.allocation_alphas) {
             const auto budgets = allocation::create_trajectory_budgets(

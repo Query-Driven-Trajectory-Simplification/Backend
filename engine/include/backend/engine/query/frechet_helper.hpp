@@ -46,4 +46,8 @@ double continuous_frechet_distance(const core::TrajectoryView &a, const core::Tr
 bool frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b, double max_dist,
                     FrechetVariant variant);
 
+// The Fréchet distance of the given variant
+double frechet_distance(const core::TrajectoryView &a, const core::TrajectoryView &b,
+                        FrechetVariant variant);
+
 } // namespace query

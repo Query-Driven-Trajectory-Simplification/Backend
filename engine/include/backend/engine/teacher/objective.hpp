@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/teacher/workloads.hpp"
@@ -13,8 +14,10 @@
 
 namespace teacher {
 
-// Kept point indices per trajectory, sorted, endpoints included
-using KeptSets = std::vector<std::vector<std::size_t>>;
+// Slack when pruning by an upper bound, so rounding cannot drop a candidate that would tie
+inline constexpr double kBoundSlack = 1e-15;
+
+using core::KeptSets;
 
 // A kept set's coordinates, owned. Views are made on demand, so copies and moves stay safe
 class PreparedTrajectory {
@@ -40,6 +43,9 @@ class PreparedTrajectories {
     std::vector<PreparedTrajectory> m_trajectories;
 };
 
+inline constexpr std::size_t kTermCount = 4; // kNN, range, where-at, join
+using TermWeights = std::array<double, kTermCount>;
+
 struct ObjectiveConfig {
     double min_tolerance_m = 25.0; // where-at ramp, as in the evaluator
     double max_tolerance_m = 500.0;
@@ -50,8 +56,11 @@ struct ObjectiveConfig {
     // kNN ranked on the compressed database; false: per-trajectory check. Curves always use the
     // latter
     bool ranking_knn = false;
-    std::array<double, 4> term_weights{1.0, 1.0, 1.0, 1.0}; // kNN, range, where-at, join
+    TermWeights term_weights{1.0, 1.0, 1.0, 1.0};
 };
+
+// Throws std::invalid_argument unless finite, not negative and not all zero. Returns their sum
+double check_term_weights(const TermWeights &weights);
 
 struct JoinLink {
     std::uint32_t other;
@@ -111,6 +120,8 @@ class Objective {
     // Unscaled metrics
     Terms metrics(const KeptSets &kept) const;
     const Terms &floors() const { return m_floor; }
+    // Recall@k of the database kNN queries ranked on compressed, as in metrics with ranking_knn
+    double knn_recall(const core::TrajectoryDb &compressed) const;
     double scale(Term m) const { return m_scale[m]; }
 
     std::span<const JoinLink> links(std::size_t i) const { return m_links[i]; }
@@ -146,7 +157,6 @@ class Objective {
                         bool knn = true) const;
     double independent_sum(const IndependentScore &score, double knn) const;
     double join_metric(std::span<const core::TrajectoryView> state) const;
-    double ranking_knn(const KeptSets &kept) const;
 
     const core::TrajectoryDb &m_db;
     const TeacherWorkloads &m_workloads;
@@ -168,8 +178,8 @@ class Objective {
     std::size_t m_with_truth = 0;               // slots with any positive
 
     Terms m_floor{};
-    Terms m_scale{};          // weight / (weight sum * (1 - floor))
-    std::vector<double> m_v0; // scaled separable terms with endpoints only
+    Terms m_scale{};                          // weight / (weight sum * (1 - floor))
+    std::vector<double> m_endpoint_separable; // scaled separable terms, endpoints only
 };
 
 // The exact join metric under one-at-a-time changes; changing i only rescores i's pairs

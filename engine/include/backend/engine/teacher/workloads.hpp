@@ -12,13 +12,23 @@
 
 namespace teacher {
 
+// Offsets added to the run seed, one per random draw, so no two draws share a stream
+inline constexpr std::uint64_t kRangeSeedOffset = 7001;
+inline constexpr std::uint64_t kWhereAtSeedOffset = 7002;
+inline constexpr std::uint64_t kPairSplitSeedOffset = 7003;
+inline constexpr std::uint64_t kOrderSeedOffset = 7004;
+inline constexpr std::uint64_t kNegativeSeedOffset = 7005;
+inline constexpr std::uint64_t kShuffleSeedOffset = 7006;
+
+inline constexpr std::size_t kRangeQueryCount = 64000;
+
 // Training workloads from the database alone, with their own seeds, never the held-out pool
 struct WorkloadConfig {
     std::size_t k = 10;
     double join_eps_m = 150.0;
     std::vector<double> extra_join_eps_m;
     query::FrechetVariant frechet = query::FrechetVariant::Continuous;
-    query::RangeConfig range{.query_count = 64000};
+    query::RangeConfig range{.query_count = kRangeQueryCount};
     query::WhereAtConfig where_at;
 };
 

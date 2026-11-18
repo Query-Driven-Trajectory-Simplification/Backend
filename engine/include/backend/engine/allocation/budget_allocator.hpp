@@ -10,4 +10,7 @@ std::vector<std::size_t> create_trajectory_budgets(const core::TrajectoryDb &tra
                                                    AllocatorType allocator,
                                                    std::size_t total_budget, double alpha = 1.0);
 
+// Every trajectory's endpoints plus share of the remaining points, rounded
+std::size_t total_budget(const core::TrajectoryDb &trajectories, double share);
+
 } // namespace allocation

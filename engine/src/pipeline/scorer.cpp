@@ -3,9 +3,7 @@
 #include "backend/engine/io/workload_export.hpp"
 
 #include <cmath>
-#include <cstddef>
 #include <iostream>
-#include <vector>
 
 namespace pipeline {
 
@@ -41,20 +39,6 @@ void print_normalized(const evaluator::NormalizedScores &scores) {
     std::cout << ", combined J4=" << scores.combined << '\n';
 }
 
-core::Simplification endpoints_only(const core::TrajectoryDb &trajectories) {
-    core::Simplification simplification;
-    for (std::size_t i = 0; i < trajectories.size(); ++i) {
-        const std::size_t n = trajectories.trajectory(i).size();
-        std::vector<std::size_t> kept;
-        if (n > 0)
-            kept.push_back(0);
-        if (n > 1)
-            kept.push_back(n - 1);
-        simplification.add_trajectory(kept);
-    }
-    return simplification;
-}
-
 } // namespace
 
 void print_size(std::string_view name, const core::TrajectoryDb &trajectories) {
@@ -65,7 +49,7 @@ void print_size(std::string_view name, const core::TrajectoryDb &trajectories) {
 Scorer::Scorer(const core::TrajectoryDb &database, const TestWorkloads &workloads,
                const Config &config)
     : m_database(database), m_workloads(workloads.view()), m_config(config) {
-    const auto floor_db = core::materialize(database, endpoints_only(database));
+    const auto floor_db = core::materialize(database, core::endpoints_only(database));
     std::cout << "floor, endpoints only: ";
     print_size("compressed", floor_db);
     m_floor = evaluator::Evaluator(database, floor_db, m_workloads, config.where_at_scoring)

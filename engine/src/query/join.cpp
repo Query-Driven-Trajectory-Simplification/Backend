@@ -9,6 +9,7 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace query {
@@ -104,6 +105,16 @@ JoinWorkload generate_self_join(const core::TrajectoryDb &original, double eps_m
         }
     });
     return result;
+}
+
+void check_extra_thresholds(std::span<const double> eps_m, double main_eps_m,
+                            std::string_view name) {
+    for (auto eps = eps_m.begin(); eps != eps_m.end(); ++eps)
+        if (!std::isfinite(*eps) || *eps <= 0 || *eps == main_eps_m ||
+            std::find(eps_m.begin(), eps, *eps) != eps)
+            throw std::invalid_argument(std::string(name) +
+                                        " must be positive, distinct and differ from the main "
+                                        "join threshold");
 }
 
 } // namespace query

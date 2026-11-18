@@ -197,4 +197,12 @@ bool frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b
                                                  : frechet_within(a, b, max_dist);
 }
 
+double frechet_distance(const core::TrajectoryView &a, const core::TrajectoryView &b,
+                        FrechetVariant variant) {
+    const double discrete = frechet_distance(a, b);
+    // Discrete Fréchet bounds the continuous distance from above
+    return variant == FrechetVariant::Continuous ? continuous_frechet_distance(a, b, 0.0, discrete)
+                                                 : discrete;
+}
+
 } // namespace query

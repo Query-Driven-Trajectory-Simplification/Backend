@@ -40,19 +40,21 @@ inline constexpr std::array<std::string_view, 9> kArms{"EQUAL_CHOICE",
                                                        "BUDGET_LOOP_NO_UPDATE"};
 
 bool is_arm(std::string_view name);
+// Throws std::invalid_argument on an unknown or repeated arm
+void check_arms(std::span<const std::string> arms);
 
 struct TeacherConfig {
     bool enabled = false;
     std::filesystem::path cache_dir = "cache";
     std::vector<std::string> arms{"BUDGET_CHOICE", "BUDGET_LOOP"};
-    std::size_t range_query_count = 64000;
+    std::size_t range_query_count = kRangeQueryCount;
     bool all_join_pairs = true; // false: only the seen half of the join pairs
     // Unset: join.mode
     std::optional<query::JoinMode> join;
     std::vector<double> extra_join_eps_m;
     bool held_out_term = false;
     bool ranking_knn = true;
-    std::array<double, 4> term_weights{1.0, 1.0, 1.0, 1.0};
+    TermWeights term_weights{1.0, 1.0, 1.0, 1.0};
 };
 
 struct Arm {
