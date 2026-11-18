@@ -70,7 +70,7 @@ void Scorer::score(std::string_view label, std::string_view name,
     print_normalized(evaluator::normalize_scores(evaluation.scores, m_floor));
     if (m_config.export_results) {
         io::export_trajectories(m_config.export_dir, name, compressed);
-        io::export_results(m_config.export_dir, name, evaluation);
+        io::export_results(m_config.export_dir, name, evaluation, m_config.clustering.enabled);
     }
 }
 

@@ -171,6 +171,10 @@ bool decide(std::span<const double> px, std::span<const double> py, std::span<co
 
 bool continuous_frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b,
                                double max_dist) {
+    const double cutoff = std::nextafter(max_dist * max_dist * (1.0 + 1e-12),
+                                         std::numeric_limits<double>::infinity());
+    if (squared_box_extent_lower_bound(a, b) > cutoff)
+        return false;
     thread_local Scratch scratch;
     return decide(a.x, a.y, b.x, b.y, max_dist, scratch);
 }

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 namespace evaluator {
@@ -18,7 +19,13 @@ RangeEvaluation evaluate_range(const core::TrajectoryDb &compressed,
     std::vector<double> recalls(queries.size()), f1s(queries.size());
     core::parallel_for(queries.size(), [&](std::size_t i) {
         const auto &range_query = queries[i];
-        const auto simplified = query::range(compressed, range_query.box);
+        std::vector<std::size_t> simplified;
+        for (const auto index : range_query.reference) {
+            if (index >= compressed.size())
+                throw std::invalid_argument("range: reference trajectory out of bounds");
+            if (query::intersects(compressed.trajectory(index), range_query.box))
+                simplified.push_back(index);
+        }
         auto &answer = result.answers[i];
         answer.reserve(simplified.size());
         for (const auto index : simplified)

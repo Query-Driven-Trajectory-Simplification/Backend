@@ -10,6 +10,7 @@
 #include "backend/engine/query/range_query.hpp"
 #include "backend/engine/query/route_clustering.hpp"
 
+#include <cstdint>
 #include <limits>
 #include <span>
 #include <vector>
@@ -47,6 +48,8 @@ struct EvaluationResult {
     Scoretable scores;
     std::vector<KnnAnswer> knn;
     std::vector<std::vector<std::int32_t>> range;
+    std::vector<JoinPair> join;
+    std::vector<std::vector<std::int32_t>> clusters;
 };
 
 class Evaluator {

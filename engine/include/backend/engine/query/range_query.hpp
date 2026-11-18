@@ -39,6 +39,8 @@ struct RangeWorkload {
 RangeWorkload generate_range_queries(const core::TrajectoryDb &original,
                                      const RangeConfig &config = {}, std::uint64_t seed = 42);
 
+bool intersects(const core::TrajectoryView &trajectory, const RangeBox &box);
+
 std::vector<std::size_t> range(const core::TrajectoryDb &trajectories, const RangeBox &box);
 
 } // namespace query

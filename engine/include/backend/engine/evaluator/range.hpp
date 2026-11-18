@@ -17,6 +17,8 @@ struct RangeEvaluation {
     std::vector<std::vector<std::int32_t>> answers;
 };
 
+// Requires point-subset simplification of the database used to generate the references,
+// with the same trajectory order. Removing points cannot introduce new range matches.
 RangeEvaluation evaluate_range(const core::TrajectoryDb &compressed,
                                std::span<const query::RangeQuery> queries);
 

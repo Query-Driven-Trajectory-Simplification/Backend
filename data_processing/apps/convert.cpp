@@ -71,7 +71,10 @@ arrow::Status write_parquet(const arrow::Table &table, const fs::path &output) {
         fs::create_directories(output.parent_path());
     }
     ARROW_ASSIGN_OR_RAISE(auto outfile, arrow::io::FileOutputStream::Open(output.string()));
-    return parquet::arrow::WriteTable(table, arrow::default_memory_pool(), outfile);
+    const auto properties =
+        parquet::WriterProperties::Builder().compression(arrow::Compression::ZSTD)->build();
+    return parquet::arrow::WriteTable(table, arrow::default_memory_pool(), outfile,
+                                      parquet::DEFAULT_MAX_ROW_GROUP_LENGTH, properties);
 }
 
 arrow::Status convert(const fs::path &input, const fs::path &output) {

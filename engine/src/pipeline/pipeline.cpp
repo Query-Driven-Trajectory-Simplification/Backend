@@ -64,7 +64,9 @@ void run(const Config &config) {
 
     const TestWorkloads workloads(database, queries, config);
     if (config.export_results) {
-        io::export_workloads(config.export_dir, database, workloads.range.queries, workloads.knn);
+        io::export_workloads(config.export_dir, database, workloads.range.queries, workloads.knn,
+                             workloads.join,
+                             workloads.clustering ? &*workloads.clustering : nullptr);
         std::cout << "workloads written to " << config.export_dir.string() << '\n';
     }
 

@@ -9,6 +9,22 @@
 
 namespace query {
 
+double squared_box_extent_lower_bound(const core::TrajectoryView &query,
+                                      const core::TrajectoryView &reference) {
+    if (query.size() == 0 || reference.size() == 0) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const core::BoundingBox &a = query.bbox;
+    const core::BoundingBox &b = reference.bbox;
+    // Every extreme coordinate in either trajectory must be matched to a point
+    // in the other. This remains useful even when their boxes overlap.
+    const double dx = std::max(std::abs(a.x_min - b.x_min), std::abs(a.x_max - b.x_max));
+    const double dy = std::max(std::abs(a.y_min - b.y_min), std::abs(a.y_max - b.y_max));
+    if (!std::isfinite(dx) || !std::isfinite(dy))
+        return 0.0; // Views without a cached box use unbounded defaults.
+    return std::max(dx * dx, dy * dy);
+}
+
 double get_squared_frechet_distance(const core::TrajectoryView &query,
                                     const core::TrajectoryView &reference, double max_squared_dist,
                                     std::vector<double> &prev, std::vector<double> &curr) {
@@ -112,6 +128,8 @@ bool frechet_within(const core::TrajectoryView &a, const core::TrajectoryView &b
     // slack absorbs rounding when max_dist is itself a distance, as sqrt(d)^2 can fall below d.
     const double cutoff = std::nextafter(max_dist * max_dist * (1.0 + 1e-12),
                                          std::numeric_limits<double>::infinity());
+    if (squared_box_extent_lower_bound(a, b) >= cutoff)
+        return false;
     std::vector<double> prev;
     std::vector<double> curr;
     return get_squared_frechet_distance(a, b, cutoff, prev, curr) < cutoff;
