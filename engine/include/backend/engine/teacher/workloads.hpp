@@ -12,13 +12,11 @@
 
 namespace teacher {
 
-// The teacher's training workloads. They come from the database alone, never from the held-out
-// query pool, and use their own seeds, so the teacher is never scored on what it trained on
-// (except the self-join, which is database-wide by nature; hence the seen/unseen pair split).
+// Training workloads from the database alone, with their own seeds, never the held-out pool
 struct WorkloadConfig {
-    std::size_t k = 10;                   // kNN neighbours per database query
-    double join_eps_m = 150.0;            // self-join threshold
-    std::vector<double> extra_join_eps_m; // more self-join thresholds for the join term
+    std::size_t k = 10;
+    double join_eps_m = 150.0;
+    std::vector<double> extra_join_eps_m;
     query::FrechetVariant frechet = query::FrechetVariant::Continuous;
     query::RangeConfig range{.query_count = 64000};
     query::WhereAtConfig where_at;
@@ -33,10 +31,10 @@ struct KnnEntry {
 
 struct JoinPair {
     std::uint32_t i, j; // i < j
-    bool seen;          // the half the teacher may be limited to (ObjectiveConfig::all_join_pairs)
+    bool seen;          // in the half used with all_join_pairs = false
 };
 
-// Self-join pairs at one more threshold than join_eps_m, all of them used
+// Self-join pairs at a threshold other than join_eps_m, all of them used
 struct ExtraJoin {
     double eps_m = 0.0;
     std::vector<JoinPair> positives, negatives;
@@ -54,10 +52,8 @@ struct TeacherWorkloads {
     query::WhereAtWorkload where_at;
 };
 
-// Loads the kNN and join part from cache_dir/teacher_cache_seed<seed>.bin if it matches the
-// full database contents, seed, settings and workload version, otherwise builds it (the slow
-// part, minutes to an hour) and saves it. Older cache versions are rebuilt once. Range,
-// where-at and the extra joins are regenerated every time
+// kNN and join pairs come from cache_dir/teacher_cache_seed<seed>.bin when it matches the database
+// and settings, otherwise they are built (slow) and saved. The rest is regenerated every time
 TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const WorkloadConfig &config,
                                          std::uint64_t seed,
                                          const std::filesystem::path &cache_dir);

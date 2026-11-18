@@ -9,10 +9,8 @@
 
 namespace teacher {
 
-// BKH's workload-driven selector for one trajectory: from the endpoints plus a seed, repeatedly
-// keep the point that raises the trajectory's range and where-at terms of J_T the most. kNN and
-// join are left out, they are too costly here and get scored when the candidates are compared.
-// Once no point gains anything, the rest is taken from fill, in order, skipping kept points
+// BKH's workload-driven selector: from the endpoints and a seed, repeatedly keep the point that
+// raises i's range and where-at terms most, then take the rest from fill, skipping kept points
 class Greedy {
   public:
     Greedy(const Objective &objective, std::size_t i);
@@ -21,8 +19,7 @@ class Greedy {
     std::vector<std::size_t> run(std::size_t b, std::span<const std::size_t> seed,
                                  std::span<const std::size_t> fill) const;
 
-    // The same points in the order they were kept. With the same seed and fill, the first b of
-    // sequence(b') are run(b) for any b <= b', so one call serves a whole value curve
+    // In the order kept: its first b points are run(b)
     std::vector<std::size_t> sequence(std::size_t limit, std::span<const std::size_t> seed,
                                       std::span<const std::size_t> fill) const;
 

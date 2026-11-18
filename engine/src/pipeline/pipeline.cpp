@@ -49,8 +49,7 @@ std::string baseline_name(selection::AlgorithmType algorithm, double share, doub
     return name;
 }
 
-// The teacher sees the database only, with its own workloads (kNN and join from the cache).
-// Null unless enabled.
+// Sees the database only. Null unless enabled
 std::unique_ptr<teacher::Teacher> make_teacher(const core::TrajectoryDb &database,
                                                const Config &config) {
     if (!config.teacher.enabled)

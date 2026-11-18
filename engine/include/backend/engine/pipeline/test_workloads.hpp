@@ -13,22 +13,17 @@
 
 namespace pipeline {
 
-// The held-out workloads every simplification is scored on, with the original database as ground
-// truth. Members are generated in declaration order. Not copyable or movable, since view() points
-// into it.
+// The held-out workloads, generated in declaration order. Not copyable: view() points into it
 struct TestWorkloads {
     query::KnnWorkload knn;
     query::WhereAtWorkload where_at;
     query::RangeWorkload range;
     query::JoinWorkload join;
     std::vector<query::JoinWorkload> join_grid; // the join at config.join_score_eps_m
-    // The database self join next to a held-out join, when config.self_join asks for it
     std::optional<query::JoinWorkload> self_join;
     std::optional<query::RouteClusteringWorkload> clustering;
-    // Route clustering at config.join_score_eps_m, when clustering is enabled
-    std::vector<query::RouteClusteringWorkload> clustering_grid;
+    std::vector<query::RouteClusteringWorkload> clustering_grid; // at config.join_score_eps_m
 
-    // Generates every workload configured in config and prints a summary line for each
     TestWorkloads(const core::TrajectoryDb &database, const core::TrajectoryDb &queries,
                   const Config &config);
     TestWorkloads(const TestWorkloads &) = delete;

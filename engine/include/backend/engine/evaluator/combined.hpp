@@ -6,20 +6,12 @@
 
 namespace evaluator {
 
-// 0 = the floor (endpoints only), 1 = perfect, without clipping. Combined (J4) averages
-// one primary score per type: recall@k, range F1, where-at average-hit and join F1. Missing
-// primaries are skipped, never replaced with a diagnostic score.
-// Average-hit is the hit rate averaged over a tolerance drawn uniformly from
-// [min_tolerance_m, max_tolerance_m]. The within-radius hit rate at hit_radius_m is a
-// diagnostic and does not contribute to the combined score.
-// Route clustering is also a diagnostic: it is built from the same Fréchet neighbour test as the
-// join, so including it would count pair preservation twice.
-// The self join is a diagnostic too, scored next to a held-out join: its pairs are database pairs,
-// which anything fitted to the database has already seen.
-// The join term is join F1 at the join's own threshold, averaged with the same join at the
-// thresholds in Scoretable::join_grid, each normalised against its own floor. join_f1 keeps the
-// first threshold alone. Clustering is averaged over Scoretable::clustering_grid the same way, and
-// clustering_score keeps its own threshold alone.
+// 0 = the floor (endpoints only), 1 = perfect, unclipped. Combined (J4) averages recall@k,
+// range F1, where-at average-hit and join F1, skipping missing ones. Within-radius, clustering
+// (it repeats the join's Fréchet test) and the self join (seen by anything fitted to the
+// database) are diagnostics only.
+// join and clustering average over their threshold grids, each against its own floor;
+// join_f1 and clustering_score keep the main threshold alone.
 struct NormalizedScores {
     static constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 

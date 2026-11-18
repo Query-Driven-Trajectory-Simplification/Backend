@@ -10,15 +10,13 @@
 
 namespace pipeline {
 
-// Scores simplifications of the database on the test workloads, relative to the endpoints-only
-// floor, prints the result and exports it if enabled
+// Scores simplifications against the endpoints-only floor, prints and optionally exports them
 class Scorer {
   public:
-    // Computes and prints the floor. workloads must outlive the scorer.
+    // workloads must outlive the scorer
     Scorer(const core::TrajectoryDb &database, const TestWorkloads &workloads,
            const Config &config);
 
-    // Prints the scores of simplification under label, and exports it as name if enabled
     void score(std::string_view label, std::string_view name,
                const core::Simplification &simplification) const;
 
@@ -29,7 +27,6 @@ class Scorer {
     evaluator::Scoretable m_floor;
 };
 
-// Prints "<name>: <n> trajectories, <m> points"
 void print_size(std::string_view name, const core::TrajectoryDb &trajectories);
 
 } // namespace pipeline

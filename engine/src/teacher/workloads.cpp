@@ -18,17 +18,14 @@ namespace teacher {
 
 namespace {
 
-// Versions cover both the layout and cached workload generation; bump when either changes.
-// Version 4 fingerprints every point. Older caches have only a metadata fingerprint and must
-// be rebuilt, since their kNN entries and pair truth cannot be verified against the geometry.
+// Bump when the layout or workload generation changes. V4 fingerprints every point
 constexpr std::uint64_t kMagicV4 = 0x5431'4341'4348'4534ull;
 constexpr std::uint64_t kRangeSeedOffset = 7001;
 constexpr std::uint64_t kWhereAtSeedOffset = 7002;
 constexpr std::uint64_t kPairSplitSeedOffset = 7003;
 constexpr std::uint64_t kNegativeSeedOffset = 7005;
 
-// FNV-1a over trajectory boundaries, IDs and every point's time and coordinates. Include the
-// projected coordinates too, so changing the projection invalidates cached spatial queries.
+// FNV-1a over IDs, sizes and every point, projected coordinates included
 std::uint64_t fingerprint(const core::TrajectoryDb &db) {
     std::uint64_t h = 14695981039346656037ull;
     auto mix = [&](std::uint64_t v) {
@@ -176,7 +173,6 @@ void save(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t p
     std::filesystem::rename(tmp, file);
 }
 
-// Reads only the current workload version, matching all point contents, seed and settings.
 bool load(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t print,
           const WorkloadConfig &config, TeacherWorkloads &w) {
     std::ifstream in(file, std::ios::binary);

@@ -16,12 +16,11 @@ namespace teacher {
 // Kept point indices per trajectory, sorted, endpoints included
 using KeptSets = std::vector<std::vector<std::size_t>>;
 
-// Owns only the coordinates and timestamps needed by scoring. Views are created on demand,
-// so moving or copying the owner never leaves cached spans pointing at another object.
+// A kept set's coordinates, owned. Views are made on demand, so copies and moves stay safe
 class PreparedTrajectory {
   public:
     PreparedTrajectory(const core::TrajectoryView &original, std::span<const std::size_t> kept);
-    // Reuses coordinate storage. Acquire new views after assigning different retained points.
+    // Invalidates earlier views
     void assign(const core::TrajectoryView &original, std::span<const std::size_t> kept);
     core::TrajectoryView view() const { return {m_id, m_t, {}, {}, m_x, m_y, m_box}; }
 
@@ -35,7 +34,6 @@ class PreparedTrajectory {
 class PreparedTrajectories {
   public:
     PreparedTrajectories(const core::TrajectoryDb &db, const KeptSets &kept);
-    // The returned views borrow from this owner, which must remain alive and unmodified.
     std::vector<core::TrajectoryView> views() const;
 
   private:
@@ -43,28 +41,18 @@ class PreparedTrajectories {
 };
 
 struct ObjectiveConfig {
-    double min_tolerance_m = 25.0; // where-at average-hit ramp, same as the evaluator
+    double min_tolerance_m = 25.0; // where-at ramp, as in the evaluator
     double max_tolerance_m = 500.0;
-    // Every 150 m pair, as the compressor knows the whole database. False: only the seen half, to
-    // measure how much of the join gain is fitting those specific pairs
-    bool all_join_pairs = true;
-    // Self: both sides of a pair compressed, like the test's self join. HeldOut: each trajectory
-    // is also an original query against its compressed partners, the database-only stand-in for a
-    // join from the held-out query pool
+    bool all_join_pairs = true; // false: only the seen half
+    // Self: both sides compressed. HeldOut: each trajectory also queries its partners as original
     query::JoinMode join_mode = query::JoinMode::Self;
-    // With join_mode Self: also the held-out form of the join at join_eps_m as a term, so one
-    // teacher keeps both the self join and the join from outside queries
-    bool held_out_term = false;
-    // kNN as recall@k of the database queries answered on the compressed database, so
-    // competitors are compressed too, and best response tracks it with KnnState. False: the
-    // per-trajectory check against original competitors. Value curves use that check either way
+    bool held_out_term = false; // with Self: add the held-out form at join_eps_m as a term
+    // kNN ranked on the compressed database; false: per-trajectory check. Curves always use the
+    // latter
     bool ranking_knn = false;
-    // Relative weights of kNN, range, where-at and join in J_T. Equal by default, the J4 mean.
-    // A zero weight leaves a term out of the search
-    std::array<double, 4> term_weights{1.0, 1.0, 1.0, 1.0};
+    std::array<double, 4> term_weights{1.0, 1.0, 1.0, 1.0}; // kNN, range, where-at, join
 };
 
-// A join candidate of one trajectory
 struct JoinLink {
     std::uint32_t other;
     std::uint32_t pair; // index into the objective's pair list
@@ -72,27 +60,13 @@ struct JoinLink {
     std::uint8_t term = 0; // join term the pair belongs to
 };
 
-// The teacher's objective J_T: an equal mean of four normalised metrics on the teacher's own
-// workloads, (metric - floor) / (1 - floor), floor = endpoints only, like J4. Clustering is left
-// out. Join uses all pairs, or only the seen half (ObjectiveConfig::all_join_pairs).
-//   kNN       for each query e with i in its top k: Fréchet(original e, simplified i) <= cutoff(e).
-//             Competitors stay original
-//   range     for each box i is in: some kept point is still inside (recall; kept points are a
-//             subset of the original, so there are no false positives)
-//   where-at  average-hit ramp over i's probes, averaged per trajectory
-//   join      macro F1 over the candidate pairs, both sides compressed, like the evaluator:
-//             F1_t = 2 hits / (found + expected), averaged over trajectories with any truth or
-//             any match. Endpoints-only trajectories match every candidate, so the floor has full
-//             recall and the loss is in false positives.
-//             With join_mode HeldOut the query side of each pair stays original: trajectory t's
-//             F1 counts Fréchet(original t, simplified partner) <= eps over its candidates, so
-//             every pair is tested once in each direction
-// The join metric pools one or more terms: join_eps_m, the workloads' extra thresholds and, with
-// ObjectiveConfig::held_out_term, the held-out form next to the self join. Each trajectory's F1
-// is counted once per term.
-// kNN, range and where-at add up over trajectories. Join does not: in Self mode a pair's outcome
-// depends on both sides, and in HeldOut mode a query's F1 depends on all of its partners.
-// JoinState tracks it exactly for one-at-a-time changes.
+// J_T: weighted mean of normalised kNN, range, where-at and join on the teacher's workloads,
+// (metric - floor) / (1 - floor) with floor = endpoints only, like J4.
+//   range     recall: some kept point still inside each box i is in
+//   where-at  average-hit ramp over i's probes
+//   join      macro F1 over candidate pairs, pooled over all join terms (thresholds, held-out form)
+// Range, where-at and the per-trajectory kNN add up over trajectories; join and ranking kNN do
+// not, and are tracked under one-at-a-time changes by JoinState and KnnState
 class Objective {
   public:
     enum Term : std::size_t { Knn, Range, WhereAt, Join, TermCount };
@@ -102,26 +76,20 @@ class Objective {
     Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workloads,
               const ObjectiveConfig &config = {});
 
-    // Scaled kNN + range + where-at of trajectory i, 0 with endpoints only. Sums to their part
-    // of J_T
+    // i's scaled separable terms, 0 with endpoints only
     double separable(std::size_t i, std::span<const std::size_t> kept) const;
     double separable(std::size_t i, const core::TrajectoryView &candidate) const;
 
-    // A one-pass score for choosing i's points on their own: separable plus i's join F1 against
-    // a fixed partner state (empty = original partners), as if each trajectory carried an
-    // equal share of the join metric. An approximation, unlike JoinState. With join_mode HeldOut
-    // the partners are always original, whatever is passed: i is scored as the database side.
-    // Exact whenever the value is above beat. Otherwise it may return any value at most beat,
-    // skipping the kNN checks that cannot lift it over, the costly part
+    // Approximate score of i alone: separable plus i's join F1 against fixed partners (empty =
+    // original; ignored when held out). Exact above beat, otherwise some value below beat
     double independent_value(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners,
                              double beat = -std::numeric_limits<double>::infinity()) const;
-    // An upper bound on independent_value without any kNN check: every kNN check a hit
+    // independent_value with every kNN check a hit
     double independent_bound(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners) const;
 
-    // Reuse the range, where-at and join terms when a bound is followed by scoring.
-    // Borrows candidate's coordinates; use with this objective while those coordinates live.
+    // A bound followed by scoring without recomputing. Borrows the candidate's coordinates
     struct IndependentScore {
         double bound = 0.0;
 
@@ -137,10 +105,10 @@ class Objective {
     double independent_value(const IndependentScore &score,
                              double beat = -std::numeric_limits<double>::infinity()) const;
 
-    // Exact J_T, partners compressed as in kept. 0 with endpoints only
+    // Exact J_T
     double total(const KeptSets &kept) const;
 
-    // Unscaled metric values of a whole state, and their floors
+    // Unscaled metrics
     Terms metrics(const KeptSets &kept) const;
     const Terms &floors() const { return m_floor; }
     double scale(Term m) const { return m_scale[m]; }
@@ -148,7 +116,6 @@ class Objective {
     std::span<const JoinLink> links(std::size_t i) const { return m_links[i]; }
     std::size_t pair_count() const { return m_pair_i.size(); }
     std::size_t positive_count() const { return m_positive_count; }
-    // Join counts are kept per trajectory and term, at slot(t, term)
     std::size_t slot(std::size_t t, std::size_t term) const { return t + term * m_db.size(); }
     std::size_t slots() const { return m_truth.size(); }
     std::size_t truth(std::size_t slot) const { return m_truth[slot]; }
@@ -200,13 +167,12 @@ class Objective {
     std::vector<std::size_t> m_truth;           // positives per slot
     std::size_t m_with_truth = 0;               // slots with any positive
 
-    Terms m_floor{};          // global floor of each metric
-    Terms m_scale{};          // 1 / (TermCount * (1 - floor))
-    std::vector<double> m_v0; // scaled separable terms of each trajectory with endpoints only
+    Terms m_floor{};
+    Terms m_scale{};          // weight / (weight sum * (1 - floor))
+    std::vector<double> m_v0; // scaled separable terms with endpoints only
 };
 
-// The exact join metric under one-at-a-time changes. Keeps every pair's outcome and every
-// trajectory's hits and found counts, so changing i only rescores i's pairs
+// The exact join metric under one-at-a-time changes; changing i only rescores i's pairs
 class JoinState {
   public:
     JoinState(const Objective &objective, std::span<const core::TrajectoryView> state);
@@ -217,10 +183,9 @@ class JoinState {
         std::vector<char> matched; // outcomes in links(trajectory) order
     };
 
-    // Evaluate without modifying the state. A proposal remains valid until the next apply().
+    // Valid until the next apply()
     Proposal propose(std::size_t i, const core::TrajectoryView &candidate,
                      std::span<const core::TrajectoryView> state) const;
-    // Uses the saved outcomes; performs no distance calculations.
     void apply(const Proposal &proposal);
 
     double metric() const; // macro F1 over the pairs used
@@ -235,7 +200,7 @@ class JoinState {
     std::size_t slot(std::size_t i, const JoinLink &link) const {
         return 2 * std::size_t{link.pair} + (m_objective.held_out(link.term) && i > link.other);
     }
-    // How many of {partner, i} a changed link recounts: the query only, or both sides
+    // Held out: only the query's counts change
     std::size_t sides(const JoinLink &link) const {
         return m_objective.held_out(link.term) ? 1 : 2;
     }
@@ -247,20 +212,17 @@ class JoinState {
     std::size_t m_counted = 0;
 };
 
-// The ranking kNN metric (ObjectiveConfig::ranking_knn) under one-at-a-time changes. Each query
-// watches its true top k plus its nearest others in the starting state and in watch_states.
-// Trajectories outside a query's list are taken to stay outside its top k, so the tracked value
-// is exact when every list holds every trajectory. Distances come from distances(), computed once
-// per candidate by the caller
+// The ranking kNN metric under one-at-a-time changes. Each query watches its true top k and its
+// nearest others in state and watch_states; unwatched trajectories are assumed to stay outside
 class KnnState {
   public:
     KnnState(const Objective &objective, const KeptSets &state,
              std::span<const KeptSets> watch_states, std::size_t watch);
 
     bool watched(std::size_t i) const { return !m_watchers[i].empty(); }
-    // Distances from every query watching i to candidate, in the order propose and apply expect
+    // From every query watching i, in the order propose and apply expect
     std::vector<double> distances(std::size_t i, const core::TrajectoryView &candidate) const;
-    // Change in J_T if i took the candidate with these distances. Does not modify the state
+    // Change in J_T
     double propose(std::size_t i, std::span<const double> distances) const;
     void apply(std::size_t i, std::span<const double> distances);
 
@@ -270,7 +232,7 @@ class KnnState {
     struct Watcher {
         std::uint32_t query, position; // position in the query's list
     };
-    // True neighbours among the k nearest of e's list, with the distance at position replaced
+    // True neighbours in e's top k, with the distance at position replaced
     std::size_t hits(std::size_t e, std::size_t position, double distance) const;
 
     const Objective &m_objective;

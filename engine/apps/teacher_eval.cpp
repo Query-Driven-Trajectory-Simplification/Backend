@@ -1,17 +1,8 @@
-// Runs the teacher and the baselines on several seeds and scores every arm on the held-out test
-// workloads. The teacher sees the database only; test workloads are built after every arm is done.
-// Split, workload, scoring and teacher settings come from the same JSON config as `run`
-// (--config), so both measure the same thing; the other flags override parts of it.
-// J4's join term follows join.mode, and so does the teacher's own join term unless teacher.join or
-// --teacher-join says otherwise (teacher_join_mode column). The database self join is scored either
-// way (self_join_f1, norm_self_join, the seen/unseen recall and thresholds.csv): its pairs are the
-// teacher's training pairs, so with join.mode HeldOut it is the in-sample comparison and stays out
-// of J4.
-// --train-eps adds self-join thresholds to the teacher's join term, --held-out-term the held-out
-// form next to a self join, and --eval-eps sets the thresholds in thresholds.csv, where the self
-// join, the held-out join and route clustering (when enabled) are scored at each.
-// Writes results.csv, floors.csv, thresholds.csv, terms.csv, budgets.csv and timings.csv to --out
-// (and knn_check.csv with --knn-check); summarise with teacher_stats.py.
+// Runs the teacher and baselines on several seeds and scores every arm on the held-out test
+// workloads, built only after every arm is done. Settings come from the --config JSON; flags
+// override parts of it. The database self join is the teacher's training data, so it is reported
+// but kept out of J4 when join.mode is HeldOut. Writes CSVs to --out; summarise with
+// teacher_stats.py.
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/parallel.hpp"
 #include "backend/engine/core/simplification.hpp"
@@ -47,7 +38,7 @@ namespace {
 
 using teacher::KeptSets;
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
-// Unset options keep the config's value. Arms default to every teacher arm, not the config's.
+// Unset options keep the config's value; arms default to all teacher arms
 struct Args {
     std::filesystem::path config = "engine/configs/geolife.json";
     std::filesystem::path out = "results/teacher";
@@ -138,7 +129,6 @@ Args parse_args(int argc, char **argv) {
     return a;
 }
 
-// The config with the command line overrides applied
 pipeline::Config effective_config(const Args &args) {
     auto config = pipeline::load_config(args.config);
     if (args.data)
@@ -159,7 +149,6 @@ pipeline::Config effective_config(const Args &args) {
         config.teacher.ranking_knn = *args.ranking_knn;
     if (args.term_weights)
         std::ranges::copy(*args.term_weights, config.teacher.term_weights.begin());
-    // The self join is always scored: with a held-out join in J4 it is the in-sample comparison
     config.self_join = true;
     return config;
 }
@@ -274,8 +263,7 @@ struct Arm {
     KeptSets kept;
 };
 
-// RDP, SED and UNIFORM with equal points, RDP with alpha 0.25, and PARTNER: weight 1 + lambda for
-// trajectories with a join partner (in the pairs the teacher uses), then RDP
+// PARTNER: RDP with weight 1 + lambda for trajectories that have a join partner
 std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
                                const std::vector<teacher::JoinPair> &pairs, bool all_join_pairs,
                                std::span<const double> shares) {
@@ -308,7 +296,6 @@ std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
     return arms;
 }
 
-// Kept sets must be valid and add up to the budget
 void validate(const Arm &arm, const core::TrajectoryDb &db) {
     if (arm.kept.size() != db.size())
         throw std::runtime_error(arm.name + ": wrong number of trajectories");
@@ -331,8 +318,7 @@ struct PairRecall {
     double seen = kNan, unseen = kNan;
 };
 
-// Recall per trajectory on the seen and unseen halves of the teacher's join pairs, averaged over
-// trajectories
+// Mean per-trajectory recall on the seen and unseen halves of the teacher's join pairs
 PairRecall pair_recall(const core::TrajectoryDb &compressed,
                        const std::vector<teacher::JoinPair> &pairs, const query::JoinConfig &join) {
     std::vector<char> matched(pairs.size());
@@ -364,8 +350,7 @@ PairRecall pair_recall(const core::TrajectoryDb &compressed,
     return result;
 }
 
-// Recall@k of the teacher's own kNN queries (database trajectories, themselves excluded) answered
-// on the compressed database, so competitors are compressed too, unlike the teacher's kNN term
+// Recall@k of the teacher's database kNN queries on the compressed database
 double db_knn_recall(const core::TrajectoryDb &db, const core::TrajectoryDb &compressed,
                      const teacher::TeacherWorkloads &w) {
     std::vector<double> recall(db.size(), kNan);
@@ -559,8 +544,7 @@ int main(int argc, char **argv) try {
                                           (score - cluster_floor[k]) / (1.0 - cluster_floor[k]),
                                           teacher_threshold ? 1 : 0);
             }
-            // The teacher's own estimate of each metric, next to the test's. Its join term is
-            // like-for-like with norm_join or norm_self_join, whichever its join mode is
+            // The teacher's own estimate of each metric, next to the test's
             const auto m = objective.metrics(arm.kept);
             const auto &f = objective.floors();
             auto norm = [&](teacher::Objective::Term t) { return (m[t] - f[t]) / (1.0 - f[t]); };

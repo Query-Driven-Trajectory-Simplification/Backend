@@ -34,12 +34,11 @@ enum CandidateIndex : std::size_t {
     kCandidateCount,
 };
 
-// The classic selectors, then BKH's greedy on range and where-at with different seeds: none,
-// SED's or RDP's best half of the interior points
+// Classic selectors, then greedy seeded with nothing, or SED's or RDP's best half
 constexpr std::array<std::string_view, kCandidateCount> kCandidates{
     "RDP", "SED", "UNIFORM", "GREEDY", "GREEDY_SED2", "GREEDY_RDP2"};
 constexpr std::size_t kMaxResponsePasses = 10;
-constexpr std::size_t kKnnWatchFactor = 3; // each query watches its 3k nearest per state
+constexpr std::size_t kKnnWatchFactor = 3;
 constexpr std::size_t kMaxAllocationRounds = 3;
 constexpr double kMinImprovement = 1e-12;
 constexpr std::uint64_t kOrderSeedOffset = 7004;
@@ -51,17 +50,15 @@ double seconds_since(std::chrono::steady_clock::time_point start) {
 
 // candidates[c][i]: trajectory i simplified by kCandidates[c] at budgets[i]
 using Candidates = std::array<KeptSets, kCandidates.size()>;
-using Methods = std::vector<std::size_t>; // index into kCandidates, per trajectory
+using Methods = std::vector<std::size_t>; // per trajectory
 
 std::vector<std::size_t> interior(const std::vector<std::size_t> &kept) {
     return kept.size() <= 2 ? std::vector<std::size_t>{}
                             : std::vector<std::size_t>(kept.begin() + 1, kept.end() - 1);
 }
 
-// Every candidate of one trajectory at any budget up to cap. Candidate c at budget b depends
-// only on (i, c, b, cap), so the value curves and the final kept sets agree. The greedy fill is
-// SED, then RDP, then UNIFORM at cap, the same for every b, so one greedy sequence per seed
-// serves the whole curve
+// One trajectory's candidates up to cap. A candidate depends only on (i, c, b, cap), so curves
+// and final kept sets agree
 class CandidateMaker {
   public:
     CandidateMaker(const Objective &objective, std::size_t i, std::size_t cap,
@@ -73,7 +70,6 @@ class CandidateMaker {
         budget = std::min(budget, m_original.size());
         if (budget > m_cap)
             throw std::runtime_error("teacher: candidate budget above its cap");
-        // Every method returns the same kept set at the endpoints and at full resolution.
         if (budget <= 2 || budget == m_original.size())
             return selection::simplify_trajectory(m_original, AlgorithmType::UNIFORM, budget);
         const std::size_t interior_budget = budget - 2;
@@ -112,10 +108,8 @@ class CandidateMaker {
         std::ranges::sort(kept);
         return kept;
     }
-    // A greedy sequence seeded with interior points selected by the seed algorithm.
     const std::vector<std::size_t> &greedy_sequence(std::size_t seed_size,
                                                     AlgorithmType seed_algorithm) {
-        // Classic-only requests do not need the greedy workload index or its fill candidates.
         if (!m_greedy) {
             m_greedy.emplace(m_objective, m_index);
             // SED's and RDP's points in their own order of importance, then UNIFORM's; greedy
@@ -127,8 +121,6 @@ class CandidateMaker {
                 selection::simplify_trajectory(m_original, AlgorithmType::UNIFORM, m_cap);
             m_fill.insert(m_fill.end(), uniform.begin(), uniform.end());
         }
-        // The sequence depends on its seed, not which candidate requested it. In particular,
-        // all unseeded variants and equal-sized SED seeds share the same greedy work.
         const auto seed_type = seed_size ? seed_algorithm : AlgorithmType::SED;
         auto &cached = m_greedy_sequences[{seed_type, seed_size}];
         if (cached.empty()) {
@@ -150,7 +142,7 @@ class CandidateMaker {
     std::map<std::pair<AlgorithmType, std::size_t>, std::vector<std::size_t>> m_greedy_sequences;
 };
 
-// Each trajectory's candidates at its budget, or only its selected method when supplied
+// All candidates at each trajectory's budget, or only the selected one
 Candidates make_candidates(const Objective &objective, const std::vector<std::size_t> &budgets,
                            const std::vector<std::size_t> &caps,
                            const Methods *selected = nullptr) {
@@ -158,8 +150,7 @@ Candidates make_candidates(const Objective &objective, const std::vector<std::si
     for (auto &kept : candidates)
         kept.resize(budgets.size());
     core::parallel_for(budgets.size(), [&](std::size_t i) {
-        // Greedy candidates also need classic selectors for their seeds and fill. Build each
-        // classic sequence once when producing all candidates or a greedy candidate.
+        // Greedy needs the classic sequences for its seed and fill
         CandidateMaker maker(objective, i, caps[i], !selected || (*selected)[i] >= kGreedy);
         if (selected) {
             const auto c = (*selected)[i];
@@ -179,14 +170,13 @@ KeptSets assemble(const Candidates &candidates, const Methods &method) {
     return kept;
 }
 
-// The best of one trajectory's candidates by independent_value, ties to the lower index. RDP,
-// index 0 and always among them, is scored exactly; the rest go best bound first, so the bound
-// in independent_value skips most of the losers' kNN checks
 struct Pick {
     std::size_t method;
     double value, rdp;
 };
 
+// Best candidate by independent_value, ties to the lower index. RDP is scored exactly, the rest
+// best bound first so losers skip most kNN checks
 Pick pick(const Objective &objective, std::size_t i,
           std::span<const std::pair<std::size_t, core::TrajectoryView>> options,
           std::span<const core::TrajectoryView> partners) {
@@ -236,8 +226,7 @@ Methods independent_choice(const core::TrajectoryDb &db, const Objective &object
     return method;
 }
 
-// Value curves from 2 up to caps[i] points: the best candidate's value and RDP's alone. Scored
-// independently, partners fixed at the given reference state
+// Value curves up to caps[i], best candidate and RDP alone, partners fixed
 struct Curves {
     std::vector<Curve> best, rdp;
 };
@@ -267,7 +256,6 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
             options.clear();
             for (std::size_t c = 0; c < (rdp_only ? 1 : kCandidates.size()); ++c) {
                 auto kept = maker.make(c, b);
-                // A copy of an earlier candidate scores the same, and ties go to the earlier one
                 if (std::ranges::find(seen, kept) != seen.end())
                     continue;
                 const auto slot = options.size();
@@ -298,19 +286,13 @@ Methods curve_methods(const std::vector<Curve> &curves, const std::vector<std::s
     return method;
 }
 
-// The loop: coordinate ascent on J_T. One trajectory at a time, in a random order, switches to
-// the candidate that raises J_T most given everyone's current choice. Only trajectories with join
-// links or, with the ranking kNN term, a watching query can gain, since nothing else depends on
-// the state. Every switch strictly raises the tracked J_T, so it stops
-// update = false: one pass against the starting state, nobody seeing anyone else's switch
-// Built once per start and candidate set; run() copies the trackers, so the loop and its controls
-// can share the setup
+// The loop: coordinate ascent on the tracked J_T, one trajectory at a time in random order.
+// Set up once; run() copies the trackers, so the loop and its controls share the setup
 class Search {
   public:
     Search(const core::TrajectoryDb &db, const Objective &objective, const Candidates &candidates,
            const Methods &method)
         : m_start(method) {
-        // With the ranking kNN term, a trajectory also matters to the queries that watch it
         if (objective.config().ranking_knn)
             m_knn.emplace(objective, assemble(candidates, method), candidates,
                           kKnnWatchFactor * objective.workloads().k);
@@ -330,12 +312,11 @@ class Search {
             auto &owned = m_prepared[i];
             const auto original = db.trajectory(i);
             if (!active(i)) {
-                // Isolated trajectories never switch; only their selected state is needed.
                 owned.emplace_back(original, candidates[method[i]][i]);
                 m_views[method[i]][i] = owned.back().view();
                 return;
             }
-            // Reserve before taking borrowed views, so adding another candidate cannot move them.
+            // Reserve first: views borrow from these
             owned.reserve(kCandidates.size());
             for (std::size_t c = 0; c < kCandidates.size(); ++c) {
                 std::size_t first = 0;
@@ -362,7 +343,7 @@ class Search {
     Search(const Search &) = delete;
     Search &operator=(const Search &) = delete;
 
-    // update = false: one pass against the starting state, nobody seeing anyone else's switch
+    // update = false: one pass against the starting state
     Methods run(std::uint64_t seed, bool update = true) const {
         auto method = m_start;
         auto state = m_state;
@@ -417,7 +398,6 @@ class Search {
     std::vector<std::size_t> m_order;
     std::vector<std::vector<PreparedTrajectory>> m_prepared;
     std::array<std::vector<core::TrajectoryView>, kCandidates.size()> m_views;
-    // These terms depend only on the candidate, never on the partners' current choices
     std::vector<std::array<double, kCandidates.size()>> m_separable;
     std::vector<std::array<std::size_t, kCandidates.size()>> m_representative;
     std::vector<std::array<std::vector<double>, kCandidates.size()>> m_knn_distances;
@@ -432,10 +412,8 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
     return Search(db, objective, candidates, method).run(seed, update);
 }
 
-// The same workloads with trajectories relabelled at random among those that start and end in the
-// same 1 km cells, in every join pair and every kNN query's true neighbours. Each pair keeps its
-// kind and seen flag and joins two trajectories that could plausibly match, so the loop on them
-// is the same search with wrong but believable partners and neighbours
+// The workloads with trajectories relabelled among those sharing 1 km start and end cells, in
+// every join pair and kNN neighbour list: wrong but plausible partners
 TeacherWorkloads shuffled_partners(const core::TrajectoryDb &db, const TeacherWorkloads &workloads,
                                    std::uint64_t seed) {
     constexpr double kCell = 1000.0;
@@ -508,7 +486,6 @@ std::string wins(const Methods &method) {
     return out;
 }
 
-// The requested arms, in the order asked
 std::vector<Arm> collect(const std::map<std::string, Arm, std::less<>> &outputs,
                          std::span<const std::string> arms) {
     std::vector<Arm> result;
@@ -559,8 +536,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const auto &objective = m_objective;
     const auto equal_budgets = allocation::create_trajectory_budgets(
         db, allocation::AllocatorType::SizeProportional, total_budget, 0.0);
-    // Curves up to about four times the mean interior budget, at least 6 interior points, and
-    // never below a trajectory's equal share
+    // About 4x the mean interior budget, at least 6, never below the equal share
     const double mean_interior =
         static_cast<double>(total_budget - 2 * db.size()) / static_cast<double>(db.size());
     const auto cap = 2 + static_cast<std::size_t>(std::ceil(std::max(6.0, 4.0 * mean_interior)));
@@ -602,7 +578,6 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         timed(std::format("value curves up to {} points", cap));
     }
     if (want_guess || want_equal_loop) {
-        // Fixed budgets only need scores at those budgets, not complete value curves
         const auto guess = needs_curves ? curve_methods(curves.best, equal_budgets)
                                         : independent_choice(db, objective, equal_candidates,
                                                              &equal_candidates[kRdp]);
@@ -647,8 +622,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             if (want_loop)
                 keep("BUDGET_LOOP", candidates, looped);
             if (want_reallocate) {
-                // Each round's curves see the partners as the last round left them. A round is
-                // kept only if J_T rises
+                // Each round is kept only if J_T rises
                 auto current = assemble(candidates, looped);
                 auto current_methods = looped;
                 double current_value = objective.total(current);
@@ -684,7 +658,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             timed("BUDGET_LOOP_NO_UPDATE");
         }
         if (want_shuffled) {
-            // Searches on fake partners and neighbours; keep scores the result on the real ones
+            // Searched on fake partners, scored on the real ones
             const auto shuffled = shuffled_partners(db, m_workloads, m_seed);
             const Objective fake(db, shuffled, objective.config());
             keep("BUDGET_LOOP_SHUFFLED", candidates,

@@ -33,22 +33,18 @@ struct Config {
     query::WhereAtConfig where_at;
     evaluator::WhereAtScoringConfig where_at_scoring;
     query::JoinConfig join;
-    bool self_join = false; // also scores the database self join at join.eps_m, outside J4
-    // More thresholds for J4's join term, averaged with join.eps_m, and for the reported route
-    // clustering score, averaged with clustering.eps_m. Empty: the one threshold alone
+    bool self_join = false; // diagnostic, outside J4
+    // Extra thresholds averaged into the join and clustering scores
     std::vector<double> join_score_eps_m;
     query::RouteClusteringConfig clustering;
-    teacher::TeacherConfig teacher; // off unless enabled
+    teacher::TeacherConfig teacher;
 };
 
 // Reads a JSON config. Only data_path is required, a missing key keeps its default.
 Config load_config(const std::filesystem::path &path);
 
-// The teacher's training workload settings: the test's kNN, join, Fréchet and where-at settings,
-// with the teacher's own range query count
 teacher::WorkloadConfig teacher_workload_config(const Config &config);
 
-// The teacher's objective settings: the where-at scoring ramp and the teacher section's options
 teacher::ObjectiveConfig teacher_objective_config(const Config &config);
 
 } // namespace pipeline

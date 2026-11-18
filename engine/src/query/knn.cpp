@@ -31,8 +31,7 @@ double squared_box_extent_lower_bound(const core::TrajectoryView &query,
     }
     const core::BoundingBox &a = query.bbox;
     const core::BoundingBox &b = reference.bbox;
-    // Every extreme coordinate in either trajectory must be matched to a point
-    // in the other. This remains useful even when their boxes overlap.
+    // Each extreme coordinate must be matched to a point in the other, even if the boxes overlap
     const double dx = std::max(std::abs(a.x_min - b.x_min), std::abs(a.x_max - b.x_max));
     const double dy = std::max(std::abs(a.y_min - b.y_min), std::abs(a.y_max - b.y_max));
     if (!std::isfinite(dx) || !std::isfinite(dy))

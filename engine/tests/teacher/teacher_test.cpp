@@ -24,8 +24,7 @@
 
 namespace {
 
-// Random walks in local metres, one point per second, starting near each other so that some
-// pairs join
+// Nearby random walks in local metres, one point per second, so that some pairs join
 core::TrajectoryDb random_db(std::uint64_t seed, std::size_t count, std::size_t length) {
     std::mt19937_64 rng(seed);
     std::uniform_real_distribution<double> start(-200.0, 200.0);
@@ -121,7 +120,7 @@ TEST_F(TeacherTest, CacheIsWrittenThenReadBack) {
     const auto built = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
     const auto file = m_dir / "teacher_cache_seed5.bin";
     ASSERT_TRUE(std::filesystem::exists(file));
-    // A cache hit must reuse the file, rather than silently recomputing identical results.
+    // A hit must reuse the file, not recompute
     const auto marker = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
     std::filesystem::last_write_time(file, marker);
     const auto before = std::filesystem::last_write_time(file);
@@ -192,7 +191,7 @@ TEST_F(TeacherTest, CacheWithLegacyFingerprintIsRebuilt) {
             out.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
             ASSERT_TRUE(out);
         }
-        // Even with matching settings and contents, an obsolete workload version is rejected.
+        // An obsolete version is rejected even when everything else matches
         ASSERT_NE(read_cache(file), current);
         const auto rebuilt = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
         EXPECT_EQ(read_cache(file), current);
@@ -243,7 +242,7 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
             const auto next_view = state[i].size() == 2 ? full_views[i] : floor_views[i];
             const double old_metric = join.metric();
             const auto proposal = join.propose(i, next_view, views);
-            // Evaluating an alternative must neither change the state nor overwrite this proposal.
+            // Proposing must not change the state or this proposal
             const auto stay = join.propose(i, views[i], views);
             EXPECT_DOUBLE_EQ(stay.gain, 0.0);
             EXPECT_DOUBLE_EQ(join.metric(), old_metric);
@@ -519,7 +518,8 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
         const auto result = model.run(budget, arms);
 
         ASSERT_EQ(result.size(), arms.size());
-        double gate_orig_jt = 0, gate_jt = 0, br_a0_jt = 0, teacher_jt = 0, br_jt = 0, iter_jt = 0;
+        double equal_choice_jt = 0, rdp_partners_jt = 0, equal_loop_jt = 0, budget_choice_jt = 0,
+               budget_loop_jt = 0, reallocate_jt = 0;
         for (const auto &arm : result) {
             SCOPED_TRACE(arm.name);
             ASSERT_EQ(arm.simplification.size(), db.size());
@@ -533,24 +533,25 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
                 EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
             }
             if (arm.name == "EQUAL_CHOICE")
-                gate_orig_jt = arm.objective;
+                equal_choice_jt = arm.objective;
             if (arm.name == "EQUAL_CHOICE_RDP_PARTNERS")
-                gate_jt = arm.objective;
+                rdp_partners_jt = arm.objective;
             if (arm.name == "EQUAL_LOOP")
-                br_a0_jt = arm.objective;
+                equal_loop_jt = arm.objective;
             if (arm.name == "BUDGET_CHOICE")
-                teacher_jt = arm.objective;
+                budget_choice_jt = arm.objective;
             if (arm.name == "BUDGET_LOOP")
-                br_jt = arm.objective;
+                budget_loop_jt = arm.objective;
             if (arm.name == "BUDGET_LOOP_REALLOCATE")
-                iter_jt = arm.objective;
+                reallocate_jt = arm.objective;
         }
-        EXPECT_GE(br_a0_jt, gate_jt - 1e-12);
-        EXPECT_GE(br_jt, teacher_jt - 1e-12);
-        EXPECT_GE(iter_jt, br_jt - 1e-12);
-        // Held out, the partners are queries and stay original, so the two gates are the same
-        if (mode == query::JoinMode::HeldOut)
-            EXPECT_DOUBLE_EQ(gate_jt, gate_orig_jt);
+        EXPECT_GE(equal_loop_jt, rdp_partners_jt - 1e-12);
+        EXPECT_GE(budget_loop_jt, budget_choice_jt - 1e-12);
+        EXPECT_GE(reallocate_jt, budget_loop_jt - 1e-12);
+        // Held out, the partners are queries and stay original, so the two choices are the same
+        if (mode == query::JoinMode::HeldOut) {
+            EXPECT_DOUBLE_EQ(rdp_partners_jt, equal_choice_jt);
+        }
     }
 }
 
@@ -575,8 +576,9 @@ TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {
             EXPECT_EQ(kept.back(), n - 1);
             EXPECT_TRUE(std::ranges::is_sorted(kept));
             EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
-            if (b > 2 && b < n)
+            if (b > 2 && b < n) {
                 EXPECT_TRUE(std::ranges::binary_search(kept, n / 2));
+            }
         }
     }
 }

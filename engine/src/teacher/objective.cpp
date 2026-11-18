@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <functional>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -83,7 +82,6 @@ double frechet(const core::TrajectoryView &a, const core::TrajectoryView &b,
                : discrete;
 }
 
-// Engine join F1 for one trajectory: 2 hits / (found + expected)
 double f1_of(std::size_t hits, std::size_t found, std::size_t expected) {
     return 2.0 * static_cast<double>(hits) / static_cast<double>(found + expected);
 }
@@ -125,7 +123,7 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     m_knn_weight =
         valid ? 1.0 / (static_cast<double>(workloads.k) * static_cast<double>(valid)) : 0.0;
 
-    // Range: invert each box's reference. Recall per box, averaged over boxes like range F1
+    // Range: invert each box's reference
     m_range.resize(n);
     std::size_t scored = 0;
     for (const auto &q : workloads.range.queries)
@@ -138,7 +136,7 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
                  1.0 / (static_cast<double>(ref.size()) * static_cast<double>(scored))});
     }
 
-    // Where-at: probes per trajectory, averaged per trajectory like the evaluator
+    // Where-at: probes per trajectory
     m_probes.resize(n);
     for (std::size_t k = 0; k < workloads.where_at.queries.size(); ++k)
         m_probes[workloads.where_at.queries[k].trajectory_index].push_back(
@@ -146,8 +144,8 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     const auto with_probes = std::ranges::count_if(m_probes, [](auto &p) { return !p.empty(); });
     m_where_at_weight = with_probes ? 1.0 / static_cast<double>(with_probes) : 0.0;
 
-    // Join: positives, then negatives
-    // Join terms: join_eps_m, the extra thresholds, then the held-out form of the first
+    // Join terms: join_eps_m, the extra thresholds, then the held-out form of the first. Pairs are
+    // stored positives first, then negatives
     struct TermPairs {
         const std::vector<JoinPair> *positives, *negatives;
     };
@@ -194,7 +192,7 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     m_with_truth =
         static_cast<std::size_t>(std::ranges::count_if(m_truth, [](auto c) { return c > 0; }));
 
-    // Floors: endpoints only, partners included, like the J5 floor
+    // Floors: endpoints only, partners included, like the J4 floor
     KeptSets endpoints(n);
     for (std::size_t i = 0; i < n; ++i)
         endpoints[i] = {0, db.trajectory(i).size() - 1};
@@ -311,8 +309,7 @@ double Objective::independent_value(const IndependentScore &score, double beat) 
     const auto i = score.trajectory;
     double knn = score.terms[Knn];
     auto value = [&] { return independent_sum(score, knn); };
-    // Each check can add at most one hit. Stop once even all of the rest cannot beat beat; the
-    // slack keeps rounding from cutting a candidate that would just win
+    // Stop once even all remaining hits cannot beat beat
     const double per_hit = m_scale[Knn] * m_knn_weight;
     std::size_t left = m_knn[i].size();
     for (const auto &m : m_knn[i]) {

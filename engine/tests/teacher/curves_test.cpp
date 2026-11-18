@@ -4,8 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <cstddef>
+#include <functional>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -51,8 +51,7 @@ double brute_force(const std::vector<teacher::Curve> &curves, std::size_t budget
 } // namespace
 
 TEST(TeacherAllocate, StepsOverFlatStretches) {
-    // A only gains at its second extra point, B gains a little at once. Marginal greedy would
-    // give the two points to B (0.35); gain per point over up to three points gives them to A
+    // A gains only at its second point, B a little at once: marginal greedy picks B, lookahead A
     const std::vector curves{curve({0.0, 0.0, 1.0}), curve({0.0, 0.3, 0.35})};
     const auto b = teacher::allocate(curves, 6);
     EXPECT_EQ(b, (std::vector<std::size_t>{4, 2}));

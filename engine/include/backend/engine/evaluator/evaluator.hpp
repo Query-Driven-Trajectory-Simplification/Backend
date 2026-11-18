@@ -23,11 +23,10 @@ struct Workloads {
     std::span<const query::RangeQuery> range = {};
     const query::JoinWorkload *join = nullptr; // a pointer, as it also carries eps and the queries
     const query::RouteClusteringWorkload *clustering = nullptr;
-    // The database self join as a diagnostic next to a held-out join. May point at join itself.
+    // Diagnostic; may point at join itself
     const query::JoinWorkload *self_join = nullptr;
-    // The same join at more thresholds, averaged into the combined score's join term
+    // Extra thresholds, averaged into the reported scores
     std::span<const query::JoinWorkload> join_grid = {};
-    // Route clustering at more thresholds, averaged into its reported score
     std::span<const query::RouteClusteringWorkload> clustering_grid = {};
 };
 
