@@ -21,6 +21,7 @@ def _module(name, **attrs):
 
 
 def install(rl4_dir, no_tensorflow=False):
+    sys.dont_write_bytecode = True  # no __pycache__ inside their (submodule) folder
     if rl4_dir not in sys.path:
         sys.path.insert(0, rl4_dir)
     # data_utils: "from julia import Main; Main.include('call.jl')"
