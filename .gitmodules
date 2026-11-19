@@ -1,3 +1,3 @@
-[submodule "baselines/rl4qdts/Query-TS"]
-	path = baselines/rl4qdts/Query-TS
+[submodule "submodules/Query-TS"]
+	path = submodules/Query-TS
 	url = https://github.com/zhengwang125/Query-TS
