@@ -18,6 +18,9 @@ void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb
                       const query::JoinWorkload &join,
                       const query::RouteClusteringWorkload *clustering);
 
+// Exports to RL4QDTS
+void export_database_ids(const std::filesystem::path &dir, const core::TrajectoryDb &database);
+
 void export_results(const std::filesystem::path &dir, std::string_view name,
                     const evaluator::EvaluationResult &evaluation, bool clustering);
 

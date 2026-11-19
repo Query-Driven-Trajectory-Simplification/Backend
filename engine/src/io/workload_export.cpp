@@ -6,6 +6,7 @@
 #include <arrow/io/api.h>
 #include <parquet/arrow/writer.h>
 
+#include <fstream>
 #include <stdexcept>
 #include <utility>
 
@@ -207,6 +208,17 @@ void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb
             clusters.push_back(trajectory_ids(database, members));
         write_clusters_parquet(clusters, dir / "clustering_original.parquet");
     }
+}
+
+void export_database_ids(const std::filesystem::path &dir, const core::TrajectoryDb &database) {
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "database_ids.csv";
+    std::ofstream out(path);
+    if (!out)
+        throw std::runtime_error("cannot write " + path.string());
+    out << "trajectory_id\n";
+    for (std::size_t i = 0; i < database.size(); ++i)
+        out << database.trajectory(i).trajectory_id << '\n';
 }
 
 void export_results(const std::filesystem::path &dir, std::string_view name,
