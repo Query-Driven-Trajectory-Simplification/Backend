@@ -29,6 +29,9 @@ struct Workloads {
     // Extra thresholds, averaged into the reported scores
     std::span<const query::JoinWorkload> join_grid = {};
     std::span<const query::RouteClusteringWorkload> clustering_grid = {};
+    // The database's own queries, for J4-self
+    const query::KnnWorkload *self_knn = nullptr;
+    std::span<const query::JoinWorkload> self_join_grid = {};
 };
 
 // Kendall's tau is in [-1, 1] and the others in [0, 1], or NaN if it could not be computed
@@ -42,6 +45,8 @@ struct Scoretable {
     JoinScores self_join;
     std::vector<JoinScores> join_grid;                  // in Workloads::join_grid order
     std::vector<RouteClusteringScores> clustering_grid; // in Workloads::clustering_grid order
+    KnnScores self_knn;
+    std::vector<JoinScores> self_join_grid; // in Workloads::self_join_grid order
 };
 
 struct EvaluationResult {

@@ -349,6 +349,77 @@ TEST_F(TeacherTest, RankingKnnIsTrackedExactly) {
     }
 }
 
+TEST_F(TeacherTest, CompressedKnnQueriesAreTrackedExactly) {
+    const auto db = random_db(2, 24, 20);
+    auto config = small_config();
+    config.frechet = query::FrechetVariant::Discrete;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    const teacher::Objective objective(
+        db, workloads,
+        {.join_mode = query::JoinMode::Self, .ranking_knn = true, .compressed_knn_query = true});
+    const auto floor = endpoints(db), full = every_point(db);
+    EXPECT_NEAR(objective.total(floor), 0.0, 1e-12);
+    EXPECT_DOUBLE_EQ(objective.metrics(full)[teacher::Objective::Knn], 1.0);
+
+    // A switch changes i as a neighbour and as a query, both against the others' current state
+    auto state = floor;
+    const std::vector<teacher::KeptSets> watch{full};
+    teacher::KnnState knn(objective, state, watch, db.size());
+    EXPECT_NEAR(knn.metric(), objective.metrics(state)[teacher::Objective::Knn], 1e-12);
+    const teacher::PreparedTrajectories prepared_floor(db, floor), prepared_full(db, full);
+    const auto floor_views = prepared_floor.views(), full_views = prepared_full.views();
+    auto views = floor_views;
+    teacher::JoinState join(objective, views);
+    std::mt19937_64 rng(5);
+    for (int step = 0; step < 40; ++step) {
+        const std::size_t i = rng() % db.size();
+        const bool grow = state[i].size() == 2;
+        const auto &next = grow ? full[i] : floor[i];
+        const auto next_view = grow ? full_views[i] : floor_views[i];
+        const double before = objective.total(state);
+        const auto move = knn.move(i, next_view, views);
+        const double knn_gain = knn.propose(move);
+        EXPECT_DOUBLE_EQ(knn.propose(knn.move(i, views[i], views)), 0.0);
+        const auto proposal = join.propose(i, next_view, views);
+        const double separable = objective.separable(i, next) - objective.separable(i, state[i]);
+        state[i] = next;
+        views[i] = next_view;
+        join.apply(proposal);
+        knn.apply(move);
+        EXPECT_NEAR(knn.metric(), objective.metrics(state)[teacher::Objective::Knn], 1e-12);
+        EXPECT_NEAR(objective.total(state) - before, knn_gain + proposal.gain + separable, 1e-9);
+    }
+}
+
+TEST_F(TeacherTest, CompressedKnnQueriesNeedTheRankingTerm) {
+    const auto db = random_db(2, 24, 20);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    EXPECT_THROW(
+        teacher::Objective(db, workloads, {.ranking_knn = false, .compressed_knn_query = true}),
+        std::invalid_argument);
+}
+
+TEST_F(TeacherTest, CompressedKnnArmsKeepTheBudgetAndLoopOnlyImproves) {
+    const auto db = random_db(3, 30, 25);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
+    const teacher::Teacher model(
+        db, std::move(workloads),
+        {.join_mode = query::JoinMode::Self, .ranking_knn = true, .compressed_knn_query = true},
+        11);
+    const std::size_t budget = 2 * db.size() + 40;
+    const std::vector<std::string> arms{"EQUAL_CHOICE",  "EQUAL_CHOICE_RDP_PARTNERS",
+                                        "EQUAL_LOOP",    "BUDGET_RDP",
+                                        "BUDGET_CHOICE", "BUDGET_LOOP"};
+    const auto result = model.run(budget, arms);
+    for (const auto &arm : result) {
+        SCOPED_TRACE(arm.name);
+        EXPECT_EQ(arm.simplification.num_points(), budget);
+    }
+    // Watch lists hold every trajectory here, so the loop's tracked gains are exact
+    EXPECT_GE(result[2].objective, result[1].objective - 1e-12);
+    EXPECT_GE(result[5].objective, result[4].objective - 1e-12);
+}
+
 TEST_F(TeacherTest, RankingKnnArmsKeepTheBudget) {
     const auto db = random_db(3, 30, 25);
     auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);

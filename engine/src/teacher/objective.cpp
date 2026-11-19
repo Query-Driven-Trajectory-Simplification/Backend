@@ -94,6 +94,8 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     if (!(config.min_tolerance_m < config.max_tolerance_m))
         throw std::invalid_argument("objective: min_tolerance_m must be below max_tolerance_m");
     const double weight_sum = check_term_weights(config.term_weights);
+    if (config.compressed_knn_query && !config.ranking_knn)
+        throw std::invalid_argument("objective: compressed kNN queries need the ranking kNN term");
     // Extra thresholds use every pair, which would train on the pairs held back as unseen
     if (!config.all_join_pairs && !workloads.extra_joins.empty())
         throw std::invalid_argument(
@@ -266,6 +268,7 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
     IndependentScore score;
     score.trajectory = i;
     score.candidate = candidate;
+    score.partners = partners;
     score.terms = raw_separable(i, candidate, false);
     std::array<std::size_t, kMaxJoinTerms> hits{}, found{};
     for (const auto &link : m_links[i]) {
@@ -286,7 +289,7 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
     score.join =
         m_with_truth != 0 ? m_scale[Join] * f1_sum / static_cast<double>(m_with_truth) : 0.0;
     score.bound = independent_sum(score, score.terms[Knn]) +
-                  m_scale[Knn] * m_knn_weight * static_cast<double>(m_knn[i].size());
+                  m_scale[Knn] * knn_check_weight() * static_cast<double>(knn_checks(i));
     return score;
 }
 
@@ -302,17 +305,46 @@ double Objective::independent_value(const IndependentScore &score, double beat) 
     double knn = score.terms[Knn];
     auto value = [&] { return independent_sum(score, knn); };
     // Stop once even all remaining hits cannot beat beat
-    const double per_hit = m_scale[Knn] * m_knn_weight;
-    std::size_t left = m_knn[i].size();
-    for (const auto &m : m_knn[i]) {
+    const double weight = knn_check_weight();
+    const double per_hit = m_scale[Knn] * weight;
+    std::size_t left = knn_checks(i);
+    auto check = [&](const core::TrajectoryView &a, const core::TrajectoryView &b, double cutoff) {
         if (value() + per_hit * static_cast<double>(left) < beat - kBoundSlack)
-            return value();
+            return false;
         --left;
-        if (query::frechet_within(m_db.trajectory(m.query), score.candidate, m.cutoff,
-                                  m_workloads.frechet))
-            knn += m_knn_weight;
+        if (query::frechet_within(a, b, cutoff, m_workloads.frechet))
+            knn += weight;
+        return true;
+    };
+    if (!m_config.compressed_knn_query) {
+        for (const auto &m : m_knn[i])
+            if (!check(m_db.trajectory(m.query), score.candidate, m.cutoff))
+                return value();
+        return value();
     }
+    // Compressed queries: i is found by the queries it belongs to, and finds its own neighbours
+    auto partner = [&](std::size_t j) {
+        return score.partners.empty() ? m_db.trajectory(j) : score.partners[j];
+    };
+    for (const auto &m : m_knn[i])
+        if (!check(partner(m.query), score.candidate, m.cutoff))
+            return value();
+    const auto &own = m_workloads.knn[i];
+    if (own.valid)
+        for (const auto j : own.top)
+            if (!check(score.candidate, partner(j), own.cutoff))
+                return value();
     return value();
+}
+
+std::size_t Objective::knn_checks(std::size_t i) const {
+    const auto &own = m_workloads.knn[i];
+    return m_knn[i].size() + (m_config.compressed_knn_query && own.valid ? own.top.size() : 0);
+}
+
+double Objective::knn_check_weight() const {
+    // Compressed queries check each (query, neighbour) hit from both sides, so each counts half
+    return m_config.compressed_knn_query ? m_knn_weight / 2.0 : m_knn_weight;
 }
 
 double Objective::independent_bound(std::size_t i, const core::TrajectoryView &candidate,
@@ -384,8 +416,10 @@ double Objective::knn_recall(const core::TrajectoryDb &compressed) const {
         const auto &entry = m_workloads.knn[e];
         if (!entry.valid)
             return;
-        auto found = query::knn(compressed, m_db.trajectory(e), std::min(k + 1, m_db.size()),
-                                m_workloads.frechet);
+        const auto query =
+            m_config.compressed_knn_query ? compressed.trajectory(e) : m_db.trajectory(e);
+        auto found =
+            query::knn(compressed, query, std::min(k + 1, m_db.size()), m_workloads.frechet);
         std::erase(found, e);
         found.resize(std::min(found.size(), k));
         for (const auto i : entry.top)
@@ -548,8 +582,11 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state,
         auto &list = m_list[e];
         list.assign(entry.top.begin(), entry.top.end());
         for (const auto &compressed_db : compressed)
-            for (const auto j : query::knn(compressed_db, db.trajectory(e), std::min(watch + 1, n),
-                                           workloads.frechet))
+            for (const auto j :
+                 query::knn(compressed_db,
+                            objective.config().compressed_knn_query ? compressed_db.trajectory(e)
+                                                                    : db.trajectory(e),
+                            std::min(watch + 1, n), workloads.frechet))
                 if (j != e && std::ranges::find(list, j) == list.end())
                     list.push_back(static_cast<std::uint32_t>(j));
     });
@@ -562,12 +599,16 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state,
     }
     const PreparedTrajectories prepared(db, state);
     const auto views = prepared.views();
-    std::vector<std::vector<double>> own(n);
-    core::parallel_for(n, [&](std::size_t i) { own[i] = distances(i, views[i]); });
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t watch_state = 0; watch_state < m_watchers[i].size(); ++watch_state)
-            m_distance[m_watchers[i][watch_state].query][m_watchers[i][watch_state].position] =
-                own[i][watch_state];
+    if (objective.config().compressed_knn_query) {
+        core::parallel_for(n, [&](std::size_t e) { m_distance[e] = own_row(e, views[e], views); });
+    } else {
+        std::vector<std::vector<double>> own(n);
+        core::parallel_for(n, [&](std::size_t i) { own[i] = distances(i, views[i]); });
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t watch_state = 0; watch_state < m_watchers[i].size(); ++watch_state)
+                m_distance[m_watchers[i][watch_state].query][m_watchers[i][watch_state].position] =
+                    own[i][watch_state];
+    }
     core::parallel_for(n, [&](std::size_t e) {
         if (!m_list[e].empty())
             m_hits[e] = hits(e, m_list[e].size(), 0.0);
@@ -584,6 +625,73 @@ std::vector<double> KnnState::distances(std::size_t i,
         result.push_back(query::frechet_distance(db.trajectory(watcher.query), candidate,
                                                  m_objective.workloads().frechet));
     return result;
+}
+
+bool KnnState::active(std::size_t i) const {
+    return watched(i) || (m_objective.config().compressed_knn_query && !m_list[i].empty());
+}
+
+std::vector<double> KnnState::own_row(std::size_t e, const core::TrajectoryView &query,
+                                      std::span<const core::TrajectoryView> state) const {
+    std::vector<double> row;
+    row.reserve(m_list[e].size());
+    for (const auto j : m_list[e])
+        row.push_back(query::frechet_distance(query, state[j], m_objective.workloads().frechet));
+    return row;
+}
+
+KnnState::Move KnnState::move(std::size_t i, const core::TrajectoryView &candidate,
+                              std::span<const core::TrajectoryView> state) const {
+    if (!m_objective.config().compressed_knn_query)
+        return {i, distances(i, candidate), {}};
+    Move result{i, {}, own_row(i, candidate, state)};
+    result.watched.reserve(m_watchers[i].size());
+    for (const auto &watcher : m_watchers[i])
+        result.watched.push_back(query::frechet_distance(state[watcher.query], candidate,
+                                                         m_objective.workloads().frechet));
+    return result;
+}
+
+double KnnState::propose(const Move &move) const {
+    long change = 0;
+    for (std::size_t s = 0; s < m_watchers[move.trajectory].size(); ++s) {
+        const auto &watcher = m_watchers[move.trajectory][s];
+        change += static_cast<long>(hits(watcher.query, watcher.position, move.watched[s])) -
+                  static_cast<long>(m_hits[watcher.query]);
+    }
+    if (!move.own.empty() && !m_list[move.trajectory].empty())
+        change += static_cast<long>(hits(move.trajectory, move.own)) -
+                  static_cast<long>(m_hits[move.trajectory]);
+    return m_objective.scale(Objective::Knn) * static_cast<double>(change) /
+           static_cast<double>(m_objective.workloads().k * m_valid);
+}
+
+void KnnState::apply(const Move &move) {
+    apply(move.trajectory, move.watched);
+    if (move.own.empty() || m_list[move.trajectory].empty())
+        return;
+    const auto i = move.trajectory;
+    m_distance[i] = move.own;
+    m_hit_sum -= m_hits[i];
+    m_hits[i] = hits(i, m_list[i].size(), 0.0);
+    m_hit_sum += m_hits[i];
+}
+
+std::size_t KnnState::hits(std::size_t e, std::span<const double> row) const {
+    const auto &list = m_list[e];
+    const std::size_t k = std::min(m_objective.workloads().k, list.size());
+    const std::size_t members = m_objective.workloads().knn[e].top.size();
+    std::vector<std::pair<double, std::uint32_t>> order(list.size());
+    for (std::size_t p = 0; p < list.size(); ++p)
+        order[p] = {row[p], static_cast<std::uint32_t>(p)};
+    std::ranges::partial_sort(
+        order, order.begin() + static_cast<std::ptrdiff_t>(k), [&](const auto &a, const auto &b) {
+            return a.first < b.first || (a.first == b.first && list[a.second] < list[b.second]);
+        });
+    std::size_t count = 0;
+    for (std::size_t p = 0; p < k; ++p)
+        count += order[p].second < members;
+    return count;
 }
 
 std::size_t KnnState::hits(std::size_t e, std::size_t position, double distance) const {

@@ -17,6 +17,7 @@
 #include <format>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace pipeline {
@@ -62,7 +63,12 @@ void run(const Config &config) {
     print_size("database", database);
     print_size("query pool", queries);
 
-    const TestWorkloads workloads(database, queries, config);
+    const auto teacher = make_teacher(database, config);
+    // The self-kNN reference comes from the teacher's cache; without the teacher J4-self is NaN
+    std::optional<query::KnnWorkload> self_knn;
+    if (teacher && config.self_join)
+        self_knn = teacher::self_knn_workload(teacher->objective().workloads(), config.knn.p);
+    const TestWorkloads workloads(database, queries, config, std::move(self_knn));
     if (config.export_results) {
         io::export_workloads(config.export_dir, database, workloads.range.queries, workloads.knn,
                              workloads.join,
@@ -71,7 +77,6 @@ void run(const Config &config) {
     }
 
     const Scorer scorer(database, workloads, config);
-    const auto teacher = make_teacher(database, config);
 
     for (const double share : config.budget_shares) {
         const std::size_t budget = allocation::total_budget(database, share);

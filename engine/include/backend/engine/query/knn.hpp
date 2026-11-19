@@ -27,6 +27,9 @@ struct KnnWorkload {
     std::size_t k;
     double p = 0.5;
     FrechetVariant frechet = FrechetVariant::Continuous;
+    // query_index is a database trajectory, searched in its compressed form and excluded from its
+    // own answer and reference. queries stays empty
+    bool self = false;
 };
 
 // Samples query_count trajectories from query_pool (the held-out split) and stores their k

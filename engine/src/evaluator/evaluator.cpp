@@ -78,6 +78,12 @@ EvaluationResult Evaluator::evaluate() const {
     std::vector<RouteClusteringScores> clustering_grid;
     for (const auto &w : m_workloads.clustering_grid)
         clustering_grid.push_back(evaluate_route_clustering(m_simplified, w));
+    const auto self_knn = m_workloads.self_knn
+                              ? evaluate_knn(m_simplified, *m_workloads.self_knn).scores
+                              : KnnScores{};
+    std::vector<JoinScores> self_join_grid;
+    for (const auto &w : m_workloads.self_join_grid)
+        self_join_grid.push_back(evaluate_join(m_simplified, w));
 
     return {.scores = {.knn = knn.scores,
                        .range_recall = range.recall,
@@ -90,7 +96,9 @@ EvaluationResult Evaluator::evaluate() const {
                                         ? join.scores
                                         : get_self_join_scores(),
                        .join_grid = std::move(join_grid),
-                       .clustering_grid = std::move(clustering_grid)},
+                       .clustering_grid = std::move(clustering_grid),
+                       .self_knn = self_knn,
+                       .self_join_grid = std::move(self_join_grid)},
             .knn = std::move(knn.answers),
             .range = std::move(range.answers),
             .join = std::move(join.pairs),
