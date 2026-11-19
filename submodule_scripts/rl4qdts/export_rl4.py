@@ -1,14 +1,4 @@
-"""Writes trajectories from one of our Parquet files in RL4QDTS's input format.
-
-RL4QDTS reads a folder of files named 0, 1, 2, ... with one "lat lon t" line per point
-(see preprocess.py / data_utils.to_traj). Their TrajComp(path, s, e, ...) loads files s..e-1.
-
-  python export_rl4.py <points.parquet> <out_dir> [--ids ids.csv] [--shuffle-seed N]
-
-points.parquet: trajectory_id, t, lat, lon (our schema; t = UTC seconds), e.g. the
-database split exported by the Backend. --ids keeps only those trajectory ids, in that order.
-Writes <out_dir>/0..N-1 and <out_dir>/index.csv (file_no, trajectory_id, n_points).
-"""
+"""Exports our data in RL4's format, with timestamps shifted -8 h to match RL4 by default"""
 import argparse
 import os
 
@@ -22,11 +12,13 @@ def main():
     ap.add_argument("out_dir")
     ap.add_argument("--ids", help="csv with a trajectory_id column; keeps that order")
     ap.add_argument("--shuffle-seed", type=int, help="shuffle trajectory order (training data)")
+    ap.add_argument("--shift-hours", type=int, default=-8,
+                    help="added to every timestamp; -8 = RL4's own convention (default)")
     args = ap.parse_args()
 
     table = pq.read_table(args.parquet, columns=["trajectory_id", "t", "lat", "lon"])
     tid = table["trajectory_id"].to_numpy()
-    t = table["t"].to_numpy()
+    t = table["t"].to_numpy() + np.int64(args.shift_hours * 3600)
     lat = table["lat"].to_numpy()
     lon = table["lon"].to_numpy()
 
@@ -54,7 +46,7 @@ def main():
                 for la, lo, ti in zip(lat[s:e].tolist(), lon[s:e].tolist(), t[s:e].tolist()):
                     out.write(f"{la!r} {lo!r} {ti}\n")
             index.write(f"{file_no},{traj_id},{e - s}\n")
-    print(f"wrote {len(order)} trajectories to {args.out_dir}")
+    print(f"wrote {len(order)} trajectories to {args.out_dir} (time shift {args.shift_hours} h)")
 
 
 if __name__ == "__main__":

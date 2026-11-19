@@ -1,22 +1,4 @@
-"""Runs a trained RL4QDTS model on a database exported by export_rl4.py and writes which
-points it keeps, as (trajectory_id, point_index) rows our Backend can score.
-
-The loop is simplification.py's run_dqn() line for line. Differences, all outside their code:
-  * the interior budget is ours: round(share * (points - 2 * trajectories)), the same count
-    the Backend's total_budget() gives RDP/SED/UNIFORM, so every method keeps equally many points;
-  * a fresh TrajSam per budget (their script reuses one, so ID2Grids leaks between budgets);
-  * --seed reseeds numpy/random after TrajSam is built, for repeated runs (the paper uses 50);
-    without --seed the random stream is exactly theirs;
-  * kept points are read from F_ward (its keys are the kept (trajID, pointID) pairs);
-  * --no-cube-agent / --no-point-agent run the paper's ablations (Table II): the start cube is
-    used as drawn (their "S = 9, E = 10"), and/or the candidate with the largest error is taken.
-
-  python rl4_simplify.py --rl4 <Query-TS dir> --db <export dir> --label data \
-      --inb save/model_data_RL_INB_F1.h5 --oub save/model_data_RL_OUB_F1.h5 \
-      --shares 0.0025 0.005 0.01 0.02 --out <dir> [--seed 1] [--name RL4_shipped] [--numpy]
-
-Output: <out>/kept_<method>_<pct>pct.parquet, method = <name>[_nocube][_nopoint][_s<seed>].
-"""
+"""Runs a trained RL4 model on our database and writes the kept points for the Backend to score"""
 import argparse
 import csv
 import math

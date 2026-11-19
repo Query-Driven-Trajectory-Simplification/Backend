@@ -1,13 +1,4 @@
-"""Lets RL4QDTS (github.com/zhengwang125/Query-TS @ cb0f695) be imported without editing it.
-
-Their data_utils.py starts Julia and loads a t2vec checkpoint at import time. Those are
-only used by knn_query_t2vec.py, which we do not run, so we put empty stand-ins in
-sys.modules first. With no_tensorflow=True we also stand in for TensorFlow/Keras, so the
-trained agents can be run with numpy only (rl_brain.fast_online_act); training still
-needs the real TF 1.x + Keras 2.x.
-
-Call install(...) before importing anything from the RL4QDTS folder.
-"""
+"""Stand-ins so RL4's code can be imported without Julia, t2vec or (optionally) TensorFlow"""
 import sys
 import types
 
