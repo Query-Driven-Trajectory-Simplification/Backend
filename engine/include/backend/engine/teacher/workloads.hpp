@@ -2,6 +2,7 @@
 
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/query/frechet_helper.hpp"
+#include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
 #include "backend/engine/query/where_at_query.hpp"
 
@@ -67,5 +68,9 @@ struct TeacherWorkloads {
 TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const WorkloadConfig &config,
                                          std::uint64_t seed,
                                          const std::filesystem::path &cache_dir);
+
+// The self-kNN test workload from the cached lists: every valid database query with its k nearest
+// others. They depend on the database alone, so they are what a fresh build would give
+query::KnnWorkload self_knn_workload(const TeacherWorkloads &workloads, double p);
 
 } // namespace teacher

@@ -115,14 +115,8 @@ class CandidateMaker {
                                                     AlgorithmType seed_algorithm) {
         if (!m_greedy) {
             m_greedy.emplace(m_objective, m_index);
-            // SED's and RDP's points in their own order of importance, then UNIFORM's; greedy
-            // skips points it already keeps
+            // SED's order of importance covers every point up to the cap
             m_fill = selection::sed::sequence(m_original, m_cap);
-            const auto rdp_order = selection::rdp::sequence(m_original, m_cap);
-            m_fill.insert(m_fill.end(), rdp_order.begin(), rdp_order.end());
-            const auto uniform =
-                selection::simplify_trajectory(m_original, AlgorithmType::UNIFORM, m_cap);
-            m_fill.insert(m_fill.end(), uniform.begin(), uniform.end());
         }
         const auto seed_type = seed_size ? seed_algorithm : AlgorithmType::SED;
         auto &cached = m_greedy_sequences[{seed_type, seed_size}];
@@ -292,12 +286,12 @@ class Search {
   public:
     Search(const core::TrajectoryDb &db, const Objective &objective, const Candidates &candidates,
            const Methods &method)
-        : m_start(method) {
+        : m_start(method), m_compressed_queries(objective.config().compressed_knn_query) {
         if (objective.config().ranking_knn)
             m_knn.emplace(objective, assemble(candidates, method), candidates,
                           kKnnWatchFactor * objective.workloads().k);
         const auto active = [&](std::size_t i) {
-            return !objective.links(i).empty() || (m_knn && m_knn->watched(i));
+            return !objective.links(i).empty() || (m_knn && m_knn->active(i));
         };
         for (std::size_t i = 0; i < db.size(); ++i)
             if (active(i))
@@ -326,7 +320,8 @@ class Search {
                     owned.emplace_back(original, candidates[c][i]);
                     m_views[c][i] = owned.back().view();
                     m_separable[i][c] = objective.separable(i, m_views[c][i]);
-                    if (m_knn)
+                    // Compressed queries depend on the partners' state, so are computed later
+                    if (m_knn && !objective.config().compressed_knn_query)
                         m_knn_distances[i][c] = m_knn->distances(i, m_views[c][i]);
                 } else {
                     m_views[c][i] = m_views[first][i];
@@ -358,6 +353,7 @@ class Search {
                 const double here = m_separable[i][method[i]];
                 std::size_t best = method[i];
                 JoinState::Proposal best_proposal;
+                KnnState::Move best_move;
                 double best_gain = kMinImprovement; // strict gains only, so ties cannot cycle
                 for (std::size_t c = 0; c < kCandidates.size(); ++c) {
                     // Each distinct kept set is tried once, and never the one i already has
@@ -366,12 +362,20 @@ class Search {
                     if (duplicate || current)
                         continue;
                     auto proposal = join.propose(i, m_views[c][i], state);
-                    const double knn_gain = knn ? knn->propose(i, m_knn_distances[i][c]) : 0.0;
+                    KnnState::Move move;
+                    double knn_gain = 0.0;
+                    if (knn && m_compressed_queries) {
+                        move = knn->move(i, m_views[c][i], state);
+                        knn_gain = knn->propose(move);
+                    } else if (knn) {
+                        knn_gain = knn->propose(i, m_knn_distances[i][c]);
+                    }
                     const double gain = m_separable[i][c] - here + proposal.gain + knn_gain;
                     if (gain > best_gain) {
                         best = c;
                         best_gain = gain;
                         best_proposal = std::move(proposal);
+                        best_move = std::move(move);
                     }
                 }
                 if (best == method[i])
@@ -382,7 +386,9 @@ class Search {
                     continue;
                 state[i] = m_views[best][i];
                 join.apply(best_proposal);
-                if (knn)
+                if (knn && m_compressed_queries)
+                    knn->apply(best_move);
+                else if (knn)
                     knn->apply(i, m_knn_distances[i][best]);
             }
             std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}{}\n", pass,
@@ -396,6 +402,7 @@ class Search {
 
   private:
     Methods m_start;
+    bool m_compressed_queries;
     std::vector<std::size_t> m_order;
     std::vector<std::vector<PreparedTrajectory>> m_prepared;
     std::array<std::vector<core::TrajectoryView>, kCandidates.size()> m_views;

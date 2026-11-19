@@ -56,6 +56,9 @@ struct ObjectiveConfig {
     // kNN ranked on the compressed database; false: per-trajectory check. Curves always use the
     // latter
     bool ranking_knn = false;
+    // The kNN query compressed too, the in-database setting; needs ranking_knn. Curves then share
+    // each hit between the query and its neighbour, both against the fixed partners
+    bool compressed_knn_query = false;
     TermWeights term_weights{1.0, 1.0, 1.0, 1.0};
 };
 
@@ -106,6 +109,7 @@ class Objective {
         friend class Objective;
         std::size_t trajectory = 0;
         core::TrajectoryView candidate{};
+        std::span<const core::TrajectoryView> partners{};
         Terms terms{};
         double join = 0.0;
     };
@@ -156,6 +160,8 @@ class Objective {
     Terms raw_separable(std::size_t i, const core::TrajectoryView &candidate,
                         bool knn = true) const;
     double independent_sum(const IndependentScore &score, double knn) const;
+    std::size_t knn_checks(std::size_t i) const;
+    double knn_check_weight() const;
     double join_metric(std::span<const core::TrajectoryView> state) const;
 
     const core::TrajectoryDb &m_db;
@@ -230,11 +236,25 @@ class KnnState {
              std::span<const KeptSets> watch_states, std::size_t watch);
 
     bool watched(std::size_t i) const { return !m_watchers[i].empty(); }
-    // From every query watching i, in the order propose and apply expect
+    // Whether i's choice can change the metric: watched, or with compressed queries a query
+    bool active(std::size_t i) const;
+    // Original queries only. From every query watching i, in the order propose and apply expect
     std::vector<double> distances(std::size_t i, const core::TrajectoryView &candidate) const;
     // Change in J_T
     double propose(std::size_t i, std::span<const double> distances) const;
     void apply(std::size_t i, std::span<const double> distances);
+
+    // Either query kind. With compressed queries a distance depends on both sides, so a move also
+    // rescores i's own list, against the current state
+    struct Move {
+        std::size_t trajectory = 0;
+        std::vector<double> watched; // as distances()
+        std::vector<double> own;     // i's own list; empty with original queries
+    };
+    Move move(std::size_t i, const core::TrajectoryView &candidate,
+              std::span<const core::TrajectoryView> state) const;
+    double propose(const Move &move) const;
+    void apply(const Move &move);
 
     double metric() const; // recall@k over the valid queries
 
@@ -244,6 +264,11 @@ class KnnState {
     };
     // True neighbours in e's top k, with the distance at position replaced
     std::size_t hits(std::size_t e, std::size_t position, double distance) const;
+    // The same with e's whole row replaced
+    std::size_t hits(std::size_t e, std::span<const double> row) const;
+    // Distances from query, e in some state, to e's list in state
+    std::vector<double> own_row(std::size_t e, const core::TrajectoryView &query,
+                                std::span<const core::TrajectoryView> state) const;
 
     const Objective &m_objective;
     std::size_t m_valid = 0;

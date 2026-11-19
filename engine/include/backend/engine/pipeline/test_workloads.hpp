@@ -23,9 +23,12 @@ struct TestWorkloads {
     std::optional<query::JoinWorkload> self_join;
     std::optional<query::RouteClusteringWorkload> clustering;
     std::vector<query::RouteClusteringWorkload> clustering_grid; // at config.join_score_eps_m
+    // For J4-self. The self join at config.join_score_eps_m, empty when join_grid already is
+    std::vector<query::JoinWorkload> self_join_grid;
+    std::optional<query::KnnWorkload> self_knn; // supplied, as its reference is slow to build
 
     TestWorkloads(const core::TrajectoryDb &database, const core::TrajectoryDb &queries,
-                  const Config &config);
+                  const Config &config, std::optional<query::KnnWorkload> self_knn = std::nullopt);
     TestWorkloads(const TestWorkloads &) = delete;
     TestWorkloads &operator=(const TestWorkloads &) = delete;
 

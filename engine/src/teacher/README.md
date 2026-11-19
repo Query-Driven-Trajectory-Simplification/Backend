@@ -56,16 +56,28 @@ Files:
   self join, whose pairs the teacher trains on, is then reported separately (`norm_self_join`,
   the seen / unseen recall and the 100 / 300 m thresholds) and is not part of J4. Results quoted
   below predate this and have the self join inside the score.
+- **J4-self** (`J4_self`): the in-database setting, where the database's own trajectories are
+  the kNN and join queries. Its terms are self kNN (each database trajectory, compressed, searched
+  against the compressed database, itself excluded), J4's range and where-at, and the self join
+  averaged over `join.score_eps_m` like J4's join. Its kNN and join queries are the teacher's
+  training queries by definition, so only range, where-at and untrained thresholds are held out.
+  The self-kNN reference is read from the teacher's kNN cache (`self_knn_workload`); it depends
+  on the database alone. Without a teacher, `run` reports it as NaN.
 - **J5:** the earlier headline, J4 plus clustering. Results quoted below from earlier runs use it;
   `teacher_eval` no longer writes it.
 - **J_T:** the teacher's own score on its training workloads. It has the same shape as J4. kNN
   and range use training proxies.
 - **J_T's kNN term:** with `teacher.ranking_knn` (the default) it is recall@k of the teacher's
-  database queries answered on the compressed database, so competitors are compressed too, like
-  the test. The loop tracks it with `KnnState`. Value curves still use the per-trajectory check
+  database queries answered on the compressed database (`knn_recall`), so competitors are
+  compressed too, like the test. The loop tracks it with `KnnState`. Value curves still use the per-trajectory check
   against original competitors, which `teacher_eval --independent-knn` restores everywhere as the
   ablation. The per-trajectory check misleads the teacher: it credited the teacher with beating
   RDP on kNN where held-out queries showed it did not.
+  With a `Self` join the query is compressed too (`compressed_knn_query`, `teacher.knn_query` or
+  `teacher_eval --knn-query Original|Compressed` to override), as J4-self scores it. A
+  trajectory's choice then changes its own answer as well as the lists it is in, so `KnnState`
+  tracks both against the current state (`move`, `propose`, `apply`), and the curves share each
+  (query, neighbour) hit between the two sides, half each, against the fixed partners.
 - **J_T's join term:** follows `join.mode`, so the teacher trains on the kind of join it is
   scored on. `Self`: both sides of a pair compressed, the self join. `HeldOut`: every database
   trajectory also acts as an original query against its compressed partners, so each pair is
@@ -308,7 +320,7 @@ not. They matter because the join metric is F1: simplification can make negative
 - **Computation:** in parallel, for each trajectory e:
   1. find its k+2 nearest neighbours (`query::knn`) and remove e itself;
   2. keep the first k as `top`;
-  3. compute `cutoff`, the distance to the (k+1)th neighbour, with `distance()`. For continuous
+  3. compute `cutoff`, the distance to the (k+1)th neighbour, with `query::frechet_distance`. For continuous
      Fréchet, the discrete distance is used as the upper bound of the search.
 - **Output:** one `KnnEntry` per trajectory.
 
@@ -408,7 +420,7 @@ trajectory can't have a point in a box the original had none in.
      throws, because that metric can't be normalised.
   6. **Scales:** `m_scale[m] = 1 / (4 · (1 − floor_m))`. This applies the normalisation and the
      equal average in one factor.
-  7. **`m_v0[i]`:** trajectory i's scaled separable terms with endpoints only. Subtracting it makes
+  7. **`m_endpoint_separable[i]`:** trajectory i's scaled separable terms with endpoints only. Subtracting it makes
      `separable` exactly 0 at the floor.
 - **Output:** a ready `Objective`. It keeps references to `db` and `workloads`, so both must
   outlive it (`Teacher` guarantees this).
@@ -429,7 +441,7 @@ trajectory can't have a point in a box the original had none in.
 ### `separable(i, kept)` — public
 
 - **Input:** trajectory index and kept set.
-- **Computation:** `Σ m_scale[m] · raw_separable[m] − m_v0[i]` over kNN, range and where-at.
+- **Computation:** `Σ m_scale[m] · raw_separable[m] − m_endpoint_separable[i]` over kNN, range and where-at.
 - **Output:** i's part of J_T from the three separable terms, 0 at endpoints only. Summed over all
   trajectories, this equals those terms' share of J_T exactly.
 
@@ -662,12 +674,9 @@ simplified.
   4. Stops after a pass with no switches.
 - **Output:** the improved `Methods`. Stops after a pass with no switches or the 10-pass limit.
 
-### `to_simplification`, `wins`, `seconds_since`, `is_arm` — helpers
+### `wins`, `is_arm` — helpers
 
-- `to_simplification`: `KeptSets` → `core::Simplification`, the format the pipeline evaluates and
-  exports.
 - `wins`: per-candidate counts for the log.
-- `seconds_since`: wall time for the log.
 - `is_arm`: whether a name is in `kArms`. It is also used by the config parser.
 
 ---
