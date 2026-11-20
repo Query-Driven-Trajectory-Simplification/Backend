@@ -569,8 +569,10 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         });
         const double sweep_s = core::seconds_since(start);
         start = std::chrono::steady_clock::now();
-        double knn_correction = 0.0;
-        // The trades below try only these states, so the kNN lists watch them
+        // The trades below try only these states, so the kNN lists watch them. Either way the
+        // lists can now see trajectories the old ones missed, which changes the tracked metric
+        // of the current state; that change is carried into the tracked total below
+        const double before_watch = ranking ? knn->metric() : 0.0;
         if (ranking && !compressed) {
             std::vector<std::vector<PreparedTrajectory>> prepared(n);
             std::vector<std::vector<core::TrajectoryView>> versions(n);
@@ -592,12 +594,11 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
                         if (std::isfinite(by_trajectory[i].gain))
                             with[i] = by_trajectory[i].kept;
                 }
-            // The rebuilt lists see what the old ones missed; carry the correction into the total
-            const double before_rebuild = knn->metric();
             knn.emplace(objective, kept, offered, watch);
-            knn_correction = objective.scale(Objective::Knn) * (knn->metric() - before_rebuild);
-            value += knn_correction;
         }
+        const double knn_correction =
+            ranking ? objective.scale(Objective::Knn) * (knn->metric() - before_watch) : 0.0;
+        value += knn_correction;
         const double watch_s = core::seconds_since(start);
         start = std::chrono::steady_clock::now();
 
@@ -642,7 +643,7 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         }
         std::cout << std::format(
             "teacher: trade round {}: {} profitable pairs, {} kept, J_T {:.6f} "
-            "-> {:.6f}, kNN rebuild correction {:+.6f}, sweep {:.1f} s, watch {:.1f} s, trades "
+            "-> {:.6f}, kNN list correction {:+.6f}, sweep {:.1f} s, watch {:.1f} s, trades "
             "{:.1f} s\n",
             round, profitable, accepted, before, value, knn_correction, sweep_s, watch_s,
             core::seconds_since(start));
