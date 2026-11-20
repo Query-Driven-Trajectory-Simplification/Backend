@@ -48,6 +48,12 @@ TEST(Config, ReadsJoinKeys) {
     EXPECT_DOUBLE_EQ(config.join.eps_m, 250);
 }
 
+TEST(Config, ReadsGlobalRdpAlgorithm) {
+    const auto config = pipeline::load_config(write_config(
+        "global_rdp.json", R"({"data_path": "data.parquet", "algorithms": ["RDP_GLOBAL"]})"));
+    EXPECT_EQ(config.algorithms, std::vector{selection::AlgorithmType::RDP_GLOBAL});
+}
+
 TEST(Config, ReadsTopLevelAndNestedKeys) {
     const auto config = pipeline::load_config(write_config("overrides.json", R"({
         "data_path": "data.parquet",

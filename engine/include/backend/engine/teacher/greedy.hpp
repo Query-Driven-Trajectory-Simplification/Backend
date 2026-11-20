@@ -10,7 +10,8 @@
 namespace teacher {
 
 // BKH's workload-driven selector: from the endpoints and a seed, repeatedly keep the point that
-// raises i's range and where-at terms most, then take the rest from fill, skipping kept points
+// raises range F1 (other trajectories original) and i's where-at term most, then take the rest
+// from fill, skipping kept points
 class Greedy {
   public:
     Greedy(const Objective &objective, std::size_t i);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 
 #include <cstddef>
@@ -14,5 +15,10 @@ std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
 // Endpoints first, then points in importance order. Sorting the first b entries
 // reproduces simplify(trajectory, b), for 2 <= b <= min(limit, size).
 std::vector<std::size_t> sequence(const core::TrajectoryView &trajectory, std::size_t limit);
+
+// Database-wide top-down PED (RDP_GLOBAL / TD(W, PED)). Reserve every endpoint, then split
+// the segment with the largest perpendicular error anywhere in the database until total_budget.
+// Rejects budgets below the endpoint count or above the original point count.
+core::Simplification simplify_database(const core::TrajectoryDb &db, std::size_t total_budget);
 
 } // namespace selection::rdp

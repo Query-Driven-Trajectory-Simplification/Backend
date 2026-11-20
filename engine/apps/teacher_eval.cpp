@@ -17,6 +17,7 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/route_clustering.hpp"
+#include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 #include "backend/engine/teacher/teacher.hpp"
@@ -256,6 +257,8 @@ std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
                 db, allocation::AllocatorType::SizeProportional, budget, alpha);
         };
         const auto equal = geometric(0.0);
+        arms.push_back(
+            {"RDP_GLOBAL", share, core::to_kept(selection::rdp::simplify_database(db, budget))});
         arms.push_back({"RDP_a0", share, select(db, AlgorithmType::RDP, equal)});
         arms.push_back({"RDP_a025", share, select(db, AlgorithmType::RDP, geometric(kRdpAlpha))});
         arms.push_back({"SED_a0", share, select(db, AlgorithmType::SED, equal)});

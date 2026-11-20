@@ -73,12 +73,12 @@ struct JoinLink {
 
 // J_T: weighted mean of normalised kNN, range, where-at and join on the teacher's workloads,
 // (metric - floor) / (1 - floor) with floor = endpoints only, like J4.
-//   range     recall: some kept point still inside each box i is in
+//   range     macro F1 over nonempty reference boxes, like J4
 //   where-at  average-hit ramp over i's probes
 //   join      macro F1 over candidate pairs per join term (threshold, held-out form), each
 //             normalised by its own floor, then averaged: J4's join grid mean
-// Range, where-at and the per-trajectory kNN add up over trajectories; join and ranking kNN do
-// not, and are tracked under one-at-a-time changes by JoinState and KnnState
+// Where-at and the per-trajectory kNN add up over trajectories. Range, join and ranking kNN
+// are tracked under one-at-a-time changes by RangeState, JoinState and KnnState
 class Objective {
   public:
     enum Term : std::size_t { Knn, Range, WhereAt, Join, TermCount };
@@ -92,11 +92,13 @@ class Objective {
     double separable(std::size_t i, std::span<const std::size_t> kept) const;
     double separable(std::size_t i, const core::TrajectoryView &candidate) const;
 
-    // Approximate score of i alone: separable plus i's join F1 against fixed partners (empty =
-    // original; ignored when held out). Exact above beat, otherwise some value below beat
+    // Approximate score of i alone: separable, marginal range F1, and i's join F1 against fixed
+    // partners (empty = original; the join ignores partners when held out). Exact above beat,
+    // otherwise some value below beat
     double independent_value(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners,
-                             double beat = -std::numeric_limits<double>::infinity()) const;
+                             double beat = -std::numeric_limits<double>::infinity(),
+                             std::span<const double> range_weights = {}) const;
     // independent_value with every kNN check a hit
     double independent_bound(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners) const;
@@ -114,7 +116,8 @@ class Objective {
         double join = 0.0;
     };
     IndependentScore prepare_independent(std::size_t i, const core::TrajectoryView &candidate,
-                                         std::span<const core::TrajectoryView> partners) const;
+                                         std::span<const core::TrajectoryView> partners,
+                                         std::span<const double> range_weights = {}) const;
     double independent_value(const IndependentScore &score,
                              double beat = -std::numeric_limits<double>::infinity()) const;
 
@@ -142,8 +145,12 @@ class Objective {
 
     struct RangeMembership {
         std::uint32_t box;
-        double weight; // 1 / (|reference| * scored boxes)
+        double weight; // marginal macro F1 of covering i with every other reference covered
     };
+    // Marginal macro F1 of covering i, holding all other trajectories fixed (empty = original).
+    // RangeState::weights reuses its counts when scoring many candidates against one state.
+    std::vector<double> range_weights(std::size_t i,
+                                      std::span<const core::TrajectoryView> partners) const;
     const core::TrajectoryDb &db() const { return m_db; }
     const TeacherWorkloads &workloads() const { return m_workloads; }
     const ObjectiveConfig &config() const { return m_config; }
@@ -193,6 +200,33 @@ class Objective {
     Terms m_floor{};
     Terms m_scale{};                          // weight / (weight sum * (1 - floor))
     std::vector<double> m_endpoint_separable; // scaled separable terms, endpoints only
+};
+
+// Exact range macro F1 under one-at-a-time changes. A subset of original samples cannot add
+// false positives, so each box's F1 is 2 * found / (reference size + found).
+class RangeState {
+  public:
+    // Empty state means original trajectories
+    RangeState(const Objective &objective, std::span<const core::TrajectoryView> state);
+
+    struct Proposal {
+        std::size_t trajectory;
+        double gain = 0.0;         // change in J_T
+        std::vector<char> covered; // in boxes(trajectory) order
+    };
+    Proposal propose(std::size_t i, const core::TrajectoryView &candidate) const;
+    // A proposal is valid until the next apply()
+    void apply(const Proposal &proposal);
+    double metric() const;
+    std::vector<double> weights(std::size_t i) const;
+
+  private:
+    double f1(std::size_t box, std::size_t found) const;
+    const Objective &m_objective;
+    std::vector<std::size_t> m_found;
+    std::vector<std::vector<char>> m_covered;
+    std::size_t m_scored = 0;
+    double m_sum = 0.0;
 };
 
 // The exact join metric under one-at-a-time changes; changing i only rescores i's pairs

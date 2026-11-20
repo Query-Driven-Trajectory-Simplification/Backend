@@ -5,6 +5,7 @@
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/query/frechet_helper.hpp"
 #include "backend/engine/query/knn.hpp"
+#include "backend/engine/query/range_query.hpp"
 
 #include <algorithm>
 #include <array>
@@ -59,10 +60,15 @@ std::vector<core::TrajectoryView> PreparedTrajectories::views() const {
 
 namespace {
 
-bool inside(const query::RangeBox &box, const core::TrajectoryView &trajectory, std::size_t p) {
-    return trajectory.t[p] >= box.t_min && trajectory.t[p] <= box.t_max &&
-           trajectory.x[p] >= box.x_min && trajectory.x[p] <= box.x_max &&
-           trajectory.y[p] >= box.y_min && trajectory.y[p] <= box.y_max;
+double range_f1(std::size_t found, std::size_t expected) {
+    return 2.0 * static_cast<double>(found) / static_cast<double>(expected + found);
+}
+
+double range_marginal(std::size_t others, std::size_t expected, std::size_t scored) {
+    // F1(others + 1) - F1(others), avoiding subtraction of nearly equal values
+    const double denominator = static_cast<double>(expected + others);
+    return 2.0 * static_cast<double>(expected) /
+           (denominator * (denominator + 1.0) * static_cast<double>(scored));
 }
 
 constexpr std::size_t kMaxJoinTerms = 8;
@@ -128,9 +134,8 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     for (std::size_t b = 0; b < workloads.range.queries.size(); ++b) {
         const auto &ref = workloads.range.queries[b].reference;
         for (const auto i : ref)
-            m_range[i].push_back(
-                {static_cast<std::uint32_t>(b),
-                 1.0 / (static_cast<double>(ref.size()) * static_cast<double>(scored))});
+            m_range[i].push_back({static_cast<std::uint32_t>(b),
+                                  range_marginal(ref.size() - 1, ref.size(), scored)});
     }
 
     // Where-at: probes per trajectory
@@ -199,7 +204,8 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
         if (m_with_truth[k] == 0)
             continue;
         if (m_join_floor[k] >= 1.0)
-            throw std::runtime_error("objective: a join term is already perfect with endpoints only");
+            throw std::runtime_error(
+                "objective: a join term is already perfect with endpoints only");
         m_join_weight[k] = 1.0 / (static_cast<double>(active) * (1.0 - m_join_floor[k]));
     }
     m_floor = metrics(endpoints);
@@ -212,7 +218,7 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     core::parallel_for(n, [&](std::size_t i) {
         const auto endpoint_terms = raw_separable(
             i, PreparedTrajectory(db.trajectory(i), endpoints[i]).view(), !config.ranking_knn);
-        for (const auto m : {Knn, Range, WhereAt})
+        for (const auto m : {Knn, WhereAt})
             m_endpoint_separable[i] += m_scale[m] * endpoint_terms[m];
     });
 }
@@ -237,15 +243,6 @@ Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryV
                 terms[Knn] += m_knn_weight;
     }
 
-    for (const auto &[b, weight] : m_range[i]) {
-        const auto &box = m_workloads.range.queries[b].box;
-        for (std::size_t k = 0; k < candidate.size(); ++k)
-            if (inside(box, candidate, k)) {
-                terms[Range] += weight;
-                break;
-            }
-    }
-
     if (!m_probes[i].empty()) {
         double sum = 0;
         for (const auto k : m_probes[i]) {
@@ -267,24 +264,52 @@ double Objective::separable(std::size_t i, std::span<const std::size_t> kept) co
 
 double Objective::separable(std::size_t i, const core::TrajectoryView &candidate) const {
     const auto t = raw_separable(i, candidate, !m_config.ranking_knn);
-    return m_scale[Knn] * t[Knn] + m_scale[Range] * t[Range] + m_scale[WhereAt] * t[WhereAt] -
-           m_endpoint_separable[i];
+    return m_scale[Knn] * t[Knn] + m_scale[WhereAt] * t[WhereAt] - m_endpoint_separable[i];
+}
+
+std::vector<double> Objective::range_weights(std::size_t i,
+                                             std::span<const core::TrajectoryView> partners) const {
+    if (m_range[i].empty())
+        return {};
+    const auto scored = std::ranges::count_if(m_workloads.range.queries,
+                                              [](const auto &q) { return !q.reference.empty(); });
+    std::vector<double> weights;
+    weights.reserve(m_range[i].size());
+    for (const auto &membership : m_range[i]) {
+        const auto &q = m_workloads.range.queries[membership.box];
+        std::size_t others = 0;
+        for (const auto j : q.reference)
+            if (j != i && (partners.empty() || query::intersects(partners[j], q.box)))
+                ++others;
+        weights.push_back(range_marginal(others, q.reference.size(), scored));
+    }
+    return weights;
 }
 
 double Objective::independent_value(std::size_t i, const core::TrajectoryView &candidate,
-                                    std::span<const core::TrajectoryView> partners,
-                                    double beat) const {
-    return independent_value(prepare_independent(i, candidate, partners), beat);
+                                    std::span<const core::TrajectoryView> partners, double beat,
+                                    std::span<const double> range_weights) const {
+    return independent_value(prepare_independent(i, candidate, partners, range_weights), beat);
 }
 
 Objective::IndependentScore
 Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candidate,
-                               std::span<const core::TrajectoryView> partners) const {
+                               std::span<const core::TrajectoryView> partners,
+                               std::span<const double> range_weights) const {
     IndependentScore score;
     score.trajectory = i;
     score.candidate = candidate;
     score.partners = partners;
     score.terms = raw_separable(i, candidate, false);
+    const auto owned_weights =
+        range_weights.empty() ? this->range_weights(i, partners) : std::vector<double>{};
+    if (range_weights.empty())
+        range_weights = owned_weights;
+    if (range_weights.size() != m_range[i].size())
+        throw std::invalid_argument("objective: one range weight per membership needed");
+    for (std::size_t k = 0; k < m_range[i].size(); ++k)
+        if (query::intersects(candidate, m_workloads.range.queries[m_range[i][k].box].box))
+            score.terms[Range] += range_weights[k];
     std::array<std::size_t, kMaxJoinTerms> hits{}, found{};
     for (const auto &link : m_links[i]) {
         // Held out: the partner is the original query and i the database side
@@ -309,7 +334,7 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
 }
 
 double Objective::independent_sum(const IndependentScore &score, double knn) const {
-    // Same sums in the same order as separable, so the value is identical to the last bit
+    // Range is i's marginal F1 against fixed partners; the loop tracks the actual joint F1
     return m_scale[Knn] * knn + m_scale[Range] * score.terms[Range] +
            m_scale[WhereAt] * score.terms[WhereAt] - m_endpoint_separable[score.trajectory] +
            score.join;
@@ -429,8 +454,9 @@ Objective::Terms Objective::metrics(const KeptSets &kept) const {
     });
     Terms total{};
     for (const auto &terms : per)
-        for (const auto m : {Knn, Range, WhereAt})
+        for (const auto m : {Knn, WhereAt})
             total[m] += terms[m];
+    total[Range] = RangeState(*this, views).metric();
     total[Join] = join_metric(views);
     if (m_config.ranking_knn)
         total[Knn] = knn_recall(core::materialize(m_db, kept));
@@ -462,6 +488,83 @@ double Objective::total(const KeptSets &kept) const {
     for (std::size_t k = 0; k < TermCount; ++k)
         sum += m_scale[k] * (values[k] - m_floor[k]);
     return sum;
+}
+
+RangeState::RangeState(const Objective &objective, std::span<const core::TrajectoryView> state)
+    : m_objective(objective), m_found(objective.workloads().range.queries.size(), 0),
+      m_covered(objective.db().size()) {
+    if (!state.empty() && state.size() != objective.db().size())
+        throw std::invalid_argument("range state: one view per trajectory needed");
+    core::parallel_for(objective.db().size(), [&](std::size_t i) {
+        const auto trajectory = state.empty() ? objective.db().trajectory(i) : state[i];
+        m_covered[i].reserve(objective.boxes(i).size());
+        for (const auto &membership : objective.boxes(i)) {
+            const auto &q = objective.workloads().range.queries[membership.box];
+            const bool covered = state.empty() || query::intersects(trajectory, q.box);
+            m_covered[i].push_back(covered);
+        }
+    });
+    for (std::size_t i = 0; i < objective.db().size(); ++i) {
+        const auto memberships = objective.boxes(i);
+        for (std::size_t k = 0; k < memberships.size(); ++k)
+            m_found[memberships[k].box] += m_covered[i][k];
+    }
+    for (std::size_t b = 0; b < m_found.size(); ++b)
+        if (!objective.workloads().range.queries[b].reference.empty()) {
+            ++m_scored;
+            m_sum += f1(b, m_found[b]);
+        }
+}
+
+double RangeState::f1(std::size_t box, std::size_t found) const {
+    return range_f1(found, m_objective.workloads().range.queries[box].reference.size());
+}
+
+RangeState::Proposal RangeState::propose(std::size_t i,
+                                         const core::TrajectoryView &candidate) const {
+    Proposal proposal{i, 0.0, {}};
+    const auto memberships = m_objective.boxes(i);
+    proposal.covered.reserve(memberships.size());
+    double change = 0.0;
+    for (std::size_t k = 0; k < memberships.size(); ++k) {
+        const auto b = memberships[k].box;
+        const bool covered =
+            query::intersects(candidate, m_objective.workloads().range.queries[b].box);
+        proposal.covered.push_back(covered);
+        const auto next = m_found[b] - m_covered[i][k] + covered;
+        change += f1(b, next) - f1(b, m_found[b]);
+    }
+    if (m_scored)
+        proposal.gain =
+            m_objective.scale(Objective::Range) * change / static_cast<double>(m_scored);
+    return proposal;
+}
+
+void RangeState::apply(const Proposal &proposal) {
+    const auto memberships = m_objective.boxes(proposal.trajectory);
+    auto &covered = m_covered[proposal.trajectory];
+    for (std::size_t k = 0; k < memberships.size(); ++k) {
+        const auto b = memberships[k].box;
+        const auto next = m_found[b] - covered[k] + proposal.covered[k];
+        m_sum += f1(b, next) - f1(b, m_found[b]);
+        m_found[b] = next;
+        covered[k] = proposal.covered[k];
+    }
+}
+
+double RangeState::metric() const { return m_scored ? m_sum / static_cast<double>(m_scored) : 0.0; }
+
+std::vector<double> RangeState::weights(std::size_t i) const {
+    std::vector<double> weights;
+    const auto memberships = m_objective.boxes(i);
+    weights.reserve(memberships.size());
+    for (std::size_t k = 0; k < memberships.size(); ++k) {
+        const auto b = memberships[k].box;
+        weights.push_back(range_marginal(m_found[b] - m_covered[i][k],
+                                         m_objective.workloads().range.queries[b].reference.size(),
+                                         m_scored));
+    }
+    return weights;
 }
 
 JoinState::JoinState(const Objective &objective, std::span<const core::TrajectoryView> state)
@@ -511,9 +614,7 @@ double JoinState::f1(std::size_t t, std::size_t hits, std::size_t found) const {
     return f1_of(hits, found, m_objective.truth(t));
 }
 
-double JoinState::metric() const {
-    return mean_f1(m_objective, m_sum, m_counted);
-}
+double JoinState::metric() const { return mean_f1(m_objective, m_sum, m_counted); }
 
 JoinState::Proposal JoinState::propose(std::size_t i, const core::TrajectoryView &candidate,
                                        std::span<const core::TrajectoryView> state) const {
@@ -560,8 +661,8 @@ JoinState::Proposal JoinState::propose(std::size_t i, const core::TrajectoryView
         }
     }
     const auto terms = m_objective.join_terms();
-    const double after = mean_f1(m_objective, std::span(sum).first(terms),
-                                 std::span(n_counted).first(terms));
+    const double after =
+        mean_f1(m_objective, std::span(sum).first(terms), std::span(n_counted).first(terms));
     proposal.gain = m_objective.scale(Objective::Join) * (after - metric());
     return proposal;
 }

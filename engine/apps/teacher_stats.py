@@ -26,7 +26,7 @@ STEPS = [("budget search", "RDP_a0", "BUDGET_RDP"),
          ("loop", "BUDGET_CHOICE", "BUDGET_LOOP"),
          ("looking once", "BUDGET_CHOICE", "BUDGET_LOOP_NO_UPDATE"),
          ("reacting", "BUDGET_LOOP_NO_UPDATE", "BUDGET_LOOP")]
-CHEAP = ["RDP_a0", "RDP_a025", "PARTNER_l0.5", "PARTNER_l1"]
+CHEAP = ["RDP_a0", "RDP_a025", "RDP_GLOBAL", "SED_a0", "UNI_a0", "PARTNER_l0.5", "PARTNER_l1"]
 
 
 def num(v):

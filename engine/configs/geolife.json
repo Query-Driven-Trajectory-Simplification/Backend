@@ -9,7 +9,7 @@
         "type": "Random",
         "query_percentage": 0.15
     },
-    "algorithms": ["RDP", "SED", "UNIFORM"],
+    "algorithms": ["RDP", "SED", "UNIFORM", "RDP_GLOBAL"],
     "knn": {
         "k": 10,
         "query_count": 0

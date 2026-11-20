@@ -2,6 +2,7 @@
 
 #include "backend/engine/core/projection.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
+#include "backend/engine/evaluator/range.hpp"
 #include "backend/engine/teacher/greedy.hpp"
 #include "backend/engine/teacher/objective.hpp"
 #include "backend/engine/teacher/teacher.hpp"
@@ -105,9 +106,8 @@ void expect_same_cached_workloads(const teacher::TeacherWorkloads &a,
         EXPECT_DOUBLE_EQ(a.knn[i].cutoff, b.knn[i].cutoff);
     }
     auto same_pairs = [](const auto &x, const auto &y) {
-        return std::ranges::equal(x, y, [](const auto &p, const auto &q) {
-            return p.i == q.i && p.j == q.j;
-        });
+        return std::ranges::equal(
+            x, y, [](const auto &p, const auto &q) { return p.i == q.i && p.j == q.j; });
     };
     EXPECT_TRUE(same_pairs(a.positives, b.positives));
     EXPECT_TRUE(same_pairs(a.negatives, b.negatives));
@@ -230,6 +230,7 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
         const teacher::PreparedTrajectories prepared_floor(db, state);
         auto views = prepared_floor.views();
         teacher::JoinState join(objective, views);
+        teacher::RangeState range(objective, views);
         const auto full = every_point(db);
         const teacher::PreparedTrajectories prepared_full(db, full);
         const auto full_views = prepared_full.views();
@@ -242,6 +243,7 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
             const auto next_view = state[i].size() == 2 ? full_views[i] : floor_views[i];
             const double old_metric = join.metric();
             const auto proposal = join.propose(i, next_view, views);
+            const auto range_proposal = range.propose(i, next_view);
             // Proposing must not change the state or this proposal
             const auto stay = join.propose(i, views[i], views);
             EXPECT_DOUBLE_EQ(stay.gain, 0.0);
@@ -252,8 +254,105 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
             state[i] = next;
             views[i] = next_view;
             join.apply(proposal);
+            range.apply(range_proposal);
             EXPECT_NEAR(join.metric(), objective.metrics(state)[teacher::Objective::Join], 1e-12);
-            EXPECT_NEAR(objective.total(state) - before, predicted + separable, 1e-9);
+            EXPECT_NEAR(objective.total(state) - before,
+                        predicted + range_proposal.gain + separable, 1e-9);
+        }
+    }
+}
+
+TEST_F(TeacherTest, RangeObjectiveUsesMacroF1EvenWhenRecallPrefersAnotherSolution) {
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> ids;
+    std::vector<std::int64_t> times;
+    std::vector<double> lat, lon;
+    for (std::size_t i = 0; i < 8; ++i) {
+        ids.push_back(static_cast<std::int32_t>(i));
+        for (std::size_t k = 0; k < 3; ++k) {
+            const auto point =
+                core::to_lat_lon(k == 1 ? (i < 4 ? -100.0 : 100.0) : 0.0, k == 1 ? 0.0 : -100.0);
+            times.push_back(static_cast<std::int64_t>(k));
+            lat.push_back(point.lat);
+            lon.push_back(point.lon);
+        }
+        offsets.push_back(times.size());
+    }
+    const core::TrajectoryDb db(offsets, ids, times, lat, lon);
+    auto config = small_config();
+    config.k = 1;
+    config.join_eps_m = 50.0;
+    auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    workloads.range.queries = {
+        {{-101, -99, -1, 1, 1, 1}, {0, 1, 2, 3}},
+        {{99, 101, -1, 1, 1, 1}, {4, 5, 6, 7}},
+        {{999, 1001, -1, 1, 1, 1}, {}}}; // Empty references do not enter the macro mean
+    const teacher::Objective objective(db, workloads, {.term_weights = {0, 1, 0, 0}});
+    auto concentrated = endpoints(db), balanced = endpoints(db);
+    for (const auto i : {0u, 1u, 2u, 3u})
+        concentrated[i] = {0, 1, 2};
+    for (const auto i : {0u, 1u, 4u})
+        balanced[i] = {0, 1, 2};
+    const auto a =
+        evaluator::evaluate_range(core::materialize(db, concentrated), workloads.range.queries);
+    const auto b =
+        evaluator::evaluate_range(core::materialize(db, balanced), workloads.range.queries);
+    EXPECT_GT(a.recall, b.recall);
+    EXPECT_LT(a.f1, b.f1);
+    EXPECT_NEAR(objective.total(concentrated), a.f1, 1e-12);
+    EXPECT_NEAR(objective.total(balanced), b.f1, 1e-12);
+}
+
+TEST_F(TeacherTest, RangeStateAndIndependentMarginalsMatchTheEvaluator) {
+    const auto db = random_db(2, 24, 20);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    const teacher::Objective objective(db, workloads, {.term_weights = {0, 1, 0, 0}});
+    auto state = endpoints(db);
+    const auto floor = state, full = every_point(db);
+    const teacher::PreparedTrajectories prepared_floor(db, floor), prepared_full(db, full);
+    const auto floor_views = prepared_floor.views(), full_views = prepared_full.views();
+    auto views = floor_views;
+    teacher::RangeState range(objective, views);
+    std::mt19937_64 rng(81);
+    for (int step = 0; step < 60; ++step) {
+        const auto i = rng() % db.size();
+        const bool grow = state[i].size() == 2;
+        const auto candidate = grow ? full_views[i] : floor_views[i];
+        const auto before =
+            evaluator::evaluate_range(core::materialize(db, state), workloads.range.queries).f1;
+        const auto proposal = range.propose(i, candidate);
+        EXPECT_DOUBLE_EQ(range.propose(i, views[i]).gain, 0.0);
+        EXPECT_NEAR(range.metric(), before, 1e-12); // propose does not mutate
+
+        // Independent range scores are the gain over i missing every box, with partners fixed.
+        auto without_i = state;
+        without_i[i].clear();
+        const double without =
+            evaluator::evaluate_range(core::materialize(db, without_i), workloads.range.queries).f1;
+        const auto weights = range.weights(i);
+        EXPECT_EQ(weights.size(), objective.boxes(i).size());
+        const double independent = objective.independent_value(
+            i, candidate, views, -std::numeric_limits<double>::infinity(), weights);
+        state[i] = grow ? full[i] : floor[i];
+        views[i] = candidate;
+        range.apply(proposal);
+        const double after =
+            evaluator::evaluate_range(core::materialize(db, state), workloads.range.queries).f1;
+        EXPECT_NEAR(range.metric(), after, 1e-12);
+        EXPECT_NEAR(objective.metrics(state)[teacher::Objective::Range], after, 1e-12);
+        EXPECT_NEAR(proposal.gain, objective.scale(teacher::Objective::Range) * (after - before),
+                    1e-12);
+        EXPECT_NEAR(independent, objective.scale(teacher::Objective::Range) * (after - without),
+                    1e-12);
+    }
+    const teacher::RangeState original(objective, {});
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const auto weights = original.weights(i);
+        const auto fallback = objective.range_weights(i, {});
+        ASSERT_EQ(weights.size(), fallback.size());
+        for (std::size_t k = 0; k < weights.size(); ++k) {
+            EXPECT_DOUBLE_EQ(weights[k], fallback[k]);
+            EXPECT_DOUBLE_EQ(weights[k], objective.boxes(i)[k].weight);
         }
     }
 }
@@ -282,6 +381,7 @@ TEST_F(TeacherTest, SeveralJoinTermsAreTrackedExactly) {
         const auto floor_views = prepared_floor.views(), full_views = prepared_full.views();
         auto views = floor_views;
         teacher::JoinState join(objective, views);
+        teacher::RangeState range(objective, views);
         std::mt19937_64 rng(4);
         for (int step = 0; step < 40; ++step) {
             const std::size_t i = rng() % db.size();
@@ -290,13 +390,16 @@ TEST_F(TeacherTest, SeveralJoinTermsAreTrackedExactly) {
             const auto next_view = grow ? full_views[i] : floor_views[i];
             const double before = objective.total(state);
             const auto proposal = join.propose(i, next_view, views);
+            const auto range_proposal = range.propose(i, next_view);
             const double separable =
                 objective.separable(i, next) - objective.separable(i, state[i]);
             state[i] = next;
             views[i] = next_view;
             join.apply(proposal);
+            range.apply(range_proposal);
             EXPECT_NEAR(join.metric(), objective.metrics(state)[teacher::Objective::Join], 1e-12);
-            EXPECT_NEAR(objective.total(state) - before, proposal.gain + separable, 1e-9);
+            EXPECT_NEAR(objective.total(state) - before,
+                        proposal.gain + range_proposal.gain + separable, 1e-9);
         }
     }
     // Without extra terms the workloads' extra joins are the only difference
@@ -379,6 +482,7 @@ TEST_F(TeacherTest, RankingKnnIsTrackedExactly) {
     const auto floor_views = prepared_floor.views(), full_views = prepared_full.views();
     auto views = floor_views;
     teacher::JoinState join(objective, views);
+    teacher::RangeState range(objective, views);
     std::mt19937_64 rng(5);
     for (int step = 0; step < 40; ++step) {
         const std::size_t i = rng() % db.size();
@@ -390,13 +494,16 @@ TEST_F(TeacherTest, RankingKnnIsTrackedExactly) {
         const double knn_gain = knn.propose(i, distances);
         EXPECT_DOUBLE_EQ(knn.propose(i, knn.distances(i, views[i])), 0.0);
         const auto proposal = join.propose(i, next_view, views);
+        const auto range_proposal = range.propose(i, next_view);
         const double separable = objective.separable(i, next) - objective.separable(i, state[i]);
         state[i] = next;
         views[i] = next_view;
         join.apply(proposal);
+        range.apply(range_proposal);
         knn.apply(i, distances);
         EXPECT_NEAR(knn.metric(), objective.metrics(state)[teacher::Objective::Knn], 1e-12);
-        EXPECT_NEAR(objective.total(state) - before, knn_gain + proposal.gain + separable, 1e-9);
+        EXPECT_NEAR(objective.total(state) - before,
+                    knn_gain + proposal.gain + range_proposal.gain + separable, 1e-9);
     }
 }
 
@@ -421,6 +528,7 @@ TEST_F(TeacherTest, CompressedKnnQueriesAreTrackedExactly) {
     const auto floor_views = prepared_floor.views(), full_views = prepared_full.views();
     auto views = floor_views;
     teacher::JoinState join(objective, views);
+    teacher::RangeState range(objective, views);
     std::mt19937_64 rng(5);
     for (int step = 0; step < 40; ++step) {
         const std::size_t i = rng() % db.size();
@@ -432,13 +540,16 @@ TEST_F(TeacherTest, CompressedKnnQueriesAreTrackedExactly) {
         const double knn_gain = knn.propose(move);
         EXPECT_DOUBLE_EQ(knn.propose(knn.move(i, views[i], views)), 0.0);
         const auto proposal = join.propose(i, next_view, views);
+        const auto range_proposal = range.propose(i, next_view);
         const double separable = objective.separable(i, next) - objective.separable(i, state[i]);
         state[i] = next;
         views[i] = next_view;
         join.apply(proposal);
+        range.apply(range_proposal);
         knn.apply(move);
         EXPECT_NEAR(knn.metric(), objective.metrics(state)[teacher::Objective::Knn], 1e-12);
-        EXPECT_NEAR(objective.total(state) - before, knn_gain + proposal.gain + separable, 1e-9);
+        EXPECT_NEAR(objective.total(state) - before,
+                    knn_gain + proposal.gain + range_proposal.gain + separable, 1e-9);
     }
 }
 
@@ -600,22 +711,31 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                                               ? 2.0 * static_cast<double>(hits) /
                                                     static_cast<double>(found + objective.truth(i))
                                               : 0.0;
-                        const double join =
-                            with_truth ? objective.scale(teacher::Objective::Join) * f1 /
-                                             (static_cast<double>(with_truth) *
-                                              (1.0 - objective.join_floor(0)))
-                                       : 0.0;
-                        const double expected = objective.separable(i, views[i]) + join;
+                        const double join = with_truth
+                                                ? objective.scale(teacher::Objective::Join) * f1 /
+                                                      (static_cast<double>(with_truth) *
+                                                       (1.0 - objective.join_floor(0)))
+                                                : 0.0;
+                        double range_gain = 0.0;
+                        const auto weights = objective.range_weights(i, partners);
+                        const auto boxes = objective.boxes(i);
+                        for (std::size_t b = 0; b < boxes.size(); ++b)
+                            if (query::intersects(views[i],
+                                                  workloads.range.queries[boxes[b].box].box))
+                                range_gain += weights[b];
+                        const double expected =
+                            objective.separable(i, views[i]) +
+                            objective.scale(teacher::Objective::Range) * range_gain + join;
                         const auto score = objective.prepare_independent(i, views[i], partners);
                         EXPECT_GE(score.bound + 1e-12, expected);
-                        EXPECT_DOUBLE_EQ(objective.independent_value(score, expected - 1e-6),
-                                         expected);
+                        EXPECT_NEAR(objective.independent_value(score, expected - 1e-6), expected,
+                                    1e-12);
                         EXPECT_LE(objective.independent_value(
                                       score, std::numeric_limits<double>::infinity()),
                                   expected + 1e-12);
-                        EXPECT_DOUBLE_EQ(objective.independent_value(score), expected);
-                        EXPECT_DOUBLE_EQ(objective.independent_value(i, views[i], partners),
-                                         expected);
+                        EXPECT_NEAR(objective.independent_value(score), expected, 1e-12);
+                        EXPECT_NEAR(objective.independent_value(i, views[i], partners), expected,
+                                    1e-12);
                     }
                 }
             }
@@ -634,8 +754,8 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
         const auto result = model.run(budget, arms);
 
         ASSERT_EQ(result.size(), arms.size());
-        double equal_choice_jt = 0, rdp_partners_jt = 0, equal_loop_jt = 0, budget_choice_jt = 0,
-               budget_loop_jt = 0, reallocate_jt = 0;
+        double rdp_partners_jt = 0, equal_loop_jt = 0, budget_choice_jt = 0, budget_loop_jt = 0,
+               reallocate_jt = 0;
         for (const auto &arm : result) {
             SCOPED_TRACE(arm.name);
             ASSERT_EQ(arm.simplification.size(), db.size());
@@ -648,8 +768,6 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
                 EXPECT_TRUE(std::ranges::is_sorted(kept));
                 EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
             }
-            if (arm.name == "EQUAL_CHOICE")
-                equal_choice_jt = arm.objective;
             if (arm.name == "EQUAL_CHOICE_RDP_PARTNERS")
                 rdp_partners_jt = arm.objective;
             if (arm.name == "EQUAL_LOOP")
@@ -664,10 +782,6 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
         EXPECT_GE(equal_loop_jt, rdp_partners_jt - 1e-12);
         EXPECT_GE(budget_loop_jt, budget_choice_jt - 1e-12);
         EXPECT_GE(reallocate_jt, budget_loop_jt - 1e-12);
-        // Held out, the partners are queries and stay original, so the two choices are the same
-        if (mode == query::JoinMode::HeldOut) {
-            EXPECT_DOUBLE_EQ(rdp_partners_jt, equal_choice_jt);
-        }
     }
 }
 
