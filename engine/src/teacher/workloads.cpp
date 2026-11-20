@@ -242,4 +242,18 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
     return workloads;
 }
 
+query::KnnWorkload self_knn_workload(const TeacherWorkloads &workloads, double p) {
+    query::KnnWorkload result{.queries = core::TrajectoryDb({0}, {}, {}, {}, {}),
+                              .entries = {},
+                              .k = workloads.k,
+                              .p = p,
+                              .frechet = workloads.frechet,
+                              .self = true};
+    for (std::size_t e = 0; e < workloads.knn.size(); ++e)
+        if (workloads.knn[e].valid)
+            result.entries.push_back({e, std::vector<std::size_t>(workloads.knn[e].top.begin(),
+                                                                  workloads.knn[e].top.end())});
+    return result;
+}
+
 } // namespace teacher

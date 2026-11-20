@@ -257,6 +257,17 @@ TEST(Config, TeacherIsOffByDefault) {
     const auto self = pipeline::load_config(
         write_config("teacher_self.json", R"({"data_path": "d", "join": {"mode": "Self"}})"));
     EXPECT_EQ(pipeline::teacher_objective_config(self).join_mode, query::JoinMode::Self);
+    // The kNN query is compressed in the in-database setting only, unless set
+    EXPECT_FALSE(pipeline::teacher_objective_config(config).compressed_knn_query);
+    EXPECT_TRUE(pipeline::teacher_objective_config(self).compressed_knn_query);
+    const auto original = pipeline::load_config(write_config(
+        "teacher_original.json",
+        R"({"data_path": "d", "join": {"mode": "Self"}, "teacher": {"knn_query": "Original"}})"));
+    EXPECT_FALSE(pipeline::teacher_objective_config(original).compressed_knn_query);
+    EXPECT_THROW(pipeline::load_config(
+                     write_config("teacher_bad_query.json",
+                                  R"({"data_path": "d", "teacher": {"knn_query": "Sometimes"}})")),
+                 std::invalid_argument);
 }
 
 TEST(Config, ReadsTheTeacherSection) {

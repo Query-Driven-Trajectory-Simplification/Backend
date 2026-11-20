@@ -54,6 +54,9 @@ struct TeacherConfig {
     std::vector<double> extra_join_eps_m;
     bool held_out_term = false;
     bool ranking_knn = true;
+    // ObjectiveConfig::compressed_knn_query. Unset: compressed with a Self join, the in-database
+    // setting
+    std::optional<bool> compressed_knn_query;
     TermWeights term_weights{1.0, 1.0, 1.0, 1.0};
 };
 

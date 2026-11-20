@@ -1,5 +1,6 @@
 #include "backend/engine/evaluator/combined.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -72,10 +73,18 @@ NormalizedScores normalize_scores(const Scoretable &scores, const Scoretable &fl
         result.clustering_score, scores.clustering_grid, floor.clustering_grid,
         [](const RouteClusteringScores &clustering) { return clustering.score; }, "clustering");
     result.self_join = normalize(scores.self_join.f1, floor.self_join.f1);
+    result.self_knn = normalize(scores.self_knn.recall_at_k, floor.self_knn.recall_at_k);
+    result.self_join_mean = grid_mean(
+        result.self_join, scores.self_join_grid, floor.self_join_grid,
+        [](const JoinScores &join) { return join.f1; }, "self join");
 
     // Clustering and the self join stay out (see combined.hpp)
     result.combined =
         mean_ignoring_nan(std::array{result.knn, result.range, result.where_at, result.join});
+    const std::array internal{result.self_knn, result.range, result.where_at,
+                              result.self_join_mean};
+    if (std::ranges::none_of(internal, [](double v) { return std::isnan(v); }))
+        result.combined_self = mean_ignoring_nan(internal);
     return result;
 }
 

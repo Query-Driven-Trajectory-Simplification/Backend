@@ -121,7 +121,7 @@ JoinEvaluation run_join(const core::TrajectoryDb &compressed, const query::JoinW
     result.micro_recall = expected == 0 ? nan : hits / expected;
     result.micro_f1 = found + expected == 0 ? nan : 2.0 * hits / (found + expected);
 
-    JoinEvaluation evaluation{.scores = result};
+    JoinEvaluation evaluation{.scores = result, .pairs = {}};
     evaluation.pairs.reserve(result.predicted_pairs);
     for (std::size_t i = 0; i < n; ++i) {
         const auto &entry = workload.entries[i];

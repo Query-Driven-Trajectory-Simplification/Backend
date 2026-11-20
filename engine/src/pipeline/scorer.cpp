@@ -23,6 +23,9 @@ void print_scores(const evaluator::Scoretable &scores) {
         std::cout << "  self join F1: " << scores.self_join.f1
                   << ", precision: " << scores.self_join.precision
                   << ", recall: " << scores.self_join.recall << '\n';
+    if (scores.self_knn.query_count != 0)
+        std::cout << "  self knn recall@k: " << scores.self_knn.recall_at_k << " ("
+                  << scores.self_knn.query_count << " database queries)\n";
     if (!std::isnan(scores.clustering.score) || scores.clustering.reference_clusters != 0)
         std::cout << "  route clustering: " << scores.clustering.score << " ("
                   << scores.clustering.predicted_clusters << " clusters, "
@@ -36,7 +39,10 @@ void print_normalized(const evaluator::NormalizedScores &scores) {
         std::cout << ", clustering=" << scores.clustering;
     if (!std::isnan(scores.self_join))
         std::cout << ", self join=" << scores.self_join;
-    std::cout << ", combined J4=" << scores.combined << '\n';
+    std::cout << ", combined J4=" << scores.combined;
+    if (!std::isnan(scores.combined_self))
+        std::cout << ", self knn=" << scores.self_knn << ", J4-self=" << scores.combined_self;
+    std::cout << '\n';
 }
 
 } // namespace

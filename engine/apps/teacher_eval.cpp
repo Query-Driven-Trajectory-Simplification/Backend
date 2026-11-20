@@ -63,6 +63,7 @@ struct Args {
     std::optional<std::vector<double>> train_eps;    // config: teacher.extra_join_eps_m
     std::optional<bool> held_out_term;               // config: teacher.held_out_term
     std::optional<bool> ranking_knn;                 // config: teacher.ranking_knn
+    std::optional<bool> compressed_knn_query;        // config: teacher.knn_query
     std::optional<std::vector<double>> term_weights; // config: teacher.term_weights
     std::vector<double> eval_eps{kEvalEps.begin(), kEvalEps.end()};
     bool knn_check = false;
@@ -118,7 +119,12 @@ Args parse_args(int argc, char **argv) {
             args.ranking_knn = false;
         else if (key == "--held-out-term")
             args.held_out_term = true;
-        else if (key == "--knn-check")
+        else if (key == "--knn-query") {
+            const auto query = value();
+            if (query != "Original" && query != "Compressed")
+                throw std::invalid_argument("--knn-query must be Original or Compressed");
+            args.compressed_knn_query = query == "Compressed";
+        } else if (key == "--knn-check")
             args.knn_check = true;
         else if (key == "--teacher-join") {
             const auto mode = value();
@@ -141,8 +147,8 @@ Args parse_args(int argc, char **argv) {
             throw std::invalid_argument("unknown argument " + key +
                                         " (--config --data --out --cache --seeds --shares --arms "
                                         "--teacher-join --train-eps --held-out-term "
-                                        "--independent-knn --term-weights --eval-eps --knn-check "
-                                        "--no-baselines --seen-pairs-only --no-teacher "
+                                        "--independent-knn --knn-query --term-weights --eval-eps "
+                                        "--knn-check --no-baselines --seen-pairs-only --no-teacher "
                                         "--export-db --external --external-dir)");
     }
     teacher::check_arms(args.arms);
@@ -169,6 +175,8 @@ pipeline::Config effective_config(const Args &args) {
         config.teacher.held_out_term = *args.held_out_term;
     if (args.ranking_knn)
         config.teacher.ranking_knn = *args.ranking_knn;
+    if (args.compressed_knn_query)
+        config.teacher.compressed_knn_query = *args.compressed_knn_query;
     if (args.term_weights)
         std::ranges::copy(*args.term_weights, config.teacher.term_weights.begin());
     config.self_join = true;
@@ -376,10 +384,12 @@ int main(int argc, char **argv) try {
         "where_at_within_100,join_micro_f1,knn_tau,norm_knn,norm_range,norm_where_at,norm_join,"
         "norm_clustering,J4,J_T,join_recall_seen,join_recall_unseen,predicted_clusters,"
         "eval_s,join_mode,self_join_f1,norm_self_join,teacher_join_mode,norm_join_main,"
-        "norm_clustering_main");
+        "norm_clustering_main,self_knn_recall,norm_self_knn,norm_self_join_mean,J4_self,"
+        "teacher_knn_query");
     auto floors =
         open_csv(args.out / "floors.csv",
-                 "seed,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,self_join_f1");
+                 "seed,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,self_join_f1,"
+                 "self_knn_recall");
     auto thresholds =
         open_csv(args.out / "thresholds.csv",
                  "seed,share,arm,join,eps_m,join_f1,norm_join,recall,teacher_threshold");
@@ -466,7 +476,9 @@ int main(int argc, char **argv) try {
         // Held-out data from here on
         start = std::chrono::steady_clock::now();
         const auto pool = core::subset(all, parts.queries);
-        const pipeline::TestWorkloads test_workloads(db, pool, config);
+        const pipeline::TestWorkloads test_workloads(
+            db, pool, config,
+            teacher::self_knn_workload(model.objective().workloads(), config.knn.p));
         // Both joins at other thresholds: does the join gain hold beyond the ones trained on?
         std::vector<query::JoinWorkload> other_joins;
         for (const double eps : args.eval_eps) {
@@ -485,9 +497,10 @@ int main(int argc, char **argv) try {
         const auto &scoring = config.where_at_scoring;
         const auto floor_db = core::materialize(db, core::endpoints_only(db));
         const auto floor = evaluator::Evaluator(db, floor_db, test, scoring).evaluate().scores;
-        floors << std::format("{},{},{},{},{},{},{}\n", seed, floor.knn.recall_at_k, floor.range_f1,
-                              floor.where_at.average_hit, floor.join.f1, floor.clustering.score,
-                              floor.self_join.f1);
+        floors << std::format("{},{},{},{},{},{},{},{}\n", seed, floor.knn.recall_at_k,
+                              floor.range_f1, floor.where_at.average_hit, floor.join.f1,
+                              floor.clustering.score, floor.self_join.f1,
+                              floor.self_knn.recall_at_k);
         std::vector<double> other_floor;
         for (const auto &workload : other_joins)
             other_floor.push_back(evaluator::evaluate_join(floor_db, workload).f1);
@@ -517,7 +530,7 @@ int main(int argc, char **argv) try {
             const auto recall = pair_recall(compressed, pairs, config.join);
             results << std::format(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
-                "{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
                 seed, arm.share, arm.name, allocation::total_budget(db, arm.share),
                 scores.knn.recall_at_k, scores.range_f1, scores.where_at.average_hit,
                 scores.join.f1, scores.clustering.score, scores.where_at.within_radius,
@@ -527,7 +540,9 @@ int main(int argc, char **argv) try {
                 scores.clustering.predicted_clusters, core::seconds_since(start),
                 mode_name(config.join.mode), scores.self_join.f1, normalized.self_join,
                 mode_name(objective.config().join_mode), normalized.join_f1,
-                normalized.clustering_score);
+                normalized.clustering_score, scores.self_knn.recall_at_k, normalized.self_knn,
+                normalized.self_join_mean, normalized.combined_self,
+                objective.config().compressed_knn_query ? "Compressed" : "Original");
 
             for (std::size_t k = 0; k < other_joins.size(); ++k) {
                 const auto &workload = other_joins[k];
@@ -578,9 +593,10 @@ int main(int argc, char **argv) try {
                                            db.trajectory(i).size(), arm.kept[i].size());
             for (auto *out : {&results, &thresholds, &terms, &budgets})
                 out->flush();
-            std::cerr << std::format("seed {} {} {:g}: J4 {:.4f}, join {:.4f}, self join {:.4f}\n",
-                                     seed, arm.name, arm.share, normalized.combined,
-                                     normalized.join, normalized.self_join);
+            std::cerr << std::format(
+                "seed {} {} {:g}: J4 {:.4f}, J4-self {:.4f}, join {:.4f}, self join {:.4f}\n", seed,
+                arm.name, arm.share, normalized.combined, normalized.combined_self, normalized.join,
+                normalized.self_join);
         }
         timings.flush();
         floors.flush();

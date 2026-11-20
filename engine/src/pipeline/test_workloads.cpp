@@ -99,16 +99,33 @@ std::vector<query::RouteClusteringWorkload> make_clustering_grid(const core::Tra
     return grid;
 }
 
+std::vector<query::JoinWorkload> make_self_join_grid(const core::TrajectoryDb &database,
+                                                     const Config &config) {
+    std::vector<query::JoinWorkload> grid;
+    if (!config.self_join || config.join.mode == query::JoinMode::Self)
+        return grid;
+    for (const double eps : config.join_score_eps_m) {
+        grid.push_back(query::generate_self_join(database, eps, config.join.frechet));
+        print_join(grid.back());
+    }
+    return grid;
+}
+
 } // namespace
 
 TestWorkloads::TestWorkloads(const core::TrajectoryDb &database, const core::TrajectoryDb &queries,
-                             const Config &config)
+                             const Config &config, std::optional<query::KnnWorkload> self_knn)
     : knn(make_knn(database, queries, config)), where_at(make_where_at(database, config)),
       range(make_range(database, config)), join(make_join(database, queries, config)),
       join_grid(make_join_grid(database, queries, config)),
       self_join(make_self_join(database, config)),
       clustering(make_clustering(database, self_join ? *self_join : join, config)),
-      clustering_grid(make_clustering_grid(database, config)) {}
+      clustering_grid(make_clustering_grid(database, config)),
+      self_join_grid(make_self_join_grid(database, config)), self_knn(std::move(self_knn)) {
+    if (this->self_knn)
+        std::cout << "self knn: " << this->self_knn->entries.size()
+                  << " database queries, k=" << this->self_knn->k << '\n';
+}
 
 evaluator::Workloads TestWorkloads::view() const {
     const query::JoinWorkload *self = nullptr;
@@ -123,7 +140,11 @@ evaluator::Workloads TestWorkloads::view() const {
             .clustering = clustering ? &*clustering : nullptr,
             .self_join = self,
             .join_grid = join_grid,
-            .clustering_grid = clustering_grid};
+            .clustering_grid = clustering_grid,
+            .self_knn = self_knn ? &*self_knn : nullptr,
+            .self_join_grid = join.mode == query::JoinMode::Self
+                                  ? std::span<const query::JoinWorkload>(join_grid)
+                                  : std::span<const query::JoinWorkload>(self_join_grid)};
 }
 
 } // namespace pipeline

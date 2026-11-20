@@ -101,8 +101,14 @@ KnnEvaluation evaluate_knn(const core::TrajectoryDb &compressed,
     std::vector<double> topk_taus(workload.entries.size());
     core::parallel_for(workload.entries.size(), [&](std::size_t i) {
         const auto &query = workload.entries[i];
-        const auto trajectory = workload.queries.trajectory(query.query_index);
-        const auto simplified = query::knn(compressed, trajectory, workload.k, workload.frechet);
+        const auto trajectory = workload.self ? compressed.trajectory(query.query_index)
+                                              : workload.queries.trajectory(query.query_index);
+        auto simplified = query::knn(compressed, trajectory, workload.k + (workload.self ? 1 : 0),
+                                     workload.frechet);
+        if (workload.self) {
+            std::erase(simplified, query.query_index);
+            simplified.resize(std::min(simplified.size(), workload.k));
+        }
         auto &answer = result.answers[i];
         answer.query_trajectory_id = trajectory.trajectory_id;
         answer.neighbors.reserve(simplified.size());
