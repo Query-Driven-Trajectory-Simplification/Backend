@@ -22,6 +22,14 @@ def load_database(folder):
     return offsets, lat, lon, t
 
 
+def subset(db, picked):
+    offsets = db[0]
+    lengths = np.diff(offsets)[picked]
+    new_offsets = np.concatenate([[0], np.cumsum(lengths)])
+    index = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in picked])
+    return (new_offsets,) + tuple(a[index] for a in db[1:])
+
+
 def save_atomic(torch, obj, path):
     tmp = path.with_suffix(path.suffix + ".tmp")
     torch.save(obj, tmp)
@@ -321,7 +329,8 @@ def train_tbert(torch, db, grid, params, fixed, grid_emb, out, ckpt_path, device
         state["epoch"] += 1
         state["batch"] = 0
         checkpoint()
-        print(f"T-BERT epoch {state['epoch']}/{epochs} mean loss {total / count:.4f}", flush=True)
+        print(f"T-BERT epoch {state['epoch']}/{epochs} mean loss {total / count:.4f} "
+              f"at {time.strftime('%H:%M:%S')}", flush=True)
     save_atomic(torch, model.state_dict(), out)
 
 
@@ -522,6 +531,40 @@ def diffusion_sample(torch, model, diffusion, batch, amplify_len, steps, fixed, 
     return result
 
 
+def chunk_attention(torch, model, threshold=2048, chunk=1024):
+    import torch.nn.functional as F
+    from torch.utils.checkpoint import checkpoint
+
+    def block(q, k, v, bias, p, training):
+        weights = torch.softmax(q @ k.transpose(-2, -1) + bias, dim=-1)
+        return F.dropout(weights, p, training) @ v
+
+    class ChunkedAttention(torch.nn.MultiheadAttention):
+        def forward(self, query, key, value, key_padding_mask=None, need_weights=False, attn_mask=None,
+                    average_attn_weights=True, is_causal=False):
+            if query.size(1) <= threshold or need_weights or attn_mask is not None:
+                return super().forward(query, key, value, key_padding_mask=key_padding_mask,
+                                       need_weights=need_weights, attn_mask=attn_mask,
+                                       average_attn_weights=average_attn_weights, is_causal=is_causal)
+            batch, length, embed = query.shape
+            heads = self.num_heads
+            q, k, v = F.linear(query, self.in_proj_weight, self.in_proj_bias).chunk(3, dim=-1)
+            q, k, v = (x.reshape(batch, length, heads, -1).transpose(1, 2) for x in (q, k, v))
+            q = q * (q.size(-1) ** -0.5)
+            bias = torch.zeros((batch, 1, 1, length), dtype=q.dtype, device=q.device)
+            if key_padding_mask is not None:
+                bias = bias.masked_fill(key_padding_mask.bool()[:, None, None, :], float("-inf"))
+            out = torch.cat([checkpoint(block, q[:, :, i:i + chunk], k, v, bias, self.dropout, self.training,
+                                        use_reentrant=False) for i in range(0, length, chunk)], dim=2)
+            return self.out_proj(out.transpose(1, 2).reshape(batch, length, embed)), None
+
+    torch.backends.mha.set_fastpath_enabled(False)
+    for encoder in (model.traj_embed, model.encoder):
+        encoder.use_nested_tensor = False
+        for layer in encoder.layers:
+            layer.self_attn.__class__ = ChunkedAttention
+
+
 def extend_positions(model, length):
     from DiffTeacher.PositionalEncoding import PositionalEncoding
     old = model.position_embeddings
@@ -556,6 +599,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
     gat = GAT(gat_params).to(device)
     diff_model, diffusion = make_diffusion(params)
     extend_positions(diff_model, max_len + int(0.4 * max_len) + amplify_len + 4)
+    chunk_attention(torch, diff_model)
     diff_model.to(device)
     gat_opt = torch.optim.Adam(gat.parameters(), lr=float(gat_params["lr"]), weight_decay=gat_params["wd"])
     diff_opt = torch.optim.AdamW(diff_model.parameters(), lr=float(diff_params["lr"]),
@@ -624,7 +668,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                 state["epoch"] += 1
                 state["batch"] = 0
                 checkpoint()
-                print(f"round {r + 1}/{rounds} GAT epoch {state['epoch']}/{gat_epochs} done", flush=True)
+                print(f"round {r + 1}/{rounds} GAT epoch {state['epoch']}/{gat_epochs} done at {time.strftime('%H:%M:%S')}", flush=True)
             gat.eval()
             with torch.no_grad():
                 simp_idx = []
@@ -665,7 +709,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                 state["epoch"] += 1
                 state["batch"] = 0
                 checkpoint()
-                print(f"round {r + 1}/{rounds} diffusion epoch {state['epoch']}/{diff_epochs} done", flush=True)
+                print(f"round {r + 1}/{rounds} diffusion epoch {state['epoch']}/{diff_epochs} done at {time.strftime('%H:%M:%S')}", flush=True)
             sampled = {}
             advance("sample")
         if state["phase"] == "sample":
@@ -683,6 +727,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                     if clock.due():
                         checkpoint()
                         print(f"round {r + 1}/{rounds} sampling batch {b + 1}/{len(batches)}", flush=True)
+            print(f"round {r + 1}/{rounds} sampling done at {time.strftime('%H:%M:%S')}", flush=True)
             amply_idx = [None] * n
             for part in sampled.values():
                 for k, chosen in part.items():
@@ -690,7 +735,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
             sampled = {}
             state["round"] += 1
             advance("gat")
-            print(f"round {r + 1}/{rounds} done", flush=True)
+            print(f"round {r + 1}/{rounds} done at {time.strftime('%H:%M:%S')}", flush=True)
     save_atomic(torch, gat.state_dict(), out_dir / "gat.pt")
 
 
@@ -705,6 +750,8 @@ def main():
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda or mps")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--limit", type=int, help="use only the first trajectories (to test)")
+    parser.add_argument("--sample", type=int,
+                        help="use this many random trajectories plus the longest one (to time a run)")
     parser.add_argument("--save-minutes", type=float, default=10, help="minutes between checkpoints")
     parser.add_argument("--node2vec-epochs", type=int, help="override (to test)")
     parser.add_argument("--tbert-epochs", type=int, help="override (to test)")
@@ -718,8 +765,11 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     db = load_database(data)
     if args.limit:
-        offsets = db[0][:args.limit + 1]
-        db = (offsets,) + tuple(a[:offsets[-1]] for a in db[1:])
+        db = subset(db, np.arange(min(args.limit, len(db[0]) - 1)))
+    if args.sample:
+        lengths = np.diff(db[0])
+        picked = np.random.default_rng(args.seed).choice(len(lengths), args.sample, replace=False)
+        db = subset(db, np.unique(np.append(picked, np.argmax(lengths))))
 
     os.chdir(args.mlsimp.resolve())
     sys.path.insert(0, str(Path.cwd()))
@@ -731,27 +781,39 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = pick_device(torch, args.device)
-    config = {"fixed": args.fixed, "seed": args.seed, "data": str(data), "trajectories": len(db[0]) - 1}
+    config = {"fixed": args.fixed, "seed": args.seed, "data": str(data), "trajectories": len(db[0]) - 1,
+              "points": int(db[0][-1])}
     (out / "config.json").write_text(json.dumps(config, indent=2))
-    print(f"device {device}, {config['trajectories']} trajectories, "
+    print(f"device {device}, {config['trajectories']} trajectories, {config['points']} points, "
           f"{'fixed' if args.fixed else 'published'} MLSimp", flush=True)
 
     started = time.time()
+    lap = [time.time()]
+
+    def timed(name):
+        print(f"time: {name} {time.time() - lap[0]:.0f} s", flush=True)
+        lap[0] = time.time()
+
     if not (out / "grid.npz").exists():
         build_grid(db, params, args.fixed, out / "grid.npz")
+        timed("grid")
     grid = GridMap(out / "grid.npz")
     if not (out / "node2vec.pt").exists():
         train_node2vec(torch, db, grid, params, args.fixed, out / "node2vec.pt", out / "node2vec_ckpt.pt", device, args)
+        timed("node2vec")
     grid_emb = torch.load(out / "node2vec.pt")
     if not (out / "tbert.pt").exists():
         train_tbert(torch, db, grid, params, args.fixed, grid_emb, out / "tbert.pt", out / "tbert_ckpt.pt", device, args)
+        timed("T-BERT")
     if not (out / "done.txt").exists():
         tbert = make_tbert(torch, grid.grid_size, params["gridemb_dim"])
         tbert.load_state_dict(torch.load(out / "tbert.pt", map_location="cpu"))
         items = trajectory_features(torch, tbert, db, grid, params, args.fixed, device)
         del tbert
         feats = diffusion_inputs(db, params)
+        timed("features")
         train_mlsimp(torch, db, items, feats, params, args.fixed, out, out / "mlsimp_ckpt.pt", device, args)
+        timed("GAT + diffusion")
         (out / "done.txt").write_text(f"{time.time() - started:.0f} s\n")
     print(f"done, models in {out}", flush=True)
 
