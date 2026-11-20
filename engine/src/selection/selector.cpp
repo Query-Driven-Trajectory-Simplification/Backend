@@ -20,6 +20,8 @@ std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &traject
         return sed::simplify(trajectory, points_to_keep);
     case AlgorithmType::UNIFORM:
         return uniform::simplify(trajectory, points_to_keep);
+    case AlgorithmType::RDP_GLOBAL:
+        throw std::invalid_argument("RDP_GLOBAL needs a database-wide total budget");
     }
 
     throw std::invalid_argument("simplify_trajectory: unknown algorithm");

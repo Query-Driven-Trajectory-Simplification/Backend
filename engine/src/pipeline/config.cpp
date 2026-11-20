@@ -116,18 +116,18 @@ void parse_clustering_config(Config &config, const json &clustering) {
 
 void parse_teacher_config(Config &config, const json &section) {
     validate_keys(section,
-                  {"enabled", "cache_dir", "arms", "range_query_count", "all_join_pairs", "join",
-                   "extra_join_eps_m", "held_out_term", "ranking_knn", "knn_query", "term_weights"},
+                  {"enabled", "cache_dir", "arms", "range_query_count", "join", "extra_join_eps_m",
+                   "held_out_term", "ranking_knn", "knn_query", "term_weights"},
                   "teacher");
     auto &t = config.teacher;
     t.enabled = section.value("enabled", t.enabled);
     t.cache_dir = section.value("cache_dir", t.cache_dir.string());
     t.arms = section.value("arms", t.arms);
     t.range_query_count = section.value("range_query_count", t.range_query_count);
-    t.all_join_pairs = section.value("all_join_pairs", t.all_join_pairs);
     if (section.contains("join"))
         t.join = parse_enum<query::JoinMode>(section["join"]);
-    t.extra_join_eps_m = section.value("extra_join_eps_m", t.extra_join_eps_m);
+    if (section.contains("extra_join_eps_m"))
+        t.extra_join_eps_m = section["extra_join_eps_m"].get<std::vector<double>>();
     t.held_out_term = section.value("held_out_term", t.held_out_term);
     t.ranking_knn = section.value("ranking_knn", t.ranking_knn);
     if (section.contains("knn_query")) {
@@ -138,8 +138,9 @@ void parse_teacher_config(Config &config, const json &section) {
     }
     t.term_weights = section.value("term_weights", t.term_weights);
     teacher::check_term_weights(t.term_weights);
-    query::check_extra_thresholds(t.extra_join_eps_m, config.join.eps_m,
-                                  "config: teacher.extra_join_eps_m");
+    if (t.extra_join_eps_m)
+        query::check_extra_thresholds(*t.extra_join_eps_m, config.join.eps_m,
+                                      "config: teacher.extra_join_eps_m");
     if (t.cache_dir.empty())
         throw std::invalid_argument("config: teacher.cache_dir must not be empty");
     if (t.enabled && t.arms.empty())
@@ -215,12 +216,16 @@ Config load_config(const std::filesystem::path &path) {
     }
 }
 
+std::vector<double> teacher_extra_join_eps_m(const Config &config) {
+    return config.teacher.extra_join_eps_m.value_or(config.join_score_eps_m);
+}
+
 teacher::WorkloadConfig teacher_workload_config(const Config &config) {
     auto range = config.range;
     range.query_count = config.teacher.range_query_count;
     return {.k = config.knn.k,
             .join_eps_m = config.join.eps_m,
-            .extra_join_eps_m = config.teacher.extra_join_eps_m,
+            .extra_join_eps_m = teacher_extra_join_eps_m(config),
             .frechet = config.join.frechet,
             .range = range,
             .where_at = config.where_at};
@@ -231,7 +236,6 @@ teacher::ObjectiveConfig teacher_objective_config(const Config &config) {
     const auto join_mode = config.teacher.join.value_or(config.join.mode);
     return {.min_tolerance_m = config.where_at_scoring.min_tolerance_m,
             .max_tolerance_m = config.where_at_scoring.max_tolerance_m,
-            .all_join_pairs = config.teacher.all_join_pairs,
             .join_mode = join_mode,
             .held_out_term = config.teacher.held_out_term,
             .ranking_knn = config.teacher.ranking_knn,

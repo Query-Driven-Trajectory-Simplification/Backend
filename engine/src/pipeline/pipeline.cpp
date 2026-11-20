@@ -5,6 +5,7 @@
 #include "backend/engine/io/workload_export.hpp"
 #include "backend/engine/pipeline/scorer.hpp"
 #include "backend/engine/pipeline/test_workloads.hpp"
+#include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 #include "backend/engine/teacher/teacher.hpp"
@@ -12,6 +13,7 @@
 
 #include <magic_enum/magic_enum.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <format>
@@ -81,14 +83,23 @@ void run(const Config &config) {
     for (const double share : config.budget_shares) {
         const std::size_t budget = allocation::total_budget(database, share);
 
+        if (std::ranges::find(config.algorithms, selection::AlgorithmType::RDP_GLOBAL) !=
+            config.algorithms.end())
+            scorer.score(std::format("{}% RDP_GLOBAL", share * 100),
+                         std::format("RDP_GLOBAL_{:g}pct", share * 100),
+                         selection::rdp::simplify_database(database, budget));
+
         for (const double alpha : config.allocation_alphas) {
             const auto budgets = allocation::create_trajectory_budgets(
                 database, allocation::AllocatorType::SizeProportional, budget, alpha);
-            for (const auto algorithm : config.algorithms)
+            for (const auto algorithm : config.algorithms) {
+                if (algorithm == selection::AlgorithmType::RDP_GLOBAL)
+                    continue;
                 scorer.score(std::format("{}% {} alpha={}", share * 100,
                                          magic_enum::enum_name(algorithm), alpha),
                              baseline_name(algorithm, share, alpha),
                              selection::simplify_database(database, algorithm, budgets));
+            }
         }
 
         if (teacher) {

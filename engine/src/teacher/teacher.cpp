@@ -14,6 +14,7 @@
 #include <cmath>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
@@ -40,7 +41,7 @@ constexpr std::array<std::string_view, kCandidateCount> kCandidates{
     "RDP", "SED", "UNIFORM", "GREEDY", "GREEDY_SED2", "GREEDY_RDP2"};
 constexpr std::size_t kMaxResponsePasses = 10;
 constexpr std::size_t kKnnWatchFactor = 3;
-constexpr std::size_t kMaxAllocationRounds = 3;
+constexpr std::size_t kMaxAllocationRounds = 10;
 constexpr double kMinImprovement = 1e-12;
 
 // candidates[c][i]: trajectory i simplified by kCandidates[c] at budgets[i]
@@ -176,15 +177,17 @@ struct Pick {
 // best bound first so losers skip most kNN checks
 Pick pick(const Objective &objective, std::size_t i,
           std::span<const std::pair<std::size_t, core::TrajectoryView>> options,
-          std::span<const core::TrajectoryView> partners) {
-    const double rdp = objective.independent_value(i, options[0].second, partners);
+          std::span<const core::TrajectoryView> partners, std::span<const double> range_weights) {
+    const double rdp = objective.independent_value(
+        i, options[0].second, partners, -std::numeric_limits<double>::infinity(), range_weights);
     Pick best{options[0].first, rdp, rdp};
     std::vector<Objective::IndependentScore> scores;
     scores.reserve(options.size() - 1);
     std::vector<std::pair<double, std::size_t>> order; // bound, position in options
     order.reserve(options.size() - 1);
     for (std::size_t k = 1; k < options.size(); ++k) {
-        scores.push_back(objective.prepare_independent(i, options[k].second, partners));
+        scores.push_back(
+            objective.prepare_independent(i, options[k].second, partners, range_weights));
         order.push_back({scores.back().bound, k});
     }
     std::ranges::sort(order, std::greater{});
@@ -210,6 +213,7 @@ Methods independent_choice(const core::TrajectoryDb &db, const Objective &object
         prepared.emplace(db, *partners);
         partner_views = prepared->views();
     }
+    const RangeState range(objective, partner_views);
     core::parallel_for(db.size(), [&](std::size_t i) {
         std::vector<PreparedTrajectory> owned;
         std::vector<std::pair<std::size_t, core::TrajectoryView>> options;
@@ -218,7 +222,7 @@ Methods independent_choice(const core::TrajectoryDb &db, const Objective &object
             owned.emplace_back(db.trajectory(i), candidates[c][i]);
             options.push_back({c, owned.back().view()});
         }
-        method[i] = pick(objective, i, options, partner_views).method;
+        method[i] = pick(objective, i, options, partner_views, range.weights(i)).method;
     });
     return method;
 }
@@ -233,7 +237,9 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
     Curves curves{std::vector<Curve>(db.size()), std::vector<Curve>(db.size())};
     const PreparedTrajectories prepared(db, partners);
     const auto partner_views = prepared.views();
+    const RangeState range(objective, partner_views);
     core::parallel_for(db.size(), [&](std::size_t i) {
+        const auto range_weights = range.weights(i);
         CandidateMaker maker(objective, i, caps[i], true);
         const std::size_t max_b = std::min(caps[i], db.trajectory(i).size());
         auto &best = curves.best[i];
@@ -260,7 +266,7 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
                     owned[slot].assign(db.trajectory(i), kept[c]);
                 options.push_back({c, owned[slot].view()});
             }
-            const auto chosen = pick(objective, i, options, partner_views);
+            const auto chosen = pick(objective, i, options, partner_views, range_weights);
             rdp.value.push_back(chosen.rdp);
             rdp.method.push_back(kRdp);
             best.value.push_back(chosen.value);
@@ -291,7 +297,8 @@ class Search {
             m_knn.emplace(objective, assemble(candidates, method), candidates,
                           kKnnWatchFactor * objective.workloads().k);
         const auto active = [&](std::size_t i) {
-            return !objective.links(i).empty() || (m_knn && m_knn->active(i));
+            return !objective.boxes(i).empty() || !objective.links(i).empty() ||
+                   (m_knn && m_knn->active(i));
         };
         for (std::size_t i = 0; i < db.size(); ++i)
             if (active(i))
@@ -333,6 +340,7 @@ class Search {
         for (std::size_t i = 0; i < db.size(); ++i)
             m_state[i] = m_views[method[i]][i];
         m_join.emplace(objective, m_state);
+        m_range.emplace(objective, m_state);
     }
     Search(const Search &) = delete;
     Search &operator=(const Search &) = delete;
@@ -342,6 +350,7 @@ class Search {
         auto method = m_start;
         auto state = m_state;
         auto join = *m_join;
+        auto range = *m_range;
         auto knn = m_knn;
         auto order = m_order;
         std::mt19937_64 rng(seed + kOrderSeedOffset);
@@ -353,6 +362,7 @@ class Search {
                 const double here = m_separable[i][method[i]];
                 std::size_t best = method[i];
                 JoinState::Proposal best_proposal;
+                RangeState::Proposal best_range;
                 KnnState::Move best_move;
                 double best_gain = kMinImprovement; // strict gains only, so ties cannot cycle
                 for (std::size_t c = 0; c < kCandidates.size(); ++c) {
@@ -362,6 +372,7 @@ class Search {
                     if (duplicate || current)
                         continue;
                     auto proposal = join.propose(i, m_views[c][i], state);
+                    auto range_proposal = range.propose(i, m_views[c][i]);
                     KnnState::Move move;
                     double knn_gain = 0.0;
                     if (knn && m_compressed_queries) {
@@ -370,11 +381,13 @@ class Search {
                     } else if (knn) {
                         knn_gain = knn->propose(i, m_knn_distances[i][c]);
                     }
-                    const double gain = m_separable[i][c] - here + proposal.gain + knn_gain;
+                    const double gain =
+                        m_separable[i][c] - here + proposal.gain + range_proposal.gain + knn_gain;
                     if (gain > best_gain) {
                         best = c;
                         best_gain = gain;
                         best_proposal = std::move(proposal);
+                        best_range = std::move(range_proposal);
                         best_move = std::move(move);
                     }
                 }
@@ -386,6 +399,7 @@ class Search {
                     continue;
                 state[i] = m_views[best][i];
                 join.apply(best_proposal);
+                range.apply(best_range);
                 if (knn && m_compressed_queries)
                     knn->apply(best_move);
                 else if (knn)
@@ -412,6 +426,7 @@ class Search {
     std::optional<KnnState> m_knn;
     std::vector<core::TrajectoryView> m_state;
     std::optional<JoinState> m_join;
+    std::optional<RangeState> m_range;
 };
 
 Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
