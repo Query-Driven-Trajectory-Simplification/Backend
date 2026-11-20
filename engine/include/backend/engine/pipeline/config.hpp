@@ -14,9 +14,16 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace pipeline {
+
+// Reads <dir>/kept_<method>_<pct>pct.parquet, e.g. from RL4QDTS
+struct ExternalConfig {
+    std::filesystem::path dir;
+    std::vector<std::string> methods;
+};
 
 struct Config {
     std::filesystem::path data_path;
@@ -38,6 +45,7 @@ struct Config {
     std::vector<double> join_score_eps_m;
     query::RouteClusteringConfig clustering;
     teacher::TeacherConfig teacher;
+    ExternalConfig external;
 };
 
 // Reads a JSON config. Only data_path is required, a missing key keeps its default.

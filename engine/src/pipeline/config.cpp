@@ -143,11 +143,22 @@ void parse_teacher_config(Config &config, const json &section) {
         throw std::invalid_argument("config: teacher.range_query_count must be positive");
 }
 
+void parse_external_config(Config &config, const json &external) {
+    validate_keys(external, {"dir", "methods"}, "external");
+    auto &e = config.external;
+    e.dir = external.value("dir", e.dir.string());
+    e.methods = external.value("methods", e.methods);
+    if (!e.methods.empty() && e.dir.empty())
+        throw std::invalid_argument("config: external.dir must not be empty when methods are set");
+    if (std::ranges::any_of(e.methods, [](const std::string &m) { return m.empty(); }))
+        throw std::invalid_argument("config: external.methods must not contain empty names");
+}
+
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
                    "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
-                   "where_at_scoring", "join", "clustering", "frechet", "teacher"},
+                   "where_at_scoring", "join", "clustering", "frechet", "teacher", "external"},
                   "root");
     Config config;
 
@@ -183,6 +194,7 @@ Config parse_config(const json &data) {
     parse_join_config(config, data.value("join", json::object()));
     parse_clustering_config(config, data.value("clustering", json::object()));
     parse_teacher_config(config, data.value("teacher", json::object()));
+    parse_external_config(config, data.value("external", json::object()));
     // One distance for every Fréchet-based query, so both sides of each comparison agree
     if (data.contains("frechet")) {
         const auto variant = parse_enum<query::FrechetVariant>(data["frechet"]);

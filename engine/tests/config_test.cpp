@@ -296,6 +296,23 @@ TEST(Config, RejectsBadTeacherSections) {
     }
 }
 
+TEST(Config, ReadsTheExternalSection) {
+    EXPECT_TRUE(pipeline::load_config(write_config("external_off.json", R"({"data_path": "d"})"))
+                    .external.methods.empty());
+    const auto config = pipeline::load_config(write_config(
+        "external.json",
+        R"({"data_path": "d", "external": {"dir": "data/rl4/kept", "methods": ["RL4_a", "RL4_b"]}})"));
+    EXPECT_EQ(config.external.dir, "data/rl4/kept");
+    EXPECT_EQ(config.external.methods, (std::vector<std::string>{"RL4_a", "RL4_b"}));
+    for (const auto &section : {R"({"methods": ["RL4_a"]})", R"({"dir": "x", "methods": [""]})",
+                                R"({"dir": "x", "method": ["RL4_a"]})", R"({"dir": 3})"}) {
+        SCOPED_TRACE(section);
+        const auto contents = std::string(R"({"data_path": "d", "external": )") + section + "}";
+        EXPECT_THROW(pipeline::load_config(write_config("bad_external.json", contents)),
+                     std::invalid_argument);
+    }
+}
+
 TEST(Config, ReadsTheJoinScoreThresholds) {
     const auto config = pipeline::load_config(write_config(
         "join_grid.json",

@@ -2,6 +2,7 @@
 #include "backend/engine/allocation/budget_allocator.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/io/simplification_loader.hpp"
 #include "backend/engine/io/workload_export.hpp"
 #include "backend/engine/pipeline/scorer.hpp"
 #include "backend/engine/pipeline/test_workloads.hpp"
@@ -14,9 +15,11 @@
 
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace pipeline {
@@ -55,6 +58,24 @@ std::unique_ptr<teacher::Teacher> make_teacher(const core::TrajectoryDb &databas
         teacher_objective_config(config), config.seed);
 }
 
+// Scores config.external. Skips missing files, throws on a wrong budget
+void score_external(const Config &config, const core::TrajectoryDb &database, const Scorer &scorer,
+                    double share, std::size_t budget) {
+    for (const auto &method : config.external.methods) {
+        const auto name = std::format("{}_{:g}pct", method, share * 100);
+        const auto path = config.external.dir / ("kept_" + name + ".parquet");
+        if (!std::filesystem::exists(path)) {
+            std::cout << "skipping " << name << ": " << path.string() << " not found\n";
+            continue;
+        }
+        const auto kept = io::load_simplification(path, database);
+        if (kept.num_points() != budget)
+            throw std::runtime_error(std::format("{}: {} points, but the budget is {}",
+                                                 path.string(), kept.num_points(), budget));
+        scorer.score(std::format("{}% {}", share * 100, method), name, kept);
+    }
+}
+
 } // namespace
 
 void run(const Config &config) {
@@ -86,6 +107,8 @@ void run(const Config &config) {
                              baseline_name(algorithm, share, alpha),
                              selection::simplify_database(database, algorithm, budgets));
         }
+
+        score_external(config, database, scorer, share, budget);
 
         if (teacher) {
             std::cout << "teacher at " << share * 100 << "%\n";

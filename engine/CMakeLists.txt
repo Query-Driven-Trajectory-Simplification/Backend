@@ -15,6 +15,7 @@ add_library(engine
     src/core/trajectory_db.cpp
     src/io/parquet_loader.cpp
     src/io/workload_export.cpp
+    src/io/simplification_loader.cpp
     src/pipeline/config.cpp
     src/pipeline/pipeline.cpp
     src/pipeline/scorer.cpp
@@ -67,6 +68,7 @@ target_link_libraries(teacher_eval PRIVATE engine)
 
 add_executable(engine_tests
     tests/parquet_loader_test.cpp
+    tests/simplification_loader_test.cpp
     tests/projection_test.cpp
     tests/split/time_split_test.cpp
     tests/split/random_split_test.cpp
