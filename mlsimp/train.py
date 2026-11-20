@@ -283,7 +283,7 @@ def train_tbert(torch, db, grid, params, fixed, grid_emb, out, ckpt_path, device
         optimizer.load_state_dict(saved["optimizer"])
         state = saved["state"]
         print(f"T-BERT: resuming at epoch {state['epoch']}, batch {state['batch']}", flush=True)
-    epochs = args.tbert_epochs or params["Bert"]["embed_epoch"]
+    epochs = args.tbert_epochs or (500 if fixed else params["Bert"]["embed_epoch"])
     batch_size = 64
     clock = Clock(args.save_minutes)
 
@@ -361,49 +361,80 @@ def trajectory_features(torch, tbert, db, grid, params, fixed, device):
             for r in range(0, m, 4096):
                 neighbor[r:r + 4096] = torch.topk(unit[r:r + 4096] @ unit.T, min(11, m), dim=-1).indices[:, 1:]
             items.append({"feature": torch.cat([point, seg], 0).cpu(), "points": m,
+                          "sizes": [ve - vs for _, _, vs, ve in spans],
                           "emb": point.mean(0).cpu(), "neighbor": neighbor.T.contiguous().cpu()})
             if (i + 1) % 2000 == 0:
                 print(f"features {i + 1}/{len(offsets) - 1}", flush=True)
     return items
 
 
-def edge_index(torch, m, segs, device):
+def make_gat(torch, params, fixed):
+    from Model.GraphSimp import GAT
+    from torch_geometric.nn import GATConv
+    gat = GAT(params["GAT"])
+    if fixed:
+        heads, out = params["GAT"]["num_heads"], params["GAT"]["out_features"]
+        gat.conv2 = GATConv(out * heads, out, heads=heads, concat=False)
+    return gat
+
+
+def edge_index(torch, m, sizes, fixed, device):
+    if not fixed:
+        points = torch.arange(m, device=device)
+        return torch.cartesian_prod(points, torch.arange(m, m + len(sizes), device=device)).t().contiguous()
+    owner = m + torch.repeat_interleave(torch.arange(len(sizes), device=device),
+                                        torch.as_tensor(sizes, device=device))
     points = torch.arange(m, device=device)
-    return torch.cartesian_prod(points, torch.arange(m, m + segs, device=device)).t().contiguous()
+    return torch.stack([torch.cat([points, owner]), torch.cat([owner, points])])
 
 
-def uniform_term(torch, z):
+def uniqueness(torch, z, neighbor, fixed):
+    distance = [(z - z[neighbor[i]]).norm(dim=1) for i in range(neighbor.size(0))]
+    if not fixed:
+        distance = [d.pow(2) for d in distance]
+    return sum(distance) / neighbor.size(0)
+
+
+def globality(torch, z, fixed):
     from torch.utils.checkpoint import checkpoint
+    n = z.size(0)
 
     def rows(block, full):
-        return torch.cdist(block, full).pow(2).mul(-2).exp().mean(dim=1).log()
+        near = torch.cdist(block, full).pow(2).mul(-2).exp()
+        if fixed:
+            return ((near.sum(dim=1) - 1) / max(n - 1, 1)).log()
+        return near.mean(dim=1).log()
 
-    if z.size(0) <= 4096:
+    if n <= 4096:
         return rows(z, z)
-    return torch.cat([checkpoint(rows, z[r:r + 4096], z, use_reentrant=False)
-                      for r in range(0, z.size(0), 4096)])
+    return torch.cat([checkpoint(rows, z[r:r + 4096], z, use_reentrant=False) for r in range(0, n, 4096)])
 
 
-def importance(torch, align, uniform, fixed):
-    score = align * uniform.exp() if fixed else align * uniform
-    return torch.softmax(score, dim=0)
+def point_scores(torch, align, glob, fixed):
+    return align * glob.exp() + 1e-6 if fixed else align * glob
 
 
 def gat_terms(torch, z, neighbor, amply, fixed):
-    align = sum((z - z[neighbor[i]]).norm(dim=1).pow(2) for i in range(neighbor.size(0))) / neighbor.size(0)
-    uniform = uniform_term(torch, z)
-    important = importance(torch, align, uniform, fixed)
+    align = uniqueness(torch, z, neighbor, fixed)
+    glob = globality(torch, z, fixed)
+    important = torch.softmax(point_scores(torch, align, glob, fixed), dim=0)
     mutual = torch.nn.functional.binary_cross_entropy(important, amply) if amply is not None else 0
     top = torch.sort(torch.sort(important[1:-1], descending=True).indices[:3]).values + 1
     simp = (z[top].sum(0) + z[0] + z[-1]) / 5
-    return align.mean(), uniform.mean(), simp, mutual
+    return align.mean(), glob.mean(), simp, mutual
 
 
-def gat_simp_indices(torch, z, neighbor, fixed):
-    align = sum((z - z[neighbor[i]]).norm(dim=1).pow(2) for i in range(neighbor.size(0))) / neighbor.size(0)
-    important = importance(torch, align, uniform_term(torch, z), fixed)[1:-1]
-    k = int(0.4 * z.size(0))
-    top = torch.sort(torch.sort(important, descending=True).indices[:k]).values
+def gat_simp_indices(torch, z, neighbor, fixed, generator):
+    align = uniqueness(torch, z, neighbor, fixed)
+    important = torch.softmax(point_scores(torch, align, globality(torch, z, fixed), fixed), dim=0)[1:-1]
+    if not fixed:
+        k = int(0.4 * z.size(0))
+        top = torch.sort(torch.sort(important, descending=True).indices[:k]).values
+        return (top + 1).cpu().numpy()
+    k = min(int(0.5 * z.size(0)), important.size(0))
+    noise = torch.rand(important.size(0), generator=generator).to(important.device)
+    keys = noise.clamp(min=1e-12).log() / important.clamp(min=1e-30)
+    top = torch.sort(torch.topk(keys, k).indices).values
     return (top + 1).cpu().numpy()
 
 
@@ -454,13 +485,29 @@ def pad(torch, arrays, device):
     return out.to(device), mask.to(device)
 
 
-def diffusion_batch(torch, feats, simp_idx, pick, fixed, device):
-    trajs = [feats[k] for k in pick]
-    simps, labels = [], []
-    for k in pick:
+def make_chunks(lengths, size):
+    chunks = []
+    for k, length in enumerate(lengths):
+        bounds = np.linspace(0, length, -(-length // size) + 1).round().astype(np.int64)
+        chunks.extend((k, int(a), int(b)) for a, b in zip(bounds[:-1], bounds[1:]))
+    return chunks
+
+
+def chunk_inputs(feats, simp_idx, chunks, pick):
+    trajs, idxs = [], []
+    for c in pick:
+        k, a, b = chunks[c]
         idx = np.asarray(simp_idx[k], dtype=np.int64)
-        simps.append(feats[k][np.concatenate([[0], idx, [-1]])])
-        labels.append(np.concatenate([[0], idx, [len(feats[k]) - 1]]))
+        trajs.append(feats[k][a:b])
+        idxs.append(idx[(idx > a) & (idx < b - 1)] - a)
+    return trajs, idxs
+
+
+def diffusion_batch(torch, trajs, idxs, device):
+    simps, labels = [], []
+    for traj, idx in zip(trajs, idxs):
+        simps.append(traj[np.concatenate([[0], idx, [-1]]).astype(np.int64)])
+        labels.append(np.concatenate([[0], idx, [len(traj) - 1]]))
     traj_pad, traj_mask = pad(torch, trajs, device)
     simp_pad, simp_mask = pad(torch, simps, device)
     label = torch.full((len(pick), simp_pad.size(1)), -100, dtype=torch.long)
@@ -475,7 +522,25 @@ def masked_mean(torch, values, valid):
     return per.mean()
 
 
-def diffusion_loss(torch, model, diffusion, batch, t):
+def diversity(torch, h, valid):
+    from torch.utils.checkpoint import checkpoint
+    weight = valid.float()
+
+    def rows(block, block_valid, full):
+        near = torch.cdist(block, full).pow(2).mul(-2).exp() * weight[:, None, :]
+        others = (weight.sum(1)[:, None] - block_valid).clamp(min=1)
+        return ((near.sum(-1) - block_valid) / others).clamp(min=1e-30).log() * block_valid
+
+    chunk = 4096
+    if h.size(1) <= chunk:
+        part = rows(h, weight, h)
+    else:
+        part = torch.cat([checkpoint(rows, h[:, r:r + chunk], weight[:, r:r + chunk], h, use_reentrant=False)
+                          for r in range(0, h.size(1), chunk)], 1)
+    return (part.sum(1) / weight.sum(1).clamp(min=1)).mean()
+
+
+def diffusion_loss(torch, model, diffusion, batch, t, diversity_weight=0.0):
     from DiffTeacher.GaussianDiffusion import _extract_into_tensor
     traj_pad, traj_mask, simp_pad, simp_mask, labels = batch
     length = traj_pad.size(1)
@@ -495,7 +560,10 @@ def diffusion_loss(torch, model, diffusion, batch, t):
     t_last = torch.full((x_start.size(0),), diffusion.num_timesteps - 1, device=x_start.device, dtype=torch.long)
     out_mean, _, _ = diffusion.q_mean_variance(x_start, t_last)
     t_t = masked_mean(torch, (out_mean ** 2).mean(-1), ~pad_mask)
-    return mse + t_t + 0.1 * nll
+    loss = mse + t_t + 0.1 * nll
+    if diversity_weight:
+        loss = loss + diversity_weight * diversity(torch, out[:, length:], simp_valid)
+    return loss
 
 
 def diffusion_sample(torch, model, diffusion, batch, amplify_len, steps, fixed, device):
@@ -585,7 +653,6 @@ def make_diffusion(params):
 
 
 def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, device, args):
-    from Model.GraphSimp import GAT
     gat_params = params["GAT"]
     diff_params = params["Diff"]
     rounds = args.rounds or params["mutual_epochs"]
@@ -596,9 +663,13 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
     max_len = int(lengths.max())
     n = len(items)
 
-    gat = GAT(gat_params).to(device)
+    gat = make_gat(torch, params, fixed).to(device)
     diff_model, diffusion = make_diffusion(params)
-    extend_positions(diff_model, max_len + int(0.4 * max_len) + amplify_len + 4)
+    chunk_size = 1000
+    chunks = make_chunks(lengths, chunk_size)
+    chunk_len = np.array([b - a for _, a, b in chunks])
+    chunk_amp = np.maximum(1, np.round(amplify_len * chunk_len / chunk_size)).astype(int)
+    extend_positions(diff_model, int(chunk_len.max() * 1.5) + amplify_len + 4)
     chunk_attention(torch, diff_model)
     diff_model.to(device)
     gat_opt = torch.optim.Adam(gat.parameters(), lr=float(gat_params["lr"]), weight_decay=gat_params["wd"])
@@ -643,7 +714,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                     for k in pick:
                         it = items[k]
                         feature = it["feature"].to(device)
-                        z = gat(feature, edge_index(torch, it["points"], feature.size(0) - it["points"], device))[:it["points"]]
+                        z = gat(feature, edge_index(torch, it["points"], it["sizes"], fixed, device))[:it["points"]]
                         amply = None
                         if amply_idx is not None:
                             amply = torch.zeros(it["points"], device=device)
@@ -653,10 +724,13 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                         embs.append(it["emb"].to(device))
                     simps = torch.nn.functional.normalize(torch.stack(simps), p=2, dim=1)
                     embs = torch.nn.functional.normalize(torch.stack(embs), p=2, dim=1)
-                    batch_loss = torch.nn.functional.mse_loss(simps @ simps.T, embs @ embs.T)
                     mutual = sum(mutuals) / len(pick) if amply_idx is not None else 0
-                    loss = (torch.stack(aligns).mean() + gat_params["lambda1"] * torch.stack(uniforms).mean()
-                            + gat_params["lambda2"] * batch_loss + gat_params["lambda3"] * mutual)
+                    if fixed:
+                        loss = torch.stack(aligns).mean() + 0.5 * torch.stack(uniforms).mean() + 0.5 * mutual
+                    else:
+                        batch_loss = torch.nn.functional.mse_loss(simps @ simps.T, embs @ embs.T)
+                        loss = (torch.stack(aligns).mean() + gat_params["lambda1"] * torch.stack(uniforms).mean()
+                                + gat_params["lambda2"] * batch_loss + gat_params["lambda3"] * mutual)
                     gat_opt.zero_grad()
                     loss.backward()
                     gat_opt.step()
@@ -672,10 +746,11 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
             gat.eval()
             with torch.no_grad():
                 simp_idx = []
+                generator = torch.Generator().manual_seed(args.seed * 1000003 + r)
                 for it in items:
                     feature = it["feature"].to(device)
-                    z = gat(feature, edge_index(torch, it["points"], feature.size(0) - it["points"], device))[:it["points"]]
-                    simp_idx.append(gat_simp_indices(torch, z, it["neighbor"].to(device), fixed))
+                    z = gat(feature, edge_index(torch, it["points"], it["sizes"], fixed, device))[:it["points"]]
+                    simp_idx.append(gat_simp_indices(torch, z, it["neighbor"].to(device), fixed, generator))
             save_atomic(torch, gat.state_dict(), out_dir / "gat.pt")
             advance("diff")
         if state["phase"] == "diff":
@@ -690,13 +765,16 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
             budget = diff_params["batch_size"] * 1400
             while state["epoch"] < diff_epochs:
                 rng = np.random.default_rng([args.seed, 3, r, state["epoch"]])
-                batches = length_batches(lengths + np.array([len(s) for s in simp_idx]) + 2, budget,
+                trajs_all, idxs_all = chunk_inputs(feats, simp_idx, chunks, range(len(chunks)))
+                batches = length_batches(chunk_len + np.array([len(i) for i in idxs_all]) + 2, budget,
                                          diff_params["batch_size"], rng)
                 while state["batch"] < len(batches):
                     pick = batches[state["batch"]]
-                    batch = diffusion_batch(torch, feats, simp_idx, pick, fixed, device)
+                    batch = diffusion_batch(torch, [trajs_all[c] for c in pick], [idxs_all[c] for c in pick],
+                                            device)
                     t = torch.randint(0, diffusion.num_timesteps, (len(pick),), device=device)
-                    loss = diffusion_loss(torch, diff_model, diffusion, batch, t)
+                    loss = diffusion_loss(torch, diff_model, diffusion, batch, t,
+                                          diff_params["lambda1"] if fixed else 0.0)
                     diff_opt.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(diff_model.parameters(), 3)
@@ -714,24 +792,31 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
             advance("sample")
         if state["phase"] == "sample":
             diff_model.eval()
-            batches = length_batches(lengths + amplify_len, diff_params["batch_size"] * 1400,
-                                     diff_params["batch_size"], np.random.default_rng([args.seed, 4, r]))
+            batches = []
+            rng = np.random.default_rng([args.seed, 4, r])
+            for amp in np.unique(chunk_amp):
+                group = np.flatnonzero(chunk_amp == amp)
+                for part in length_batches(chunk_len[group] + amp, diff_params["batch_size"] * 1400,
+                                           diff_params["batch_size"], rng):
+                    batches.append((int(amp), [int(c) for c in group[part]]))
             with torch.no_grad():
-                for b, pick in enumerate(batches):
+                for b, (amp, pick) in enumerate(batches):
                     if b in sampled:
                         continue
-                    batch = diffusion_batch(torch, feats, simp_idx, pick, fixed, device)
-                    for k, chosen in zip(pick, diffusion_sample(torch, diff_model, diffusion, batch, amplify_len,
+                    trajs, idxs = chunk_inputs(feats, simp_idx, chunks, pick)
+                    batch = diffusion_batch(torch, trajs, idxs, device)
+                    for c, chosen in zip(pick, diffusion_sample(torch, diff_model, diffusion, batch, amp,
                                                                 diff_params["diff_step_eval"], fixed, device)):
-                        sampled.setdefault(b, {})[int(k)] = chosen
+                        sampled.setdefault(b, {})[c] = chosen + chunks[c][1]
                     if clock.due():
                         checkpoint()
                         print(f"round {r + 1}/{rounds} sampling batch {b + 1}/{len(batches)}", flush=True)
             print(f"round {r + 1}/{rounds} sampling done at {time.strftime('%H:%M:%S')}", flush=True)
-            amply_idx = [None] * n
+            gathered = [[] for _ in range(n)]
             for part in sampled.values():
-                for k, chosen in part.items():
-                    amply_idx[k] = chosen
+                for c, chosen in part.items():
+                    gathered[chunks[c][0]].append(chosen)
+            amply_idx = [np.unique(np.concatenate(g)) for g in gathered]
             sampled = {}
             state["round"] += 1
             advance("gat")

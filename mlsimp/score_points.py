@@ -95,7 +95,8 @@ def main():
                   num_heads=bert_params["tbert_num_heads"])
     tbert.load_state_dict(torch.load(tbert_path, map_location=device))
     tbert.eval()
-    gat = GAT(params["GAT"])
+    import train
+    gat = train.make_gat(torch, params, fixed) if args.model else GAT(params["GAT"])
     gat_state = torch.load(gat_path, map_location=device)
     for conv in ("conv1", "conv2"):
         source = gat_state.pop(f"{conv}.lin_src.weight", None)
@@ -149,16 +150,14 @@ def main():
             neighbor = torch.topk(sim, neighbors, dim=-1).indices[:, 1:].T
             del sim
             feature = torch.cat((point_emb, seg_emb), dim=0)
-            point_nodes = torch.arange(m)
-            seg_nodes = torch.arange(m, m + seg_emb.size(0))
-            edge_index = torch.cartesian_prod(point_nodes, seg_nodes).t().contiguous()
+            sizes = [ve - vs for _, _, vs, ve in windows]
+            edge_index = train.edge_index(torch, m, sizes, fixed, "cpu")
 
-            z = gat(feature, edge_index)[point_nodes]
+            z = gat(feature, edge_index)[:m]
             if fixed:
-                align = sum((z - z[neighbor[k]]).norm(dim=1).pow(2)
-                            for k in range(neighbor.size(0))) / neighbor.size(0)
-                uniform = torch.cdist(z, z).pow(2).mul(-2).exp().mean(dim=1).log()
-                scores[begin:end] = torch.sigmoid(align * uniform.exp()).numpy()
+                align = train.uniqueness(torch, z, neighbor, fixed)
+                glob = train.globality(torch, z, fixed)
+                scores[begin:end] = train.point_scores(torch, align, glob, fixed).numpy()
             else:
                 scores[begin:end] = gat.important_sigmoid(z, neighbor).numpy()
 
