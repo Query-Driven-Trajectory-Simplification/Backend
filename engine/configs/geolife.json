@@ -10,6 +10,8 @@
         "query_percentage": 0.15
     },
     "algorithms": ["RDP", "SED", "UNIFORM"],
+    "external_algorithms": ["MLSimp"],
+    "selection_dir": "data/mlsimp",
     "knn": {
         "k": 10,
         "query_count": 0

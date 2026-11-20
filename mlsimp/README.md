@@ -41,6 +41,19 @@ Use the same `--config`, `--cache`, `--shares` and `--out` as the teacher run. S
 30 minutes per seed on 16 cores and resumes if stopped. Rerun the export and both scripts when
 the config changes.
 
+## For the Travis frontend
+
+`engine/configs/geolife.json` lists MLSimp under `external_algorithms`, and `run.exe` writes its
+parquet files like the other methods. Without the files below it skips MLSimp. Export with the same
+config and seed so the database matches:
+
+```bash
+./build/rel/engine/teacher_eval.exe --config engine/configs/geolife.json --seeds 42 --export-db data/mlsimp
+mlsimp/.venv/Scripts/python mlsimp/score_points.py --data data/mlsimp/seed42
+mlsimp/.venv/Scripts/python mlsimp/select_points.py --data data/mlsimp/seed42
+./build/rel/engine/run.exe engine/configs/geolife.json
+```
+
 ## Selection
 
 The arm is called `MLSimp`. As in MLSimp, each point's score is half the model score and half
