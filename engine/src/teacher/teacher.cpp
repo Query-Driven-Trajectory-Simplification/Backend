@@ -445,6 +445,19 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
     return Search(db, objective, candidates, method).run(seed, update);
 }
 
+// The loop accepts switches on the tracked J_T, whose kNN term only watches each query's top k
+// plus its nearest others in the start and single-recipe states. In a mixed state an unwatched
+// trajectory can enter a top k unseen, so the result is checked exactly against the start
+Methods checked_loop(const Objective &objective, const Candidates &candidates,
+                     const Methods &start, Methods looped, std::string_view name) {
+    const double before = objective.total(assemble(candidates, start));
+    const double after = objective.total(assemble(candidates, looped));
+    const bool lost = after < before;
+    std::cout << std::format("teacher: {} exact check, J_T {:.6f} -> {:.6f}{}\n", name, before,
+                             after, lost ? ", lost: keeping the start" : "");
+    return lost ? start : std::move(looped);
+}
+
 struct Traded {
     KeptSets kept;
     double value;
@@ -844,7 +857,9 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             keep("EQUAL_CHOICE_RDP_PARTNERS", equal_candidates, guess);
         if (want_equal_loop) {
             keep("EQUAL_LOOP", equal_candidates,
-                 best_response(db, objective, equal_candidates, guess, m_seed));
+                 checked_loop(objective, equal_candidates, guess,
+                              best_response(db, objective, equal_candidates, guess, m_seed),
+                              "EQUAL_LOOP"));
             timed("EQUAL_LOOP");
         }
     }
@@ -876,7 +891,8 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         if (want_loop || want_reallocate || want_trade || want_no_update)
             search.emplace(db, objective, candidates, choice);
         if (want_loop || want_reallocate || want_trade) {
-            const auto looped = search->run(m_seed);
+            const auto looped =
+                checked_loop(objective, candidates, choice, search->run(m_seed), "BUDGET_LOOP");
             timed("BUDGET_LOOP");
             if (want_loop)
                 keep("BUDGET_LOOP", candidates, looped);
@@ -897,9 +913,12 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                     const auto round_budgets =
                         allocate(round_curves.best, total_budget, &round_value);
                     const auto next_candidates = make_candidates(objective, round_budgets, caps);
-                    auto next_methods = best_response(
-                        db, objective, next_candidates,
-                        curve_methods(round_curves.best, round_budgets), m_seed + round);
+                    const auto round_start = curve_methods(round_curves.best, round_budgets);
+                    auto next_methods = checked_loop(
+                        objective, next_candidates, round_start,
+                        best_response(db, objective, next_candidates, round_start,
+                                      m_seed + round),
+                        std::format("reallocation round {}", round));
                     auto next = assemble(next_candidates, next_methods);
                     const double next_value = objective.total(next);
                     std::cout << std::format(
