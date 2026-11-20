@@ -1,0 +1,760 @@
+"""Retrains every part of MLSimp on one seed's database, resumable."""
+
+import argparse
+import json
+import math
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+MLSIMP = Path(__file__).resolve().parents[1] / "third_party" / "MLSimp"
+
+
+def load_database(folder):
+    offsets = np.fromfile(folder / "offsets.bin", dtype=np.uint64).astype(np.int64)
+    lat = np.fromfile(folder / "lat.bin", dtype=np.float64)
+    lon = np.fromfile(folder / "lon.bin", dtype=np.float64)
+    t = np.fromfile(folder / "t.bin", dtype=np.int64)
+    assert offsets[-1] == len(lat) == len(lon) == len(t), "database files don't match"
+    return offsets, lat, lon, t
+
+
+def save_atomic(torch, obj, path):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+class Clock:
+    def __init__(self, minutes):
+        self.every = minutes * 60
+        self.last = time.time()
+
+    def due(self):
+        if time.time() - self.last >= self.every:
+            self.last = time.time()
+            return True
+        return False
+
+
+def pick_device(torch, name):
+    if name != "auto":
+        return torch.device(name)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def windows(length, max_length, overlap):
+    result = []
+    start, end = 0, -1
+    while end != length:
+        end = min(start + max_length, length)
+        valid_start = 0 if start == 0 else overlap
+        valid_end = end - start if end == length else end - start - overlap
+        result.append((start, end, valid_start, valid_end))
+        start += max_length - 2 * overlap
+    return result
+
+
+def window_times(torch, times, fixed):
+    if fixed:
+        return torch.tensor(times - times[0], dtype=torch.float32)
+    return torch.tensor(times, dtype=torch.float64).float()
+
+
+class GridMap:
+    def __init__(self, path):
+        data = np.load(path)
+        self.gridmap = data["gridmap"]
+        self.grid_size = int(data["grid_size"])
+        self.numx = int(data["numx"])
+        self.minx = float(data["minx"])
+        self.miny = float(data["miny"])
+        self.step = float(data["step"])
+
+    def tokens(self, lon, lat):
+        from Utils.data_utils import lonlat2meters_np
+        x, y = lonlat2meters_np(lon, lat)
+        cx = (np.round(x - self.minx, 6) / self.step).astype(int)
+        cy = (np.round(y - self.miny, 6) / self.step).astype(int)
+        return self.gridmap[cy * self.numx + cx]
+
+
+def build_grid(db, params, fixed, out):
+    from sklearn.neighbors import KDTree
+    from Utils.data_utils import lonlat2meters, lonlat2meters_np
+    offsets, lat, lon, _ = db
+    step = params["step"]
+    minx, miny = lonlat2meters(params["minlon"], params["minlat"])
+    maxx, maxy = lonlat2meters(params["maxlon"], params["maxlat"])
+    numx = int(math.ceil(round(maxx - minx, 6) / step))
+    numy = int(math.ceil(round(maxy - miny, 6) / step))
+
+    use = np.ones(len(lat), dtype=bool)
+    if not fixed:
+        position = np.arange(len(lat)) - np.repeat(offsets[:-1], np.diff(offsets))
+        use = position <= 1000
+    inside = ((params["minlon"] <= lon) & (lon < params["maxlon"])
+              & (params["minlat"] <= lat) & (lat < params["maxlat"]))
+    assert inside.all(), "points outside MLSimp's area"
+    x, y = lonlat2meters_np(lon[use], lat[use])
+    cells = (np.floor(np.round(y - miny, 6) / step).astype(np.int64) * numx
+             + np.floor(np.round(x - minx, 6) / step).astype(np.int64))
+    counts = np.bincount(cells, minlength=numx * numy)
+    order = np.argsort(-counts, kind="stable")
+    hot = order[counts[order] > params["minfreq"]][:params["max_grid_size"]]
+    grid_start = params["grid_start"]
+    ids = np.arange(len(hot)) - 1 + grid_start
+
+    centers = np.stack([minx + (hot % numx + 0.5) * step, miny + (hot // numx + 0.5) * step], 1)
+    tree = KDTree(centers)
+    gridmap = np.empty(numx * numy, dtype=np.int32)
+    block = 1_000_000
+    for begin in range(0, numx * numy, block):
+        cell = np.arange(begin, min(begin + block, numx * numy))
+        query = np.stack([minx + (cell % numx + 0.5) * step, miny + (cell // numx + 0.5) * step], 1)
+        gridmap[begin:begin + len(cell)] = ids[tree.query(query, k=1)[1][:, 0]]
+    gridmap[hot] = ids
+    np.savez(out, gridmap=gridmap, grid_size=grid_start + len(hot), numx=numx, numy=numy,
+             minx=minx, miny=miny, step=step)
+    print(f"grid: {len(hot)} cells with own id, grid size {grid_start + len(hot)}", flush=True)
+
+
+def graph_edges(db, grid, fixed):
+    offsets, lat, lon, _ = db
+    tokens = grid.tokens(lon, lat)
+    pairs = []
+    for i in range(len(offsets) - 1):
+        seq = tokens[offsets[i]:offsets[i + 1]]
+        if fixed:
+            a, b = seq[:-1], seq[1:]
+            keep = a != b
+            pairs.append(np.stack([a[keep], b[keep]], 1))
+        else:
+            rest = seq[1:1001]
+            pairs.append(np.stack([np.full(len(rest), seq[0]), rest], 1))
+    pairs = np.concatenate(pairs)
+    pairs = np.concatenate([pairs, pairs[:, ::-1]])
+    pairs = np.unique(pairs, axis=0)
+    return pairs
+
+
+class Walks:
+    def __init__(self, torch, edges, num_nodes, walk_length, context_size, walks_per_node):
+        self.torch = torch
+        order = np.lexsort((edges[:, 1], edges[:, 0]))
+        edges = edges[order]
+        self.col = torch.tensor(edges[:, 1], dtype=torch.long)
+        counts = np.bincount(edges[:, 0], minlength=num_nodes)
+        self.rowptr = torch.tensor(np.concatenate([[0], np.cumsum(counts)]), dtype=torch.long)
+        self.deg = torch.tensor(counts, dtype=torch.long)
+        self.num_nodes = num_nodes
+        self.walk_length = walk_length
+        self.context_size = context_size
+        self.walks_per_node = walks_per_node
+
+    def _windows(self, rw):
+        count = 1 + self.walk_length + 1 - self.context_size
+        return self.torch.cat([rw[:, j:j + self.context_size] for j in range(count)], 0)
+
+    def pos(self, batch, generator):
+        torch = self.torch
+        node = batch.repeat(self.walks_per_node)
+        walk = [node]
+        for _ in range(self.walk_length):
+            deg = self.deg[node]
+            pick = (torch.rand(len(node), generator=generator) * deg.clamp(min=1)).long()
+            nxt = self.col[(self.rowptr[node] + pick).clamp(max=len(self.col) - 1)]
+            node = torch.where(deg > 0, nxt, node)
+            walk.append(node)
+        return self._windows(torch.stack(walk, 1))
+
+    def neg(self, batch, generator):
+        torch = self.torch
+        node = batch.repeat(self.walks_per_node)
+        rw = torch.randint(self.num_nodes, (len(node), self.walk_length), generator=generator)
+        return self._windows(torch.cat([node.view(-1, 1), rw], 1))
+
+
+def node2vec_loss(torch, embedding, pos_rw, neg_rw):
+    eps = 1e-15
+    dim = embedding.size(1)
+
+    def side(rw):
+        start, rest = rw[:, 0], rw[:, 1:].contiguous()
+        h_start = embedding[start].view(rw.size(0), 1, dim)
+        h_rest = embedding[rest.view(-1)].view(rw.size(0), -1, dim)
+        return (h_start * h_rest).sum(dim=-1).view(-1)
+
+    pos_loss = -torch.log(torch.sigmoid(side(pos_rw)) + eps).mean()
+    neg_loss = -torch.log(1 - torch.sigmoid(side(neg_rw)) + eps).mean()
+    return pos_loss + neg_loss
+
+
+def train_node2vec(torch, db, grid, params, fixed, out, ckpt_path, device, args):
+    edges = graph_edges(db, grid, fixed)
+    walks = Walks(torch, edges, grid.grid_size, params["walk_length"], params["context_size"],
+                  params["walks_per_node"])
+    dim = params["gridemb_dim"]
+    embedding = torch.nn.Embedding(grid.grid_size, dim).to(device)
+    torch.nn.init.normal_(embedding.weight)
+    optimizer = torch.optim.Adam(embedding.parameters(), lr=params["gridemb_lr"])
+    state = {"epoch": 0, "cnt": 0, "last_loss": 0.0}
+    if ckpt_path.exists():
+        saved = torch.load(ckpt_path, map_location=device)
+        embedding.load_state_dict(saved["embedding"])
+        optimizer.load_state_dict(saved["optimizer"])
+        state = saved["state"]
+        print(f"node2vec: resuming at epoch {state['epoch']}", flush=True)
+    epochs = args.node2vec_epochs or params["gridemb_epochs"]
+    patience = 200
+    while state["epoch"] < epochs:
+        generator = torch.Generator().manual_seed(args.seed * 1000003 + state["epoch"])
+        perm = torch.randperm(grid.grid_size, generator=generator)
+        total, batches = 0.0, 0
+        for begin in range(0, grid.grid_size, 128):
+            batch = perm[begin:begin + 128]
+            pos_rw = walks.pos(batch, generator).to(device)
+            neg_rw = walks.neg(batch, generator).to(device)
+            optimizer.zero_grad()
+            loss = node2vec_loss(torch, embedding.weight, pos_rw, neg_rw)
+            loss.backward()
+            optimizer.step()
+            total += loss.item()
+            batches += 1
+        loss = total / batches
+        state["epoch"] += 1
+        if abs(loss - state["last_loss"]) < 1e-3:
+            state["cnt"] += 1
+        else:
+            state["cnt"] = 0
+        state["last_loss"] = loss
+        print(f"node2vec epoch {state['epoch']}/{epochs} loss {loss:.4f}", flush=True)
+        save_atomic(torch, {"embedding": embedding.state_dict(), "optimizer": optimizer.state_dict(),
+                            "state": state}, ckpt_path)
+        if state["cnt"] == patience:
+            break
+    save_atomic(torch, embedding.weight.detach().cpu(), out)
+
+
+def token_windows(db, grid, params):
+    offsets, lat, lon, t = db
+    tokens = grid.tokens(lon, lat)
+    result = []
+    for i in range(len(offsets) - 1):
+        begin, end = offsets[i], offsets[i + 1]
+        for s, e, _, _ in windows(end - begin, params["max_length"], params["overlap"]):
+            result.append((begin + s, begin + e))
+    return tokens, t, result
+
+
+def make_tbert(torch, grid_size, embed_size, grid_emb=None):
+    from Model.tbert import TBERT, TBERTEmbedding, TemporalEncoding
+    embedding = TBERTEmbedding(TemporalEncoding(embed_size), embed_size, grid_size, grid_emb)
+    return TBERT(embedding, embed_size * 4, num_layers=4, num_heads=8, init_param=False, detach=False)
+
+
+def train_tbert(torch, db, grid, params, fixed, grid_emb, out, ckpt_path, device, args):
+    from Model.tbert import MaskedLM, gen_random_mask
+    tokens, t, spans = token_windows(db, grid, params)
+    embed_size = params["gridemb_dim"]
+    model = make_tbert(torch, grid.grid_size, embed_size, grid_emb).to(device)
+    objective = MaskedLM(embed_size, grid.grid_size).to(device)
+    optimizer = torch.optim.Adam(list(model.parameters()) + list(objective.parameters()), lr=1e-4)
+    state = {"epoch": 0, "batch": 0}
+    if ckpt_path.exists():
+        saved = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(saved["model"])
+        objective.load_state_dict(saved["objective"])
+        optimizer.load_state_dict(saved["optimizer"])
+        state = saved["state"]
+        print(f"T-BERT: resuming at epoch {state['epoch']}, batch {state['batch']}", flush=True)
+    epochs = args.tbert_epochs or params["Bert"]["embed_epoch"]
+    batch_size = 64
+    clock = Clock(args.save_minutes)
+
+    def checkpoint():
+        save_atomic(torch, {"model": model.state_dict(), "objective": objective.state_dict(),
+                            "optimizer": optimizer.state_dict(), "state": dict(state)}, ckpt_path)
+
+    model.train()
+    objective.train()
+    while state["epoch"] < epochs:
+        order = np.random.default_rng([args.seed, 1, state["epoch"]]).permutation(len(spans))
+        count = math.ceil(len(spans) / batch_size)
+        total = 0.0
+        while state["batch"] < count:
+            pick = order[state["batch"] * batch_size:(state["batch"] + 1) * batch_size]
+            lengths = [spans[k][1] - spans[k][0] for k in pick]
+            width = max(lengths)
+            src = np.zeros((len(pick), width), dtype=np.int64)
+            ts = torch.zeros((len(pick), width), dtype=torch.float32)
+            for row, k in enumerate(pick):
+                s, e = spans[k]
+                src[row, :e - s] = tokens[s:e]
+                ts[row, :e - s] = window_times(torch, t[s:e], fixed)
+            src = torch.tensor(src, device=device)
+            ts = ts.to(device)
+            torch.manual_seed(args.seed * 1000003 + state["epoch"] * 100003 + state["batch"])
+            valid = torch.tensor(lengths, device=device)
+            mask_index = gen_random_mask(valid, width, mask_prop=0.2)
+            flat = src.reshape(-1)
+            origin = flat[mask_index]
+            masked = flat.index_fill(0, mask_index, 1).reshape(len(pick), -1)
+            out_t = model(masked, timestamp=ts)
+            loss = objective(out_t.reshape(-1, embed_size)[mask_index], origin_tokens=origin)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total += loss.item()
+            state["batch"] += 1
+            if clock.due():
+                checkpoint()
+                print(f"T-BERT epoch {state['epoch'] + 1}/{epochs} batch {state['batch']}/{count} "
+                      f"loss {loss.item():.4f}", flush=True)
+        state["epoch"] += 1
+        state["batch"] = 0
+        checkpoint()
+        print(f"T-BERT epoch {state['epoch']}/{epochs} mean loss {total / count:.4f}", flush=True)
+    save_atomic(torch, model.state_dict(), out)
+
+
+def trajectory_features(torch, tbert, db, grid, params, fixed, device):
+    import torch.nn.functional as F
+    offsets, lat, lon, t = db
+    tokens = grid.tokens(lon, lat)
+    tbert.to(device)
+    tbert.eval()
+    items = []
+    with torch.no_grad():
+        for i in range(len(offsets) - 1):
+            begin, end = offsets[i], offsets[i + 1]
+            spans = windows(end - begin, params["max_length"], params["overlap"])
+            width = max(e - s for s, e, _, _ in spans)
+            src = torch.zeros((len(spans), width), dtype=torch.long)
+            ts = torch.zeros((len(spans), width), dtype=torch.float32)
+            for row, (s, e, _, _) in enumerate(spans):
+                src[row, :e - s] = torch.tensor(tokens[begin + s:begin + e])
+                ts[row, :e - s] = window_times(torch, t[begin + s:begin + e], fixed)
+            out = tbert(src.to(device), timestamp=ts.to(device))
+            parts = [out[j][vs:ve] for j, (_, _, vs, ve) in enumerate(spans)]
+            point = torch.cat(parts, 0)
+            seg = torch.stack([p.mean(0) for p in parts])
+            unit = F.normalize(point, dim=1, eps=1e-8)
+            m = point.size(0)
+            neighbor = torch.empty((m, 10), dtype=torch.long, device=device)
+            for r in range(0, m, 4096):
+                neighbor[r:r + 4096] = torch.topk(unit[r:r + 4096] @ unit.T, min(11, m), dim=-1).indices[:, 1:]
+            items.append({"feature": torch.cat([point, seg], 0).cpu(), "points": m,
+                          "emb": point.mean(0).cpu(), "neighbor": neighbor.T.contiguous().cpu()})
+            if (i + 1) % 2000 == 0:
+                print(f"features {i + 1}/{len(offsets) - 1}", flush=True)
+    return items
+
+
+def edge_index(torch, m, segs, device):
+    points = torch.arange(m, device=device)
+    return torch.cartesian_prod(points, torch.arange(m, m + segs, device=device)).t().contiguous()
+
+
+def uniform_term(torch, z):
+    from torch.utils.checkpoint import checkpoint
+
+    def rows(block, full):
+        return torch.cdist(block, full).pow(2).mul(-2).exp().mean(dim=1).log()
+
+    if z.size(0) <= 4096:
+        return rows(z, z)
+    return torch.cat([checkpoint(rows, z[r:r + 4096], z, use_reentrant=False)
+                      for r in range(0, z.size(0), 4096)])
+
+
+def importance(torch, align, uniform, fixed):
+    score = align * uniform.exp() if fixed else align * uniform
+    return torch.softmax(score, dim=0)
+
+
+def gat_terms(torch, z, neighbor, amply, fixed):
+    align = sum((z - z[neighbor[i]]).norm(dim=1).pow(2) for i in range(neighbor.size(0))) / neighbor.size(0)
+    uniform = uniform_term(torch, z)
+    important = importance(torch, align, uniform, fixed)
+    mutual = torch.nn.functional.binary_cross_entropy(important, amply) if amply is not None else 0
+    top = torch.sort(torch.sort(important[1:-1], descending=True).indices[:3]).values + 1
+    simp = (z[top].sum(0) + z[0] + z[-1]) / 5
+    return align.mean(), uniform.mean(), simp, mutual
+
+
+def gat_simp_indices(torch, z, neighbor, fixed):
+    align = sum((z - z[neighbor[i]]).norm(dim=1).pow(2) for i in range(neighbor.size(0))) / neighbor.size(0)
+    important = importance(torch, align, uniform_term(torch, z), fixed)[1:-1]
+    k = int(0.4 * z.size(0))
+    top = torch.sort(torch.sort(important, descending=True).indices[:k]).values
+    return (top + 1).cpu().numpy()
+
+
+def diffusion_inputs(db, params):
+    offsets, lat, lon, _ = db
+    feats = []
+    for i in range(len(offsets) - 1):
+        b, e = offsets[i], offsets[i + 1]
+        x = (lon[b:e] - params["minlon"]) / (params["maxlon"] - params["minlon"])
+        y = (lat[b:e] - params["minlat"]) / (params["maxlat"] - params["minlat"])
+        src = np.stack([lon[b:e], lat[b:e]], 1)
+        lens = np.hypot(np.diff(src[:, 0]), np.diff(src[:, 1]))
+        f = np.zeros((e - b, 4), dtype=np.float32)
+        f[:, 0], f[:, 1] = x, y
+        if e - b > 2:
+            prev, cur, nxt = src[:-2], src[1:-1], src[2:]
+            radian = (math.pi - np.arctan2(prev[:, 0] - cur[:, 0], prev[:, 1] - cur[:, 1])
+                      + np.arctan2(nxt[:, 0] - cur[:, 0], nxt[:, 1] - cur[:, 1]))
+            f[1:-1, 2] = (lens[:-1] + lens[1:]) / 2
+            f[1:-1, 3] = 1 - np.abs(radian) / math.pi
+        feats.append(f)
+    return feats
+
+
+def length_batches(lengths, budget, cap, rng):
+    order = np.argsort(lengths, kind="stable")
+    batches, current, width = [], [], 0
+    for k in order:
+        width_next = max(width, lengths[k])
+        if current and (len(current) == cap or width_next * (len(current) + 1) > budget):
+            batches.append(current)
+            current, width_next = [], lengths[k]
+        current.append(k)
+        width = width_next
+    if current:
+        batches.append(current)
+    rng.shuffle(batches)
+    return batches
+
+
+def pad(torch, arrays, device):
+    width = max(len(a) for a in arrays)
+    out = torch.zeros((len(arrays), width, arrays[0].shape[1]), dtype=torch.float32)
+    mask = torch.ones((len(arrays), width), dtype=torch.bool)
+    for i, a in enumerate(arrays):
+        out[i, :len(a)] = torch.as_tensor(a)
+        mask[i, :len(a)] = False
+    return out.to(device), mask.to(device)
+
+
+def diffusion_batch(torch, feats, simp_idx, pick, fixed, device):
+    trajs = [feats[k] for k in pick]
+    simps, labels = [], []
+    for k in pick:
+        idx = np.asarray(simp_idx[k], dtype=np.int64)
+        simps.append(feats[k][np.concatenate([[0], idx, [-1]])])
+        labels.append(np.concatenate([[0], idx, [len(feats[k]) - 1]]))
+    traj_pad, traj_mask = pad(torch, trajs, device)
+    simp_pad, simp_mask = pad(torch, simps, device)
+    label = torch.full((len(pick), simp_pad.size(1)), -100, dtype=torch.long)
+    for i, l in enumerate(labels):
+        label[i, :len(l)] = torch.as_tensor(l)
+    return traj_pad, traj_mask, simp_pad, simp_mask, label.to(device)
+
+
+def masked_mean(torch, values, valid):
+    weight = valid.float()
+    per = (values * weight).sum(1) / weight.sum(1).clamp(min=1)
+    return per.mean()
+
+
+def diffusion_loss(torch, model, diffusion, batch, t):
+    from DiffTeacher.GaussianDiffusion import _extract_into_tensor
+    traj_pad, traj_mask, simp_pad, simp_mask, labels = batch
+    length = traj_pad.size(1)
+    pad_mask = torch.cat([traj_mask, simp_mask], 1)
+    x_start_mean = model.get_embeds(torch.cat([traj_pad, simp_pad], 1), pad_mask)
+    std = _extract_into_tensor(diffusion.sqrt_one_minus_alphas_cumprod,
+                               torch.tensor([0], device=x_start_mean.device), x_start_mean.shape)
+    x_start = x_start_mean + std * torch.randn_like(x_start_mean)
+    x_t = diffusion.q_sample(x_start, t, noise=torch.randn_like(x_start))
+    x_t[:, :length] = x_start_mean[:, :length]
+    out = model(x_t, pad_mask, diffusion._scale_timesteps(t))
+    simp_valid = ~simp_mask
+    mse = masked_mean(torch, ((x_start_mean[:, length:] * 10 - out[:, length:] * 10) ** 2).mean(-1), simp_valid)
+    logits = torch.bmm(x_start_mean[:, length:], x_start_mean[:, :length].transpose(1, 2))
+    logits = logits.masked_fill(traj_mask[:, None, :], float("-inf"))
+    nll = torch.nn.functional.cross_entropy(logits.reshape(-1, length), labels.reshape(-1), ignore_index=-100)
+    t_last = torch.full((x_start.size(0),), diffusion.num_timesteps - 1, device=x_start.device, dtype=torch.long)
+    out_mean, _, _ = diffusion.q_mean_variance(x_start, t_last)
+    t_t = masked_mean(torch, (out_mean ** 2).mean(-1), ~pad_mask)
+    return mse + t_t + 0.1 * nll
+
+
+def diffusion_sample(torch, model, diffusion, batch, amplify_len, steps, fixed, device):
+    traj_pad, traj_mask = batch[0], batch[1]
+    length = traj_pad.size(1)
+    x_start_mean = model.get_embeds(traj_pad, traj_mask)
+    pad_mask = torch.cat([traj_mask, torch.zeros((traj_mask.size(0), amplify_len), dtype=torch.bool,
+                                                   device=device)], 1)
+    x = torch.randn((x_start_mean.size(0), length + amplify_len, x_start_mean.size(2)), device=device)
+    x[:, :length] = x_start_mean
+    wrapped = diffusion._wrap_model(model)
+    for i in (reversed(range(steps)) if fixed else [0]):
+        t = torch.full((x.size(0),), i, device=device, dtype=torch.long)
+        out = diffusion.p_sample(wrapped, x, pad_mask, t, clip_denoised=False, denoised_fn=None, top_p=-1)
+        sample = out["sample"]
+        sample[:, :length] = x_start_mean
+        if fixed:
+            x = sample
+    if not fixed:
+        x = sample
+    summary = x[:, length:]
+    logits = torch.bmm(summary, x[:, :length].transpose(1, 2)).masked_fill(traj_mask[:, None, :], float("-inf"))
+    candidates = torch.topk(torch.softmax(logits, -1), k=amplify_len, dim=-1).indices.cpu().numpy()
+    result = []
+    for row in candidates:
+        chosen = []
+        for options in row:
+            for c in options:
+                if c not in chosen:
+                    chosen.append(int(c))
+                    break
+        result.append(np.array(chosen, dtype=np.int64))
+    return result
+
+
+def extend_positions(model, length):
+    from DiffTeacher.PositionalEncoding import PositionalEncoding
+    old = model.position_embeddings
+    if old.pe.size(0) <= length:
+        model.position_embeddings = PositionalEncoding(old.pe.size(2), max_len=length).to(old.pe.device)
+
+
+def make_diffusion(params):
+    from DiffTeacher.model_util import create_model_and_diffusion
+    d = params["Diff"]
+    return create_model_and_diffusion(
+        d["in_dim"], d["encoder_n_head"], d["encoder_hidden_dim"], d["encoder_n_layer"],
+        d["in_channels"], d["hidden_channels"], d["out_channels"], d["n_head"], d["n_layer"],
+        d["trans_hidden_channels"], d["attn_dropout"], d["dropout"], d["learn_sigma"],
+        d["sigma_small"], d["diffusion_steps"], d["noise_schedule"], d["timestep_respacing"],
+        d["use_kl"], d["predict_xstart"], d["rescale_timesteps"], d["rescale_learned_sigmas"],
+        d["training_mode"])
+
+
+def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, device, args):
+    from Model.GraphSimp import GAT
+    gat_params = params["GAT"]
+    diff_params = params["Diff"]
+    rounds = args.rounds or params["mutual_epochs"]
+    gat_epochs = args.gat_epochs or gat_params["num_epoch"]
+    diff_epochs = args.diff_epochs or diff_params["epochs"]
+    amplify_len = diff_params["amplify_len"]
+    lengths = np.array([it["points"] for it in items])
+    max_len = int(lengths.max())
+    n = len(items)
+
+    gat = GAT(gat_params).to(device)
+    diff_model, diffusion = make_diffusion(params)
+    extend_positions(diff_model, max_len + int(0.4 * max_len) + amplify_len + 4)
+    diff_model.to(device)
+    gat_opt = torch.optim.Adam(gat.parameters(), lr=float(gat_params["lr"]), weight_decay=gat_params["wd"])
+    diff_opt = torch.optim.AdamW(diff_model.parameters(), lr=float(diff_params["lr"]),
+                                 weight_decay=diff_params["weight_decay"])
+    state = {"round": 0, "phase": "gat", "epoch": 0, "batch": 0}
+    simp_idx, amply_idx, sampled = None, None, {}
+    if ckpt_path.exists():
+        saved = torch.load(ckpt_path, map_location=device, weights_only=False)
+        gat.load_state_dict(saved["gat"])
+        diff_model.load_state_dict(saved["diff"])
+        gat_opt.load_state_dict(saved["gat_opt"])
+        diff_opt.load_state_dict(saved["diff_opt"])
+        state, simp_idx, amply_idx, sampled = saved["state"], saved["simp_idx"], saved["amply_idx"], saved["sampled"]
+        print(f"MLSimp: resuming at round {state['round'] + 1}, {state['phase']}, "
+              f"epoch {state['epoch']}, batch {state['batch']}", flush=True)
+    clock = Clock(args.save_minutes)
+
+    def checkpoint():
+        save_atomic(torch, {"gat": gat.state_dict(), "diff": diff_model.state_dict(),
+                            "gat_opt": gat_opt.state_dict(), "diff_opt": diff_opt.state_dict(),
+                            "state": dict(state), "simp_idx": simp_idx, "amply_idx": amply_idx,
+                            "sampled": sampled}, ckpt_path)
+
+    def advance(phase):
+        state.update(phase=phase, epoch=0, batch=0)
+        checkpoint()
+
+    while state["round"] < rounds:
+        r = state["round"]
+        if state["phase"] == "gat":
+            if state["epoch"] == 0 and state["batch"] == 0:
+                gat_opt = torch.optim.Adam(gat.parameters(), lr=float(gat_params["lr"]),
+                                           weight_decay=gat_params["wd"])
+            gat.train()
+            while state["epoch"] < gat_epochs:
+                order = np.random.default_rng([args.seed, 2, r, state["epoch"]]).permutation(n)
+                count = math.ceil(n / gat_params["batch_size"])
+                while state["batch"] < count:
+                    pick = order[state["batch"] * gat_params["batch_size"]:(state["batch"] + 1) * gat_params["batch_size"]]
+                    aligns, uniforms, simps, mutuals, embs = [], [], [], [], []
+                    for k in pick:
+                        it = items[k]
+                        feature = it["feature"].to(device)
+                        z = gat(feature, edge_index(torch, it["points"], feature.size(0) - it["points"], device))[:it["points"]]
+                        amply = None
+                        if amply_idx is not None:
+                            amply = torch.zeros(it["points"], device=device)
+                            amply[torch.as_tensor(amply_idx[k], device=device)] = 1
+                        a, u, s, mu = gat_terms(torch, z, it["neighbor"].to(device), amply, fixed)
+                        aligns.append(a); uniforms.append(u); simps.append(s); mutuals.append(mu)
+                        embs.append(it["emb"].to(device))
+                    simps = torch.nn.functional.normalize(torch.stack(simps), p=2, dim=1)
+                    embs = torch.nn.functional.normalize(torch.stack(embs), p=2, dim=1)
+                    batch_loss = torch.nn.functional.mse_loss(simps @ simps.T, embs @ embs.T)
+                    mutual = sum(mutuals) / len(pick) if amply_idx is not None else 0
+                    loss = (torch.stack(aligns).mean() + gat_params["lambda1"] * torch.stack(uniforms).mean()
+                            + gat_params["lambda2"] * batch_loss + gat_params["lambda3"] * mutual)
+                    gat_opt.zero_grad()
+                    loss.backward()
+                    gat_opt.step()
+                    state["batch"] += 1
+                    if clock.due():
+                        checkpoint()
+                        print(f"round {r + 1}/{rounds} GAT epoch {state['epoch'] + 1}/{gat_epochs} "
+                              f"batch {state['batch']}/{count} loss {loss.item():.4f}", flush=True)
+                state["epoch"] += 1
+                state["batch"] = 0
+                checkpoint()
+                print(f"round {r + 1}/{rounds} GAT epoch {state['epoch']}/{gat_epochs} done", flush=True)
+            gat.eval()
+            with torch.no_grad():
+                simp_idx = []
+                for it in items:
+                    feature = it["feature"].to(device)
+                    z = gat(feature, edge_index(torch, it["points"], feature.size(0) - it["points"], device))[:it["points"]]
+                    simp_idx.append(gat_simp_indices(torch, z, it["neighbor"].to(device), fixed))
+            save_atomic(torch, gat.state_dict(), out_dir / "gat.pt")
+            advance("diff")
+        if state["phase"] == "diff":
+            if r == rounds - 1:
+                state["round"] += 1
+                advance("gat")
+                break
+            if state["epoch"] == 0 and state["batch"] == 0:
+                diff_opt = torch.optim.AdamW(diff_model.parameters(), lr=float(diff_params["lr"]),
+                                             weight_decay=diff_params["weight_decay"])
+            diff_model.train()
+            budget = diff_params["batch_size"] * 1400
+            while state["epoch"] < diff_epochs:
+                rng = np.random.default_rng([args.seed, 3, r, state["epoch"]])
+                batches = length_batches(lengths + np.array([len(s) for s in simp_idx]) + 2, budget,
+                                         diff_params["batch_size"], rng)
+                while state["batch"] < len(batches):
+                    pick = batches[state["batch"]]
+                    batch = diffusion_batch(torch, feats, simp_idx, pick, fixed, device)
+                    t = torch.randint(0, diffusion.num_timesteps, (len(pick),), device=device)
+                    loss = diffusion_loss(torch, diff_model, diffusion, batch, t)
+                    diff_opt.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(diff_model.parameters(), 3)
+                    diff_opt.step()
+                    state["batch"] += 1
+                    if clock.due():
+                        checkpoint()
+                        print(f"round {r + 1}/{rounds} diffusion epoch {state['epoch'] + 1}/{diff_epochs} "
+                              f"batch {state['batch']}/{len(batches)} loss {loss.item():.4f}", flush=True)
+                state["epoch"] += 1
+                state["batch"] = 0
+                checkpoint()
+                print(f"round {r + 1}/{rounds} diffusion epoch {state['epoch']}/{diff_epochs} done", flush=True)
+            sampled = {}
+            advance("sample")
+        if state["phase"] == "sample":
+            diff_model.eval()
+            batches = length_batches(lengths + amplify_len, diff_params["batch_size"] * 1400,
+                                     diff_params["batch_size"], np.random.default_rng([args.seed, 4, r]))
+            with torch.no_grad():
+                for b, pick in enumerate(batches):
+                    if b in sampled:
+                        continue
+                    batch = diffusion_batch(torch, feats, simp_idx, pick, fixed, device)
+                    for k, chosen in zip(pick, diffusion_sample(torch, diff_model, diffusion, batch, amplify_len,
+                                                                diff_params["diff_step_eval"], fixed, device)):
+                        sampled.setdefault(b, {})[int(k)] = chosen
+                    if clock.due():
+                        checkpoint()
+                        print(f"round {r + 1}/{rounds} sampling batch {b + 1}/{len(batches)}", flush=True)
+            amply_idx = [None] * n
+            for part in sampled.values():
+                for k, chosen in part.items():
+                    amply_idx[k] = chosen
+            sampled = {}
+            state["round"] += 1
+            advance("gat")
+            print(f"round {r + 1}/{rounds} done", flush=True)
+    save_atomic(torch, gat.state_dict(), out_dir / "gat.pt")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--mlsimp", type=Path, default=MLSIMP,
+                        help="MLSimp checkout (default: the third_party/MLSimp submodule)")
+    parser.add_argument("--data", type=Path, required=True, help="export folder (<export-db>/seed<s>)")
+    parser.add_argument("--out", type=Path, required=True, help="folder for the trained models")
+    parser.add_argument("--fixed", action="store_true",
+                        help="also fix the issues that change what MLSimp learns (see mlsimp/README.md)")
+    parser.add_argument("--device", default="auto", help="auto, cpu, cuda or mps")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--limit", type=int, help="use only the first trajectories (to test)")
+    parser.add_argument("--save-minutes", type=float, default=10, help="minutes between checkpoints")
+    parser.add_argument("--node2vec-epochs", type=int, help="override (to test)")
+    parser.add_argument("--tbert-epochs", type=int, help="override (to test)")
+    parser.add_argument("--rounds", type=int, help="override the mutual rounds (to test)")
+    parser.add_argument("--gat-epochs", type=int, help="override (to test)")
+    parser.add_argument("--diff-epochs", type=int, help="override (to test)")
+    args = parser.parse_args()
+
+    data = args.data.resolve()
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    db = load_database(data)
+    if args.limit:
+        offsets = db[0][:args.limit + 1]
+        db = (offsets,) + tuple(a[:offsets[-1]] for a in db[1:])
+
+    os.chdir(args.mlsimp.resolve())
+    sys.path.insert(0, str(Path.cwd()))
+    import torch
+    import yaml
+
+    with open("Setting.yaml") as file:
+        params = yaml.safe_load(file)["Geolife"]
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    device = pick_device(torch, args.device)
+    config = {"fixed": args.fixed, "seed": args.seed, "data": str(data), "trajectories": len(db[0]) - 1}
+    (out / "config.json").write_text(json.dumps(config, indent=2))
+    print(f"device {device}, {config['trajectories']} trajectories, "
+          f"{'fixed' if args.fixed else 'published'} MLSimp", flush=True)
+
+    started = time.time()
+    if not (out / "grid.npz").exists():
+        build_grid(db, params, args.fixed, out / "grid.npz")
+    grid = GridMap(out / "grid.npz")
+    if not (out / "node2vec.pt").exists():
+        train_node2vec(torch, db, grid, params, args.fixed, out / "node2vec.pt", out / "node2vec_ckpt.pt", device, args)
+    grid_emb = torch.load(out / "node2vec.pt")
+    if not (out / "tbert.pt").exists():
+        train_tbert(torch, db, grid, params, args.fixed, grid_emb, out / "tbert.pt", out / "tbert_ckpt.pt", device, args)
+    if not (out / "done.txt").exists():
+        tbert = make_tbert(torch, grid.grid_size, params["gridemb_dim"])
+        tbert.load_state_dict(torch.load(out / "tbert.pt", map_location="cpu"))
+        items = trajectory_features(torch, tbert, db, grid, params, args.fixed, device)
+        del tbert
+        feats = diffusion_inputs(db, params)
+        train_mlsimp(torch, db, items, feats, params, args.fixed, out, out / "mlsimp_ckpt.pt", device, args)
+        (out / "done.txt").write_text(f"{time.time() - started:.0f} s\n")
+    print(f"done, models in {out}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

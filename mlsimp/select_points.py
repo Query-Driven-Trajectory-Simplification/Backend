@@ -35,17 +35,21 @@ def main():
     parser.add_argument("--data", type=Path, required=True,
                         help="export folder (<export-db>/seed<s>)")
     parser.add_argument("--seed", type=int, default=0, help="sampling seed")
+    parser.add_argument("--tag", help="read scores_<tag>.npy and write MLSimp-<tag>_<share>.bin")
+    parser.add_argument("--hits", default="range_hits.bin",
+                        help="range hits file, e.g. range_hits_all.bin for every training box")
     args = parser.parse_args()
 
     offsets = np.fromfile(args.data / "offsets.bin", dtype=np.uint64).astype(np.int64)
     n = len(offsets) - 1
     assert (np.diff(offsets) >= 2).all(), "every trajectory needs two endpoints"
-    scores = np.load(args.data / "scores.npy")
+    suffix = f"_{args.tag}" if args.tag else ""
+    scores = np.load(args.data / f"scores{suffix}.npy")
     assert len(scores) == offsets[-1], "scores.npy doesn't match the database, rerun score_points"
-    done = args.data / "scores_done.txt"
+    done = args.data / f"scores{suffix}_done.txt"
     assert done.exists() and int(done.read_text()) == n, \
         "score_points hasn't finished every trajectory yet"
-    hits = np.fromfile(args.data / "range_hits.bin", dtype=np.uint8)
+    hits = np.fromfile(args.data / args.hits, dtype=np.uint8)
     assert len(hits) == offsets[-1], "range_hits.bin doesn't match the database, rerun the export"
     scores = mlsimp_scores(scores, hits)
 
@@ -56,7 +60,8 @@ def main():
         count = int(budgets.sum()) - 2 * n
         kept = sample(offsets, scores, count, np.random.default_rng(args.seed))
         assert len(kept) == budgets.sum()
-        kept.tofile(args.data / f"MLSimp_{share}.bin")
+        name = f"MLSimp-{args.tag}" if args.tag else "MLSimp"
+        kept.tofile(args.data / f"{name}_{share}.bin")
         print(f"{share}: {len(kept)} points")
 
 

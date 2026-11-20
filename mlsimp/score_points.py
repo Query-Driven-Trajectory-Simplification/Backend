@@ -1,11 +1,13 @@
 """Scores every point of our database with MLSimp's pretrained GeoLife model."""
 
 import argparse
+import json
 import os
 import sys
 import time
 from itertools import zip_longest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -41,6 +43,9 @@ def main():
     parser.add_argument("--threads", type=int, help="CPU threads for torch (default: all cores)")
     parser.add_argument("--limit", type=int, help="stop after this many trajectories (to test)")
     parser.add_argument("--save-every", type=int, default=1000, help="trajectories per checkpoint")
+    parser.add_argument("--model", type=Path,
+                        help="models from train.py (default: the authors' pretrained model)")
+    parser.add_argument("--tag", help="write scores_<tag>.npy instead of scores.npy")
     args = parser.parse_args()
 
     data = args.data.resolve()
@@ -65,20 +70,33 @@ def main():
     bert_params = params["Bert"]
     device = "cpu"
 
-    grid = Grid(params["minlon"], params["minlat"], params["maxlon"], params["maxlat"],
-                params["step"], params["step"], params["dataset"], params["minfreq"],
-                params["max_grid_size"], params["k"], params["grid_start"])
-    grid_ids = np.array(grid.gridmap)
+    fixed = False
+    if args.model:
+        model_dir = args.model.resolve()
+        fixed = json.loads((model_dir / "config.json").read_text())["fixed"]
+        saved = np.load(model_dir / "grid.npz")
+        grid = SimpleNamespace(minx=float(saved["minx"]), miny=float(saved["miny"]),
+                               xstep=float(saved["step"]), ystep=float(saved["step"]),
+                               numx=int(saved["numx"]), numy=int(saved["numy"]))
+        grid_ids = saved["gridmap"]
+        grid_size = int(saved["grid_size"])
+        tbert_path, gat_path = model_dir / "tbert.pt", model_dir / "gat.pt"
+    else:
+        grid = Grid(params["minlon"], params["minlat"], params["maxlon"], params["maxlat"],
+                    params["step"], params["step"], params["dataset"], params["minfreq"],
+                    params["max_grid_size"], params["k"], params["grid_start"])
+        grid_ids = np.array(grid.gridmap)
+        grid_size = bert_params["grid_size"]
+        tbert_path, gat_path = bert_params["pretain_path"], params["GAT"]["save_path"]
 
     embed_size = bert_params["embed_size"]
-    tbert = TBERT(TBERTEmbedding(TemporalEncoding(embed_size), embed_size,
-                                 bert_params["grid_size"]),
+    tbert = TBERT(TBERTEmbedding(TemporalEncoding(embed_size), embed_size, grid_size),
                   embed_size * 4, num_layers=bert_params["tbert_num_layers"],
                   num_heads=bert_params["tbert_num_heads"])
-    tbert.load_state_dict(torch.load(bert_params["pretain_path"], map_location=device))
+    tbert.load_state_dict(torch.load(tbert_path, map_location=device))
     tbert.eval()
     gat = GAT(params["GAT"])
-    gat_state = torch.load(params["GAT"]["save_path"], map_location=device)
+    gat_state = torch.load(gat_path, map_location=device)
     for conv in ("conv1", "conv2"):
         source = gat_state.pop(f"{conv}.lin_src.weight", None)
         target = gat_state.pop(f"{conv}.lin_dst.weight", None)
@@ -88,8 +106,9 @@ def main():
     gat.load_state_dict(gat_state)
     gat.eval()
 
-    scores_path = data / "scores.npy"
-    progress_path = data / "scores_done.txt"
+    suffix = f"_{args.tag}" if args.tag else ""
+    scores_path = data / f"scores{suffix}.npy"
+    progress_path = data / f"scores{suffix}_done.txt"
     scores = np.zeros(len(lat), dtype=np.float32)
     first = 0
     if scores_path.exists() and progress_path.exists():
@@ -114,7 +133,8 @@ def main():
             windows = segments(len(seq), params["max_length"], params["overlap"])
             seg_tokens = np.array(list(zip_longest(*[seq[s:e] for s, e, _, _ in windows],
                                                    fillvalue=0))).T
-            seg_times = np.array(list(zip_longest(*[times[s:e] for s, e, _, _ in windows],
+            seg_times = np.array(list(zip_longest(*[times[s:e] - (times[s] if fixed else 0)
+                                                    for s, e, _, _ in windows],
                                                   fillvalue=0))).T
             out = tbert(torch.tensor(seg_tokens).long(),
                         timestamp=torch.tensor(seg_times).float())
@@ -134,7 +154,13 @@ def main():
             edge_index = torch.cartesian_prod(point_nodes, seg_nodes).t().contiguous()
 
             z = gat(feature, edge_index)[point_nodes]
-            scores[begin:end] = gat.important_sigmoid(z, neighbor).numpy()
+            if fixed:
+                align = sum((z - z[neighbor[k]]).norm(dim=1).pow(2)
+                            for k in range(neighbor.size(0))) / neighbor.size(0)
+                uniform = torch.cdist(z, z).pow(2).mul(-2).exp().mean(dim=1).log()
+                scores[begin:end] = torch.sigmoid(align * uniform.exp()).numpy()
+            else:
+                scores[begin:end] = gat.important_sigmoid(z, neighbor).numpy()
 
             done = i + 1
             if done % args.save_every == 0 or done == stop:

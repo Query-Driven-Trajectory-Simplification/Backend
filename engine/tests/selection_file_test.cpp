@@ -70,7 +70,7 @@ TEST(SelectionFile, MarksPointsInsideRangeBoxes) {
         {.box =
              {.x_min = -1e12, .x_max = 1e12, .y_min = -1e12, .y_max = 1e12, .t_min = 1, .t_max = 2},
          .reference = {}}};
-    EXPECT_EQ(io::export_range_hits(dir, db, queries), 4u);
+    EXPECT_EQ(io::export_range_hits(dir / "range_hits.bin", db, queries), 4u);
     std::ifstream in(dir / "range_hits.bin", std::ios::binary);
     std::vector<char> hits(8);
     in.read(hits.data(), 8);

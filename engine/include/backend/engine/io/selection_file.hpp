@@ -17,7 +17,7 @@ void export_database(const std::filesystem::path &dir, const core::TrajectoryDb 
 void export_budgets(const std::filesystem::path &dir, std::string_view name,
                     std::span<const std::size_t> budgets);
 
-std::size_t export_range_hits(const std::filesystem::path &dir, const core::TrajectoryDb &database,
+std::size_t export_range_hits(const std::filesystem::path &path, const core::TrajectoryDb &database,
                               std::span<const query::RangeQuery> queries);
 
 core::KeptSets read_selection(const std::filesystem::path &path,

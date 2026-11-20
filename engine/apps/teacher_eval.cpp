@@ -396,11 +396,12 @@ int main(int argc, char **argv) try {
             std::vector<query::RangeQuery> boxes;
             for (const auto k : order)
                 boxes.push_back(practice[k]);
-            const auto hits = io::export_range_hits(dir, db, boxes);
+            const auto hits = io::export_range_hits(dir / "range_hits.bin", db, boxes);
+            const auto all_hits = io::export_range_hits(dir / "range_hits_all.bin", db, practice);
             std::cerr << std::format("seed {}: database written to {}, {} of {} practice range "
-                                     "boxes cover {} of {} points\n",
+                                     "boxes cover {} of {} points, all of them cover {}\n",
                                      seed, dir.string(), boxes.size(), practice.size(), hits,
-                                     db.num_points());
+                                     db.num_points(), all_hits);
             continue;
         }
         const auto pairs = workloads.positives;

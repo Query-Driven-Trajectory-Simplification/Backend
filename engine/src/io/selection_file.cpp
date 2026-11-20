@@ -60,9 +60,9 @@ void export_budgets(const std::filesystem::path &dir, std::string_view name,
     write_array<std::uint64_t>(dir / ("budgets_" + std::string(name) + ".bin"), values);
 }
 
-std::size_t export_range_hits(const std::filesystem::path &dir, const core::TrajectoryDb &database,
+std::size_t export_range_hits(const std::filesystem::path &path, const core::TrajectoryDb &database,
                               std::span<const query::RangeQuery> queries) {
-    std::filesystem::create_directories(dir);
+    std::filesystem::create_directories(path.parent_path());
     std::vector<std::uint8_t> hits(database.num_points(), 0);
     std::vector<std::size_t> starts(database.size() + 1, 0);
     for (std::size_t i = 0; i < database.size(); ++i) {
@@ -89,7 +89,7 @@ std::size_t export_range_hits(const std::filesystem::path &dir, const core::Traj
             }
         }
     });
-    write_array<std::uint8_t>(dir / "range_hits.bin", hits);
+    write_array<std::uint8_t>(path, hits);
     return static_cast<std::size_t>(std::ranges::count(hits, std::uint8_t{1}));
 }
 
