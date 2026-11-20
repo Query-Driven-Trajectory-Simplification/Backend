@@ -1,12 +1,13 @@
 #include "backend/engine/pipeline/pipeline.hpp"
 #include "backend/engine/allocation/budget_allocator.hpp"
+#include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
-#include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/io/selection_file.hpp"
 #include "backend/engine/io/workload_export.hpp"
+#include "backend/engine/pipeline/common.hpp"
 #include "backend/engine/pipeline/scorer.hpp"
 #include "backend/engine/pipeline/test_workloads.hpp"
 #include "backend/engine/selection/selector.hpp"
-#include "backend/engine/split/split.hpp"
 #include "backend/engine/teacher/teacher.hpp"
 #include "backend/engine/teacher/workloads.hpp"
 
@@ -17,23 +18,12 @@
 #include <format>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace pipeline {
 
 namespace {
-
-struct Databases {
-    core::TrajectoryDb database;
-    core::TrajectoryDb queries;
-};
-
-Databases load_split(const Config &config) {
-    const core::TrajectoryDb all = io::load_trajectories(config.data_path);
-    const auto parts = split::split(all, config.split, config.seed);
-    return {.database = core::subset(all, parts.database),
-            .queries = core::subset(all, parts.queries)};
-}
 
 // alpha = 1 keeps the old name, which the Travis frontend expects
 std::string baseline_name(selection::AlgorithmType algorithm, double share, double alpha) {
@@ -84,6 +74,21 @@ void run(const Config &config) {
                                          magic_enum::enum_name(algorithm), alpha),
                              baseline_name(algorithm, share, alpha),
                              selection::simplify_database(database, algorithm, budgets));
+        }
+
+        for (const auto &name : config.external_algorithms) {
+            const auto path =
+                config.selection_dir / std::format("{}_{:g}pct.bin", name, share * 100);
+            const auto kept = io::read_selection(path, database);
+            std::size_t points = 0;
+            for (const auto &set : kept)
+                points += set.size();
+            if (points != budget)
+                throw std::runtime_error(
+                    std::format("{}: {} points, budget {}", path.string(), points, budget));
+            scorer.score(std::format("{}% {}", share * 100, name),
+                         std::format("{}_{:g}pct", name, share * 100),
+                         core::to_simplification(kept));
         }
 
         if (teacher) {

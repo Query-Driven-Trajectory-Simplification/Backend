@@ -11,6 +11,7 @@
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/join.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
+#include "backend/engine/io/selection_file.hpp"
 #include "backend/engine/pipeline/config.hpp"
 #include "backend/engine/pipeline/test_workloads.hpp"
 #include "backend/engine/query/frechet_helper.hpp"
@@ -30,7 +31,9 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -43,6 +46,8 @@ constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 constexpr std::array kEvalEps{100.0, 125.0, 150.0, 175.0, 200.0, 250.0, 300.0};
 constexpr double kRdpAlpha = 0.25; // RDP_a025
 constexpr std::array kPartnerLambdas{0.5, 1.0};
+constexpr std::size_t kExportBoxes = 100;
+constexpr std::uint64_t kExportBoxSeedOffset = 7101;
 // Unset options keep the config's value; arms default to all teacher arms
 struct Args {
     std::filesystem::path config = "engine/configs/geolife.json";
@@ -61,6 +66,9 @@ struct Args {
     std::optional<std::vector<double>> term_weights; // config: teacher.term_weights
     std::vector<double> eval_eps{kEvalEps.begin(), kEvalEps.end()};
     bool knn_check = false;
+    std::optional<std::filesystem::path> export_db;
+    std::vector<std::string> external;
+    std::optional<std::filesystem::path> external_dir;
 };
 
 template <typename T> std::vector<T> parse_list(const std::string &text) {
@@ -121,14 +129,25 @@ Args parse_args(int argc, char **argv) {
             args.baselines = false;
         else if (key == "--seen-pairs-only")
             args.all_join_pairs = false;
+        else if (key == "--no-teacher")
+            args.arms.clear();
+        else if (key == "--export-db")
+            args.export_db = value();
+        else if (key == "--external")
+            args.external = parse_list<std::string>(value());
+        else if (key == "--external-dir")
+            args.external_dir = value();
         else
             throw std::invalid_argument("unknown argument " + key +
                                         " (--config --data --out --cache --seeds --shares --arms "
                                         "--teacher-join --train-eps --held-out-term "
                                         "--independent-knn --term-weights --eval-eps --knn-check "
-                                        "--no-baselines --seen-pairs-only)");
+                                        "--no-baselines --seen-pairs-only --no-teacher "
+                                        "--export-db --external --external-dir)");
     }
     teacher::check_arms(args.arms);
+    if (!args.external.empty() && !args.external_dir)
+        throw std::invalid_argument("--external needs --external-dir");
     return args;
 }
 
@@ -387,18 +406,45 @@ int main(int argc, char **argv) try {
         auto start = std::chrono::steady_clock::now();
         auto workloads = teacher::load_or_build_workloads(
             db, pipeline::teacher_workload_config(config), seed, config.teacher.cache_dir);
+
+        if (args.export_db) {
+            const auto dir = *args.export_db / std::format("seed{}", seed);
+            io::export_database(dir, db);
+            for (const double share : config.budget_shares)
+                io::export_budgets(dir, std::format("{:g}pct", share * 100),
+                                   allocation::create_trajectory_budgets(
+                                       db, allocation::AllocatorType::SizeProportional,
+                                       allocation::total_budget(db, share), 0.0));
+            const auto &practice = workloads.range.queries;
+            std::vector<std::size_t> order(practice.size());
+            std::iota(order.begin(), order.end(), std::size_t{0});
+            std::mt19937_64 rng(seed + kExportBoxSeedOffset);
+            std::ranges::shuffle(order, rng);
+            order.resize(std::min(order.size(), kExportBoxes));
+            std::vector<query::RangeQuery> boxes;
+            for (const auto k : order)
+                boxes.push_back(practice[k]);
+            const auto hits = io::export_range_hits(dir, db, boxes);
+            std::cerr << std::format("seed {}: database written to {}, {} of {} practice range "
+                                     "boxes cover {} of {} points\n",
+                                     seed, dir.string(), boxes.size(), practice.size(), hits,
+                                     db.num_points());
+            continue;
+        }
         const auto pairs = workloads.positives;
         const teacher::Teacher model(db, std::move(workloads),
                                      pipeline::teacher_objective_config(config), seed);
         timings << std::format("{},teacher_setup,{:.2f}\n", seed, core::seconds_since(start));
 
         std::vector<Arm> arms;
-        for (const double share : config.budget_shares) {
-            start = std::chrono::steady_clock::now();
-            for (auto &arm : model.run(allocation::total_budget(db, share), args.arms))
-                arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
-            timings << std::format("{},teacher_{:g},{:.2f}\n", seed, share,
-                                   core::seconds_since(start));
+        if (!args.arms.empty()) {
+            for (const double share : config.budget_shares) {
+                start = std::chrono::steady_clock::now();
+                for (auto &arm : model.run(allocation::total_budget(db, share), args.arms))
+                    arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
+                timings << std::format("{},teacher_{:g},{:.2f}\n", seed, share,
+                                       core::seconds_since(start));
+            }
         }
         if (args.baselines) {
             for (auto &arm :
@@ -408,6 +454,12 @@ int main(int argc, char **argv) try {
                 for (auto &arm : model.single_recipes(allocation::total_budget(db, share)))
                     arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
         }
+        for (const auto &name : args.external)
+            for (const double share : config.budget_shares) {
+                const auto file = *args.external_dir / std::format("seed{}", seed) /
+                                  std::format("{}_{:g}pct.bin", name, share * 100);
+                arms.push_back({name, share, io::read_selection(file, db)});
+            }
         for (const auto &arm : arms)
             validate(arm, db);
 

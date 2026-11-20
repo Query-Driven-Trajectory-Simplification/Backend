@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <initializer_list>
@@ -146,8 +147,9 @@ void parse_teacher_config(Config &config, const json &section) {
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
-                   "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
-                   "where_at_scoring", "join", "clustering", "frechet", "teacher"},
+                   "allocation_alphas", "algorithms", "external_algorithms", "selection_dir",
+                   "split", "knn", "range", "where_at", "where_at_scoring", "join", "clustering",
+                   "frechet", "teacher"},
                   "root");
     Config config;
 
@@ -174,6 +176,17 @@ Config parse_config(const json &data) {
         for (const auto &name : data["algorithms"])
             config.algorithms.push_back(parse_enum<selection::AlgorithmType>(name));
     }
+
+    config.external_algorithms = data.value("external_algorithms", config.external_algorithms);
+    for (const auto &name : config.external_algorithms) {
+        const bool valid = !name.empty() && std::ranges::all_of(name, [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) || c == '-';
+        });
+        if (!valid)
+            throw std::invalid_argument("config: external algorithm '" + name +
+                                        "' must use only letters, digits and '-'");
+    }
+    config.selection_dir = data.value("selection_dir", config.selection_dir.string());
 
     parse_split_config(config, data.value("split", json::object()));
     parse_knn_config(config, data.value("knn", json::object()));

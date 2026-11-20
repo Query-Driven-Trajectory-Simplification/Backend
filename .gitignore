@@ -21,3 +21,4 @@ build*/
 
 # Python
 .venv/
+__pycache__/

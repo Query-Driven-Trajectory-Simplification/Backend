@@ -311,3 +311,23 @@ TEST(Config, ReadsTheJoinScoreThresholds) {
                      std::invalid_argument);
     }
 }
+
+TEST(Config, ReadsExternalAlgorithms) {
+    const auto defaults =
+        pipeline::load_config(write_config("external_default.json", R"({"data_path": "d"})"));
+    EXPECT_TRUE(defaults.external_algorithms.empty());
+    const auto config = pipeline::load_config(write_config("external.json", R"({
+        "data_path": "d",
+        "external_algorithms": ["MLSimp", "ML-Simp2"],
+        "selection_dir": "data/mlsimp"
+    })"));
+    EXPECT_EQ(config.external_algorithms, (std::vector<std::string>{"MLSimp", "ML-Simp2"}));
+    EXPECT_EQ(config.selection_dir, "data/mlsimp");
+    for (const auto &name : {R"("")", R"("ML_Simp")", R"("ML Simp")"}) {
+        SCOPED_TRACE(name);
+        const auto contents =
+            std::string(R"({"data_path": "d", "external_algorithms": [)") + name + "]}";
+        EXPECT_THROW(pipeline::load_config(write_config("external_bad.json", contents)),
+                     std::invalid_argument);
+    }
+}

@@ -64,6 +64,9 @@ Run from the repository root, since paths in the config are relative to it:
 
 Results are printed to stdout.
 
+To compare against MLSimp, see [mlsimp/README.md](mlsimp/README.md). MLSimp is a submodule and is
+only downloaded when you ask for it, so a normal clone stays small.
+
 ### Config
 
 `data_path` is the only key without a default and must be set. Any other key can be left out,
@@ -110,6 +113,9 @@ engine/                 Simplification and evaluation
 ├── query/              Query workload generation (kNN, range, where-at)
 ├── evaluator/          Scoring simplified data against the original
 └── pipeline/           Config parsing and the end-to-end run
+
+mlsimp/                 Scripts that run MLSimp's model on our database
+third_party/MLSimp/     MLSimp itself (submodule, pinned)
 ```
 
 Each engine module has its header in `include/backend/engine/<module>/` and its source in `src/<module>/`.

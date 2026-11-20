@@ -1,0 +1,9 @@
+# CPU build of torch: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0
+torch-geometric==2.8.1
+numpy==2.5.4
+PyYAML==6.0.3
+scikit-learn==1.9.1
+# MLSimp imports these at module level, even though scoring doesn't use them
+matplotlib==3.11.2
+tqdm==4.70.1

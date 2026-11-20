@@ -14,7 +14,9 @@ FetchContent_MakeAvailable(magic_enum)
 add_library(engine
     src/core/trajectory_db.cpp
     src/io/parquet_loader.cpp
+    src/io/selection_file.cpp
     src/io/workload_export.cpp
+    src/pipeline/common.cpp
     src/pipeline/config.cpp
     src/pipeline/pipeline.cpp
     src/pipeline/scorer.cpp
@@ -65,6 +67,12 @@ add_executable(teacher_eval
 
 target_link_libraries(teacher_eval PRIVATE engine)
 
+add_executable(export_db
+    apps/export_db.cpp
+)
+
+target_link_libraries(export_db PRIVATE engine)
+
 add_executable(engine_tests
     tests/parquet_loader_test.cpp
     tests/projection_test.cpp
@@ -89,6 +97,7 @@ add_executable(engine_tests
     tests/continuous_frechet_test.cpp
     tests/teacher/curves_test.cpp
     tests/teacher/teacher_test.cpp
+    tests/selection_file_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
 gtest_discover_tests(engine_tests)
