@@ -783,7 +783,9 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const bool want_budget_choice = requested("BUDGET_CHOICE");
     const bool want_loop = requested("BUDGET_LOOP");
     const bool want_reallocate = requested("BUDGET_LOOP_REALLOCATE");
-    const bool want_trade = requested("BUDGET_LOOP_TRADE");
+    const bool want_trade_only = requested("BUDGET_LOOP_TRADE");
+    const bool want_interleave = requested("BUDGET_LOOP_TRADE_INTERLEAVED");
+    const bool want_trade = want_trade_only || want_interleave; // both start from the loop
     const bool want_shuffled = requested("BUDGET_LOOP_SHUFFLED");
     const bool want_no_update = requested("BUDGET_LOOP_NO_UPDATE");
     const bool needs_loop_candidates =
@@ -880,11 +882,59 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             timed("BUDGET_LOOP");
             if (want_loop)
                 keep("BUDGET_LOOP", candidates, looped);
-            if (want_trade) {
+            if (want_trade_only) {
                 auto traded = trade_budgets(db, objective, caps, assemble(candidates, looped));
                 outputs["BUDGET_LOOP_TRADE"] = {"BUDGET_LOOP_TRADE",
                                                 core::to_simplification(traded.kept), traded.value};
                 timed("BUDGET_LOOP_TRADE");
+            }
+            if (want_interleave) {
+                // Experiment: trade, then let every trajectory re-pick its recipe at the new
+                // budgets with the loop, and repeat while the exact J_T rises
+                constexpr std::size_t kMaxInterleaveCycles = 4;
+                auto current = assemble(candidates, looped);
+                double current_value = objective.total(current);
+                for (std::size_t cycle = 1; cycle <= kMaxInterleaveCycles; ++cycle) {
+                    auto traded = trade_budgets(db, objective, caps, current);
+                    std::vector<std::size_t> budgets(db.size());
+                    for (std::size_t i = 0; i < db.size(); ++i)
+                        budgets[i] = traded.kept[i].size();
+                    const auto next_candidates = make_candidates(objective, budgets, caps);
+                    // Trades pick among the same candidates, so every kept set is one of them
+                    Methods start_methods(db.size(), kRdp);
+                    std::size_t unmatched = 0;
+                    for (std::size_t i = 0; i < db.size(); ++i) {
+                        bool found = false;
+                        for (std::size_t c = 0; c < kCandidates.size() && !found; ++c)
+                            if (next_candidates[c][i] == traded.kept[i]) {
+                                start_methods[i] = c;
+                                found = true;
+                            }
+                        unmatched += !found;
+                    }
+                    const auto relooped = best_response(db, objective, next_candidates,
+                                                        start_methods, m_seed + 1000 + cycle);
+                    auto next = assemble(next_candidates, relooped);
+                    double next_value = objective.total(next);
+                    // The loop's kNN gains are tracked, not exact: never end below the trade
+                    if (unmatched != 0 || next_value < traded.value) {
+                        next = traded.kept;
+                        next_value = traded.value;
+                    }
+                    std::cout << std::format(
+                        "teacher: interleave cycle {}: J_T {:.6f} -> trade {:.6f} -> loop {:.6f}"
+                        "{}\n",
+                        cycle, current_value, traded.value, next_value,
+                        unmatched ? std::format(" ({} unmatched, loop skipped)", unmatched) : "");
+                    if (next_value <= current_value + kMinImprovement)
+                        break;
+                    current = std::move(next);
+                    current_value = next_value;
+                }
+                outputs["BUDGET_LOOP_TRADE_INTERLEAVED"] = {"BUDGET_LOOP_TRADE_INTERLEAVED",
+                                                            core::to_simplification(current),
+                                                            current_value};
+                timed("BUDGET_LOOP_TRADE_INTERLEAVED");
             }
             if (want_reallocate) {
                 // Each round is kept only if J_T rises
