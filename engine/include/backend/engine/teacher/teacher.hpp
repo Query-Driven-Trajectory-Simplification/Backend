@@ -27,17 +27,19 @@ namespace teacher {
 //   BUDGET_LOOP_REALLOCATE    then curves, budgets and loop again while J_T rises. With only
 //                             held-out join terms the curves ignore partners, so this only reruns
 //                             the loop in a new visit order
+//   BUDGET_LOOP_TRADE         then moves points between trajectories while exact J_T rises
 //   BUDGET_LOOP_SHUFFLED      control: loop on relabelled partners and neighbours
 //   BUDGET_LOOP_NO_UPDATE     control: one pass against the starting state
-inline constexpr std::array<std::string_view, 9> kArms{"EQUAL_CHOICE",
-                                                       "EQUAL_CHOICE_RDP_PARTNERS",
-                                                       "EQUAL_LOOP",
-                                                       "BUDGET_RDP",
-                                                       "BUDGET_CHOICE",
-                                                       "BUDGET_LOOP",
-                                                       "BUDGET_LOOP_REALLOCATE",
-                                                       "BUDGET_LOOP_SHUFFLED",
-                                                       "BUDGET_LOOP_NO_UPDATE"};
+inline constexpr std::array<std::string_view, 10> kArms{"EQUAL_CHOICE",
+                                                        "EQUAL_CHOICE_RDP_PARTNERS",
+                                                        "EQUAL_LOOP",
+                                                        "BUDGET_RDP",
+                                                        "BUDGET_CHOICE",
+                                                        "BUDGET_LOOP",
+                                                        "BUDGET_LOOP_REALLOCATE",
+                                                        "BUDGET_LOOP_TRADE",
+                                                        "BUDGET_LOOP_SHUFFLED",
+                                                        "BUDGET_LOOP_NO_UPDATE"};
 
 bool is_arm(std::string_view name);
 // Throws std::invalid_argument on an unknown or repeated arm

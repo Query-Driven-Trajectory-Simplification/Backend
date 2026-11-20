@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <random>
 #include <span>
 #include <string>
@@ -745,44 +746,157 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
 
 TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto db = random_db(3, 30, 25);
-    for (const auto mode : {query::JoinMode::Self, query::JoinMode::HeldOut}) {
-        SCOPED_TRACE(mode == query::JoinMode::Self ? "Self" : "HeldOut");
-        auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
-        const teacher::Teacher model(db, std::move(workloads), {.join_mode = mode}, 11);
-        const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
-        const std::size_t budget = 2 * db.size() + 40;
-        const auto result = model.run(budget, arms);
+    for (const auto mode : {query::JoinMode::Self, query::JoinMode::HeldOut})
+        for (const bool ranking : {false, true}) {
+            SCOPED_TRACE(std::string(mode == query::JoinMode::Self ? "Self" : "HeldOut") +
+                         (ranking ? ", ranking kNN" : ""));
+            auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
+            const teacher::Teacher model(
+                db, std::move(workloads),
+                {.join_mode = mode,
+                 .ranking_knn = ranking,
+                 .compressed_knn_query = ranking && mode == query::JoinMode::Self},
+                11);
+            const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
+            const std::size_t budget = 2 * db.size() + 40;
+            const auto result = model.run(budget, arms);
 
-        ASSERT_EQ(result.size(), arms.size());
-        double rdp_partners_jt = 0, equal_loop_jt = 0, budget_choice_jt = 0, budget_loop_jt = 0,
-               reallocate_jt = 0;
-        for (const auto &arm : result) {
-            SCOPED_TRACE(arm.name);
-            ASSERT_EQ(arm.simplification.size(), db.size());
-            EXPECT_EQ(arm.simplification.num_points(), budget);
-            for (std::size_t i = 0; i < db.size(); ++i) {
-                const auto kept = arm.simplification.trajectory(i);
-                ASSERT_GE(kept.size(), 2u);
-                EXPECT_EQ(kept.front(), 0u);
-                EXPECT_EQ(kept.back(), db.trajectory(i).size() - 1);
-                EXPECT_TRUE(std::ranges::is_sorted(kept));
-                EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
+            ASSERT_EQ(result.size(), arms.size());
+            double rdp_partners_jt = 0, equal_loop_jt = 0, budget_choice_jt = 0, budget_loop_jt = 0,
+                   reallocate_jt = 0, trade_jt = 0;
+            for (const auto &arm : result) {
+                SCOPED_TRACE(arm.name);
+                ASSERT_EQ(arm.simplification.size(), db.size());
+                EXPECT_EQ(arm.simplification.num_points(), budget);
+                for (std::size_t i = 0; i < db.size(); ++i) {
+                    const auto kept = arm.simplification.trajectory(i);
+                    ASSERT_GE(kept.size(), 2u);
+                    EXPECT_EQ(kept.front(), 0u);
+                    EXPECT_EQ(kept.back(), db.trajectory(i).size() - 1);
+                    EXPECT_TRUE(std::ranges::is_sorted(kept));
+                    EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
+                }
+                if (arm.name == "EQUAL_CHOICE_RDP_PARTNERS")
+                    rdp_partners_jt = arm.objective;
+                if (arm.name == "EQUAL_LOOP")
+                    equal_loop_jt = arm.objective;
+                if (arm.name == "BUDGET_CHOICE")
+                    budget_choice_jt = arm.objective;
+                if (arm.name == "BUDGET_LOOP")
+                    budget_loop_jt = arm.objective;
+                if (arm.name == "BUDGET_LOOP_REALLOCATE")
+                    reallocate_jt = arm.objective;
+                if (arm.name == "BUDGET_LOOP_TRADE")
+                    trade_jt = arm.objective;
             }
-            if (arm.name == "EQUAL_CHOICE_RDP_PARTNERS")
-                rdp_partners_jt = arm.objective;
-            if (arm.name == "EQUAL_LOOP")
-                equal_loop_jt = arm.objective;
-            if (arm.name == "BUDGET_CHOICE")
-                budget_choice_jt = arm.objective;
-            if (arm.name == "BUDGET_LOOP")
-                budget_loop_jt = arm.objective;
-            if (arm.name == "BUDGET_LOOP_REALLOCATE")
-                reallocate_jt = arm.objective;
+            EXPECT_GE(equal_loop_jt, rdp_partners_jt - 1e-12);
+            EXPECT_GE(budget_loop_jt, budget_choice_jt - 1e-12);
+            EXPECT_GE(reallocate_jt, budget_loop_jt - 1e-12);
+            EXPECT_GE(trade_jt, budget_loop_jt - 1e-12);
         }
-        EXPECT_GE(equal_loop_jt, rdp_partners_jt - 1e-12);
-        EXPECT_GE(budget_loop_jt, budget_choice_jt - 1e-12);
-        EXPECT_GE(reallocate_jt, budget_loop_jt - 1e-12);
+}
+
+// Each trajectory of random_db twice, the copy shift metres north
+core::TrajectoryDb near_duplicates(std::uint64_t seed, std::size_t count, std::size_t length,
+                                   double shift = 1e-4) {
+    const auto source = random_db(seed, count, length);
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> ids;
+    std::vector<std::int64_t> t;
+    std::vector<double> lat, lon;
+    for (std::size_t copy = 0; copy < 2; ++copy)
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            const auto trajectory = source.trajectory(i);
+            ids.push_back(static_cast<std::int32_t>(ids.size()));
+            for (std::size_t k = 0; k < trajectory.size(); ++k) {
+                const auto ll = core::to_lat_lon(
+                    trajectory.x[k], trajectory.y[k] + shift * static_cast<double>(copy));
+                t.push_back(trajectory.t[k]);
+                lat.push_back(ll.lat);
+                lon.push_back(ll.lon);
+            }
+            offsets.push_back(t.size());
+        }
+    return {std::move(offsets), std::move(ids), std::move(t), std::move(lat), std::move(lon)};
+}
+
+TEST_F(TeacherTest, BoundedKnnProposalsMatchFullDistances) {
+    const auto db = near_duplicates(5, 24, 20);
+    auto config = small_config();
+    config.extra_join_eps_m.clear();
+    config.k = 2;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 3, m_dir);
+    const teacher::Objective objective(db, workloads, {.ranking_knn = true});
+    std::mt19937_64 rng(8);
+    auto random_kept = [&](std::size_t i) {
+        const std::size_t n = db.trajectory(i).size();
+        std::vector<std::size_t> kept{0};
+        for (std::size_t k = 1; k + 1 < n; ++k)
+            if (rng() % 3 == 0)
+                kept.push_back(k);
+        kept.push_back(n - 1);
+        return kept;
+    };
+    for (const bool start_full : {true, false}) {
+        teacher::KeptSets state = start_full ? every_point(db) : teacher::KeptSets(db.size());
+        if (!start_full)
+            for (std::size_t i = 0; i < db.size(); ++i)
+                state[i] = random_kept(i);
+        const teacher::KnnState knn(objective, state, {}, db.size());
+        std::size_t changed = 0;
+        for (std::size_t i = 0; i < db.size(); ++i)
+            for (int trial = 0; trial < 8; ++trial) {
+                const teacher::PreparedTrajectory candidate(db.trajectory(i), random_kept(i));
+                const double full = knn.propose(i, knn.distances(i, candidate.view()));
+                EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view()), full) << i;
+                changed += full != 0.0;
+            }
+        EXPECT_GT(changed, 0u);
     }
+}
+
+TEST_F(TeacherTest, WatchingVersionsMakesKnnProposalsExact) {
+    // Copies 20 m apart: a copy with all points sits next to its twin, inside queries' top k
+    const auto db = near_duplicates(6, 24, 20, 20.0);
+    auto config = small_config();
+    config.extra_join_eps_m.clear();
+    const auto workloads = teacher::load_or_build_workloads(db, config, 3, m_dir);
+    const teacher::Objective objective(db, workloads, {.ranking_knn = true});
+    std::mt19937_64 rng(9);
+    auto random_kept = [&](std::size_t i, std::size_t every) {
+        const std::size_t n = db.trajectory(i).size();
+        std::vector<std::size_t> kept{0};
+        for (std::size_t k = 1; k + 1 < n; ++k)
+            if (rng() % every == 0)
+                kept.push_back(k);
+        kept.push_back(n - 1);
+        return kept;
+    };
+    teacher::KeptSets state(db.size());
+    for (std::size_t i = 0; i < db.size(); ++i)
+        state[i] = random_kept(i, 1000);
+    const teacher::PreparedTrajectories prepared(db, state);
+    const auto views = prepared.views();
+    const double before = objective.knn_recall(core::materialize(db, state));
+    const double scale = objective.scale(teacher::Objective::Knn);
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        // One spare place for whoever replaces a leaver, so versions entering a top k are the only
+        // ones unwatched until watch()
+        teacher::KnnState knn(objective, state, {}, workloads.k + 1);
+        const auto kept = random_kept(i, 1);
+        const teacher::PreparedTrajectory version(db.trajectory(i), kept);
+        std::vector<std::vector<core::TrajectoryView>> versions(db.size());
+        versions[i] = {version.view()};
+        knn.watch(versions, views);
+        auto next = state;
+        next[i] = kept;
+        const double exact = scale * (objective.knn_recall(core::materialize(db, next)) - before);
+        EXPECT_NEAR(knn.propose(i, knn.distances(i, version.view())), exact, 1e-12) << i;
+        EXPECT_NEAR(knn.propose_bounded(i, version.view()), exact, 1e-12) << i;
+        changed += exact != 0.0;
+    }
+    EXPECT_GT(changed, 0u);
 }
 
 TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {

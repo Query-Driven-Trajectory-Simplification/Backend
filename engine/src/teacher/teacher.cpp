@@ -42,6 +42,8 @@ constexpr std::array<std::string_view, kCandidateCount> kCandidates{
 constexpr std::size_t kMaxResponsePasses = 10;
 constexpr std::size_t kKnnWatchFactor = 3;
 constexpr std::size_t kMaxAllocationRounds = 10;
+constexpr std::array<std::size_t, 3> kTradeSteps{1, 2, 4}; // points moved per trade
+constexpr std::size_t kMaxTradeRounds = 3;
 constexpr double kMinImprovement = 1e-12;
 
 // candidates[c][i]: trajectory i simplified by kCandidates[c] at budgets[i]
@@ -293,9 +295,12 @@ class Search {
     Search(const core::TrajectoryDb &db, const Objective &objective, const Candidates &candidates,
            const Methods &method)
         : m_start(method), m_compressed_queries(objective.config().compressed_knn_query) {
+        auto start = std::chrono::steady_clock::now();
         if (objective.config().ranking_knn)
             m_knn.emplace(objective, assemble(candidates, method), candidates,
                           kKnnWatchFactor * objective.workloads().k);
+        const double knn_s = core::seconds_since(start);
+        start = std::chrono::steady_clock::now();
         const auto active = [&](std::size_t i) {
             return !objective.boxes(i).empty() || !objective.links(i).empty() ||
                    (m_knn && m_knn->active(i));
@@ -328,7 +333,7 @@ class Search {
                     m_views[c][i] = owned.back().view();
                     m_separable[i][c] = objective.separable(i, m_views[c][i]);
                     // Compressed queries depend on the partners' state, so are computed later
-                    if (m_knn && !objective.config().compressed_knn_query)
+                    if (m_knn && !m_compressed_queries)
                         m_knn_distances[i][c] = m_knn->distances(i, m_views[c][i]);
                 } else {
                     m_views[c][i] = m_views[first][i];
@@ -341,6 +346,8 @@ class Search {
             m_state[i] = m_views[method[i]][i];
         m_join.emplace(objective, m_state);
         m_range.emplace(objective, m_state);
+        std::cout << std::format("teacher:   loop setup: kNN lists {:.1f} s, candidates {:.1f} s\n",
+                                 knn_s, core::seconds_since(start));
     }
     Search(const Search &) = delete;
     Search &operator=(const Search &) = delete;
@@ -356,6 +363,7 @@ class Search {
         std::mt19937_64 rng(seed + kOrderSeedOffset);
 
         for (std::size_t pass = 1; pass <= kMaxResponsePasses; ++pass) {
+            const auto start = std::chrono::steady_clock::now();
             std::ranges::shuffle(order, rng);
             std::size_t switches = 0;
             for (const auto i : order) {
@@ -405,9 +413,10 @@ class Search {
                 else if (knn)
                     knn->apply(i, m_knn_distances[i][best]);
             }
-            std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}{}\n", pass,
-                                     switches, join.metric(),
-                                     knn ? std::format(", knn {:.4f}", knn->metric()) : "");
+            std::cout << std::format(
+                "teacher:   pass {}: {} switches, join F1 {:.4f}{}, {:.1f} s\n", pass, switches,
+                join.metric(), knn ? std::format(", knn {:.4f}", knn->metric()) : "",
+                core::seconds_since(start));
             if (switches == 0 || !update)
                 break;
         }
@@ -433,6 +442,227 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
                       const Candidates &candidates, Methods method, std::uint64_t seed,
                       bool update = true) {
     return Search(db, objective, candidates, method).run(seed, update);
+}
+
+struct Traded {
+    KeptSets kept;
+    double value;
+};
+
+// Moves delta points between trajectories while exact J_T rises. Each round scores every
+// trajectory's best recipe at b + delta and b - delta against the current state, pairs the best
+// buyers with the cheapest sellers, and keeps a pair only if its exact gain, rescored when applied,
+// is positive. Each round the kNN lists are extended to watch the offered versions
+Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
+                     const std::vector<std::size_t> &caps, KeptSets kept) {
+    const std::size_t n = db.size();
+    const bool ranking = objective.config().ranking_knn;
+    const bool compressed = objective.config().compressed_knn_query;
+    std::vector<PreparedTrajectory> owned;
+    owned.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        owned.emplace_back(db.trajectory(i), kept[i]);
+    std::vector<core::TrajectoryView> state(n);
+    for (std::size_t i = 0; i < n; ++i)
+        state[i] = owned[i].view();
+    JoinState join(objective, state);
+    RangeState range(objective, state);
+    std::vector<double> separable(n);
+    core::parallel_for(n, [&](std::size_t i) { separable[i] = objective.separable(i, state[i]); });
+    std::optional<KnnState> knn;
+
+    struct Pending {
+        std::size_t i;
+        PreparedTrajectory prepared;
+        std::vector<std::size_t> kept;
+        double separable = 0.0, gain = 0.0;
+        JoinState::Proposal join;
+        RangeState::Proposal range;
+        KnnState::Move move;
+        std::vector<double> distances;
+    };
+    auto pending = [&](std::size_t i, std::vector<std::size_t> next) {
+        Pending p{
+            i, PreparedTrajectory(db.trajectory(i), next), std::move(next), 0.0, 0.0, {}, {}, {},
+            {}};
+        const auto view = p.prepared.view();
+        p.separable = objective.separable(i, view);
+        p.join = join.propose(i, view, state);
+        p.range = range.propose(i, view);
+        p.gain = p.separable - separable[i] + p.join.gain + p.range.gain;
+        if (knn && compressed) {
+            p.move = knn->move(i, view, state);
+            p.gain += knn->propose(p.move);
+        } else if (knn) {
+            // One trade at a time, so the distances themselves go in parallel
+            p.distances = knn->distances(i, view, true);
+            p.gain += knn->propose(i, p.distances);
+        }
+        return p;
+    };
+    auto commit = [&](Pending &p) {
+        const auto i = p.i;
+        join.apply(p.join);
+        range.apply(p.range);
+        if (knn && compressed)
+            knn->apply(p.move);
+        else if (knn)
+            knn->apply(i, p.distances);
+        owned[i] = std::move(p.prepared);
+        state[i] = owned[i].view();
+        kept[i] = std::move(p.kept);
+        separable[i] = p.separable;
+    };
+
+    struct Offer {
+        double gain = -std::numeric_limits<double>::infinity();
+        std::vector<std::size_t> kept;
+    };
+    const std::size_t watch = kKnnWatchFactor * objective.workloads().k;
+    const auto start_kept = kept;
+    const double start_value = objective.total(kept);
+    double value = start_value;
+    std::cout << std::format("teacher: trading from J_T {:.6f}\n", value);
+    // Built once: the trades keep it current
+    if (ranking)
+        knn.emplace(objective, kept, std::span<const KeptSets>{}, watch);
+    for (std::size_t round = 1; round <= kMaxTradeRounds; ++round) {
+        auto start = std::chrono::steady_clock::now();
+        // buy[d][i], sell[d][i]: i's best exact change at b_i + delta and b_i - delta
+        std::array<std::vector<Offer>, kTradeSteps.size()> buy, sell;
+        for (std::size_t d = 0; d < kTradeSteps.size(); ++d) {
+            buy[d].resize(n);
+            sell[d].resize(n);
+        }
+        core::parallel_for(n, [&](std::size_t i) {
+            const std::size_t b = kept[i].size();
+            const std::size_t top = std::min(caps[i], db.trajectory(i).size());
+            CandidateMaker maker(objective, i, caps[i], true);
+            auto best_at = [&](std::size_t budget) {
+                Offer best;
+                std::vector<std::vector<std::size_t>> seen;
+                for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+                    auto candidate = maker.make(c, budget);
+                    if (std::ranges::find(seen, candidate) != seen.end())
+                        continue;
+                    seen.push_back(candidate);
+                    const PreparedTrajectory prepared(db.trajectory(i), candidate);
+                    const auto view = prepared.view();
+                    double gain = objective.separable(i, view) - separable[i] +
+                                  join.propose(i, view, state).gain + range.propose(i, view).gain;
+                    if (knn && compressed)
+                        gain += knn->propose(knn->move(i, view, state));
+                    else if (knn)
+                        gain += knn->propose_bounded(i, view);
+                    if (gain > best.gain)
+                        best = {gain, std::move(candidate)};
+                }
+                return best;
+            };
+            for (std::size_t d = 0; d < kTradeSteps.size(); ++d) {
+                if (b + kTradeSteps[d] <= top)
+                    buy[d][i] = best_at(b + kTradeSteps[d]);
+                if (b >= 2 + kTradeSteps[d])
+                    sell[d][i] = best_at(b - kTradeSteps[d]);
+            }
+        });
+        const double sweep_s = core::seconds_since(start);
+        start = std::chrono::steady_clock::now();
+        double knn_correction = 0.0;
+        // The trades below try only these states, so the kNN lists watch them
+        if (ranking && !compressed) {
+            std::vector<std::vector<PreparedTrajectory>> prepared(n);
+            std::vector<std::vector<core::TrajectoryView>> versions(n);
+            core::parallel_for(n, [&](std::size_t i) {
+                for (const auto *offers : {&buy, &sell})
+                    for (const auto &by_trajectory : *offers)
+                        if (std::isfinite(by_trajectory[i].gain))
+                            prepared[i].emplace_back(db.trajectory(i), by_trajectory[i].kept);
+                for (const auto &version : prepared[i])
+                    versions[i].push_back(version.view());
+            });
+            knn->watch(versions, state);
+        } else if (ranking) {
+            std::vector<KeptSets> offered;
+            for (const auto *offers : {&buy, &sell})
+                for (const auto &by_trajectory : *offers) {
+                    auto &with = offered.emplace_back(kept);
+                    for (std::size_t i = 0; i < n; ++i)
+                        if (std::isfinite(by_trajectory[i].gain))
+                            with[i] = by_trajectory[i].kept;
+                }
+            // The rebuilt lists see what the old ones missed; carry the correction into the total
+            const double before_rebuild = knn->metric();
+            knn.emplace(objective, kept, offered, watch);
+            knn_correction = objective.scale(Objective::Knn) * (knn->metric() - before_rebuild);
+            value += knn_correction;
+        }
+        const double watch_s = core::seconds_since(start);
+        start = std::chrono::steady_clock::now();
+
+        std::vector<char> used(n, 0);
+        std::size_t profitable = 0, accepted = 0;
+        const double before = value;
+        for (std::size_t d = 0; d < kTradeSteps.size(); ++d) {
+            std::vector<std::pair<double, std::size_t>> buyers, sellers;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (std::isfinite(buy[d][i].gain))
+                    buyers.push_back({buy[d][i].gain, i});
+                if (std::isfinite(sell[d][i].gain))
+                    sellers.push_back({sell[d][i].gain, i});
+            }
+            std::ranges::sort(buyers, std::greater{});
+            std::ranges::sort(sellers, std::greater{});
+            std::size_t s = 0;
+            for (const auto &[buy_gain, r] : buyers) {
+                if (used[r])
+                    continue;
+                while (s < sellers.size() && (used[sellers[s].second] || sellers[s].second == r))
+                    ++s;
+                if (s == sellers.size() || buy_gain + sellers[s].first <= kMinImprovement)
+                    break;
+                const auto seller = sellers[s++].second;
+                used[r] = used[seller] = 1;
+                ++profitable;
+                // Exact: the seller first, then the buyer against the changed state
+                auto old_kept = kept[seller];
+                auto first = pending(seller, std::move(sell[d][seller].kept));
+                commit(first);
+                auto second = pending(r, std::move(buy[d][r].kept));
+                if (first.gain + second.gain > kMinImprovement) {
+                    commit(second);
+                    value += first.gain + second.gain;
+                    ++accepted;
+                } else {
+                    auto back = pending(seller, std::move(old_kept));
+                    commit(back);
+                }
+            }
+        }
+        std::cout << std::format(
+            "teacher: trade round {}: {} profitable pairs, {} kept, J_T {:.6f} "
+            "-> {:.6f}, kNN rebuild correction {:+.6f}, sweep {:.1f} s, watch {:.1f} s, trades "
+            "{:.1f} s\n",
+            round, profitable, accepted, before, value, knn_correction, sweep_s, watch_s,
+            core::seconds_since(start));
+        if (accepted == 0)
+            break;
+    }
+    const auto terms = objective.metrics(kept);
+    double exact = 0;
+    for (std::size_t m = 0; m < Objective::TermCount; ++m)
+        exact +=
+            objective.scale(static_cast<Objective::Term>(m)) * (terms[m] - objective.floors()[m]);
+    // Where-at is rescored on every commit, so only these three can drift
+    std::cout << std::format(
+        "teacher: trading J_T tracked {:.6f}, exact {:.6f}; tracked/exact kNN {:.6f}/{:.6f}, "
+        "range {:.6f}/{:.6f}, join {:.6f}/{:.6f}\n",
+        value, exact, knn ? knn->metric() : terms[Objective::Knn], terms[Objective::Knn],
+        range.metric(), terms[Objective::Range], join.metric(), terms[Objective::Join]);
+    // The kNN tracker is not exact everywhere, so the trades could in principle lose
+    if (exact < start_value)
+        return {start_kept, start_value};
+    return {std::move(kept), exact};
 }
 
 // The workloads with trajectories relabelled among those sharing 1 km start and end cells, in
@@ -551,10 +781,11 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const bool want_budget_choice = requested("BUDGET_CHOICE");
     const bool want_loop = requested("BUDGET_LOOP");
     const bool want_reallocate = requested("BUDGET_LOOP_REALLOCATE");
+    const bool want_trade = requested("BUDGET_LOOP_TRADE");
     const bool want_shuffled = requested("BUDGET_LOOP_SHUFFLED");
     const bool want_no_update = requested("BUDGET_LOOP_NO_UPDATE");
     const bool needs_loop_candidates =
-        want_loop || want_reallocate || want_shuffled || want_no_update;
+        want_loop || want_reallocate || want_trade || want_shuffled || want_no_update;
     const bool needs_budget_candidates = want_budget_choice || needs_loop_candidates;
     const bool needs_curves = want_budget_rdp || needs_budget_candidates;
 
@@ -640,13 +871,19 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             keep("BUDGET_CHOICE", candidates, choice);
         // The loop and its no-update control start from the same state and share the setup
         std::optional<Search> search;
-        if (want_loop || want_reallocate || want_no_update)
+        if (want_loop || want_reallocate || want_trade || want_no_update)
             search.emplace(db, objective, candidates, choice);
-        if (want_loop || want_reallocate) {
+        if (want_loop || want_reallocate || want_trade) {
             const auto looped = search->run(m_seed);
             timed("BUDGET_LOOP");
             if (want_loop)
                 keep("BUDGET_LOOP", candidates, looped);
+            if (want_trade) {
+                auto traded = trade_budgets(db, objective, caps, assemble(candidates, looped));
+                outputs["BUDGET_LOOP_TRADE"] = {"BUDGET_LOOP_TRADE",
+                                                core::to_simplification(traded.kept), traded.value};
+                timed("BUDGET_LOOP_TRADE");
+            }
             if (want_reallocate) {
                 // Each round is kept only if J_T rises
                 auto current = assemble(candidates, looped);
