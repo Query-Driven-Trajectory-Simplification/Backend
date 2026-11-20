@@ -82,6 +82,10 @@ class Progress:
         current.update(detail=detail, done=done, total=total, stage_done=stage_done, stage_total=stage_total)
         self.write()
 
+    def loss(self, stage, epoch, value):
+        self.data.setdefault("losses", []).append({"stage": stage, "epoch": epoch, "loss": float(value)})
+        self.write(True)
+
     def finish(self, stage):
         info = self.data["stages"][stage]
         info.update(status="done", seconds=time.time() - info.get("started", time.time()))
@@ -294,12 +298,13 @@ def train_node2vec(torch, db, grid, params, fixed, out, ckpt_path, device, args)
             batches += 1
         loss = total / batches
         state["epoch"] += 1
-        progress.update(f"epoch {state['epoch']}/{epochs}", state["epoch"], epochs)
+        progress.update("epoch", state["epoch"], epochs, state["epoch"], epochs)
         if abs(loss - state["last_loss"]) < 1e-3:
             state["cnt"] += 1
         else:
             state["cnt"] = 0
         state["last_loss"] = loss
+        progress.loss("node2vec", state["epoch"], loss)
         print(f"node2vec epoch {state['epoch']}/{epochs} loss {loss:.4f}", flush=True)
         save_atomic(torch, {"embedding": embedding.state_dict(), "optimizer": optimizer.state_dict(),
                             "state": state}, ckpt_path)
@@ -388,6 +393,7 @@ def train_tbert(torch, db, grid, params, fixed, grid_emb, out, ckpt_path, device
         state["epoch"] += 1
         state["batch"] = 0
         checkpoint()
+        progress.loss("T-BERT", state["epoch"], total / count)
         print(f"T-BERT epoch {state['epoch']}/{epochs} mean loss {total / count:.4f} "
               f"at {time.strftime('%H:%M:%S')}", flush=True)
     save_atomic(torch, model.state_dict(), out)
@@ -768,6 +774,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
             while state["epoch"] < gat_epochs:
                 order = np.random.default_rng([args.seed, 2, r, state["epoch"]]).permutation(n)
                 count = math.ceil(n / gat_params["batch_size"])
+                epoch_loss = []
                 while state["batch"] < count:
                     pick = order[state["batch"] * gat_params["batch_size"]:(state["batch"] + 1) * gat_params["batch_size"]]
                     aligns, uniforms, simps, mutuals, embs = [], [], [], [], []
@@ -794,6 +801,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                     gat_opt.zero_grad()
                     loss.backward()
                     gat_opt.step()
+                    epoch_loss.append(loss.item())
                     state["batch"] += 1
                     progress.update(f"round {r + 1}/{rounds} | GNN-TS epoch {state['epoch'] + 1}/{gat_epochs} | batch",
                                     state["batch"], count, r * 3 + (state["epoch"] + state["batch"] / count) / gat_epochs,
@@ -805,6 +813,8 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                 state["epoch"] += 1
                 state["batch"] = 0
                 checkpoint()
+                if epoch_loss:
+                    progress.loss(f"GNN-TS stage {r + 1}", state["epoch"], np.mean(epoch_loss))
                 print(f"round {r + 1}/{rounds} GAT epoch {state['epoch']}/{gat_epochs} done at {time.strftime('%H:%M:%S')}", flush=True)
             gat.eval()
             with torch.no_grad():
@@ -831,6 +841,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                 trajs_all, idxs_all = chunk_inputs(feats, simp_idx, chunks, range(len(chunks)))
                 batches = length_batches(chunk_len + np.array([len(i) for i in idxs_all]) + 2, budget,
                                          diff_params["batch_size"], rng)
+                epoch_loss = []
                 while state["batch"] < len(batches):
                     pick = batches[state["batch"]]
                     batch = diffusion_batch(torch, [trajs_all[c] for c in pick], [idxs_all[c] for c in pick],
@@ -842,6 +853,7 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(diff_model.parameters(), 3)
                     diff_opt.step()
+                    epoch_loss.append(loss.item())
                     state["batch"] += 1
                     progress.update(f"round {r + 1}/{rounds} | Diff-TS epoch {state['epoch'] + 1}/{diff_epochs} | batch",
                                     state["batch"], len(batches),
@@ -853,6 +865,8 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                 state["epoch"] += 1
                 state["batch"] = 0
                 checkpoint()
+                if epoch_loss:
+                    progress.loss("Diff-TS", state["epoch"], np.mean(epoch_loss))
                 print(f"round {r + 1}/{rounds} diffusion epoch {state['epoch']}/{diff_epochs} done at {time.strftime('%H:%M:%S')}", flush=True)
             sampled = {}
             advance("sample")
