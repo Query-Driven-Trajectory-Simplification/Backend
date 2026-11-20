@@ -1,5 +1,11 @@
 # Teacher: status and next steps
 
+Implementation update, 2026-11-20: the range objective and endpoint floor now use macro F1 like
+J4, with exact incremental updates in the loop and F1 marginals for candidate and budget scoring.
+`RDP_GLOBAL`, a database-wide top-down PED baseline, runs alongside the other baselines in
+`teacher_eval` and is enabled in `geolife.json`. It is included in the best-cheap-baseline comparison.
+The numerical findings below predate this change and need to be checked with fresh runs.
+
 Updated 2026-11-17 on branch `teacher`. The teacher is described in
 [engine/src/teacher/README.md](engine/src/teacher/README.md); this file says what is settled and
 what is open.

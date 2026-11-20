@@ -46,6 +46,8 @@ struct Config {
 // Reads a JSON config. Only data_path is required, a missing key keeps its default.
 Config load_config(const std::filesystem::path &path);
 
+// teacher.extra_join_eps_m, by default join.score_eps_m
+std::vector<double> teacher_extra_join_eps_m(const Config &config);
 teacher::WorkloadConfig teacher_workload_config(const Config &config);
 
 teacher::ObjectiveConfig teacher_objective_config(const Config &config);

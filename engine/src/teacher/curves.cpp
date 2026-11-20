@@ -8,8 +8,6 @@ namespace teacher {
 
 namespace {
 
-constexpr std::size_t kMaxStep = 3;
-
 struct Offer {
     double ratio; // gain per point
     std::size_t i, k, version;
@@ -18,11 +16,12 @@ struct Offer {
     }
 };
 
-// The best step of 1 to kMaxStep points for trajectory i, at most left points. k = 0 if none
+// The step of any length up to left with the best gain per point: the next vertex of the curve's
+// upper concave envelope within the budget left. k = 0 if none
 Offer best_offer(const Curve &curve, std::size_t i, std::size_t budget, std::size_t left,
                  std::size_t version) {
     Offer best{-std::numeric_limits<double>::infinity(), i, 0, version};
-    for (std::size_t k = 1; k <= kMaxStep && k <= left && budget + k <= curve.max_budget(); ++k) {
+    for (std::size_t k = 1; k <= left && budget + k <= curve.max_budget(); ++k) {
         const double ratio = (curve.at(budget + k) - curve.at(budget)) / static_cast<double>(k);
         if (ratio > best.ratio) {
             best.ratio = ratio;

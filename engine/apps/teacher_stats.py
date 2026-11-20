@@ -2,7 +2,8 @@
 
 Per share: means and SDs over seeds, paired J4 differences with t intervals, the gate against
 the best cheap baseline, the coordination checks, each step's gain in J_T (training) against J4
-and J4-self (test), and the self join at 100, 150 and 300 m.
+and J4-self (test), and the self and held-out joins at join.eps_m and at every threshold in
+thresholds.csv (teacher_eval --eval-eps), with the thresholds the teacher trained on marked.
 
 norm_join is J4's join term (held-out when join.mode is HeldOut). J4_self scores the in-database
 setting: the database's own kNN and self join (compressed on both sides), with J4's range and
@@ -26,7 +27,9 @@ STEPS = [("budget search", "RDP_a0", "BUDGET_RDP"),
          ("loop", "BUDGET_CHOICE", "BUDGET_LOOP"),
          ("looking once", "BUDGET_CHOICE", "BUDGET_LOOP_NO_UPDATE"),
          ("reacting", "BUDGET_LOOP_NO_UPDATE", "BUDGET_LOOP")]
-CHEAP = ["RDP_a0", "RDP_a025", "PARTNER_l0.5", "PARTNER_l1"]
+CHEAP = ["RDP_a0", "RDP_a025", "RDP_GLOBAL", "SED_a0", "UNI_a0", "PARTNER_l0.5", "PARTNER_l1"]
+EXTRA = ["J_T", "norm_self_join", "norm_join_main"]
+JOINS = [("Self", "Normalised self-join F1"), ("HeldOut", "Normalised held-out join F1")]
 
 
 def num(v):
@@ -63,38 +66,50 @@ def fmt(p):
 
 def main():
     run = Path(sys.argv[1])
-    rows = list(csv.DictReader(open(run / "results.csv")))
-    data = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    reader = csv.DictReader(open(run / "results.csv"))
+    columns = set(reader.fieldnames or [])
+    rows = list(reader)
+    # scores[share][arm][metric][seed] = value, one entry per number in results.csv
+    scores = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
     for r in rows:
         # Runs from before clustering became a diagnostic have no J4 column: derive it
         if num(r.get("J4", "")) is None:
             parts = [num(r.get(c, "")) for c in ["norm_knn", "norm_range", "norm_where_at", "norm_join"]]
             parts = [x for x in parts if x is not None]
             r["J4"] = str(statistics.fmean(parts)) if parts else ""
-        for m in METRICS + ["J_T", "join_recall_seen", "join_recall_unseen"]:
+        for m in METRICS + EXTRA:
             v = num(r.get(m, ""))
             if v is not None:
-                data[r["share"]][r["arm"]][m][int(r["seed"])] = v
-    other = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))  # share, arm, eps, seed
+                scores[r["share"]][r["arm"]][m][int(r["seed"])] = v
+    # The join at join.eps_m alone, per join kind. Runs from before the held-out join have no
+    # norm_self_join column; their norm_join is the self join and they have no held-out join
+    main_join = {"Self": "norm_self_join" if "norm_self_join" in columns else "norm_join",
+                 "HeldOut": "norm_join_main" if "norm_self_join" in columns else None}
+    # thresholds[join kind][share][arm][eps_m][seed] = normalised join F1, from thresholds.csv,
+    # and per join kind the thresholds the teacher trained on
+    thresholds = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
+    trained = defaultdict(set)
     if (run / "thresholds.csv").exists():
         for r in csv.DictReader(open(run / "thresholds.csv")):
-            if r.get("join", "Self") != "Self":
-                continue
+            kind = r.get("join", "Self")
+            if kind not in dict(JOINS):
+                continue  # route clustering rows
             v = num(r["norm_join"])
-            if v is not None:
-                other[r["share"]][r["arm"]][float(r["eps_m"])][int(r["seed"])] = v
+            if v is None:
+                continue
+            eps = float(r["eps_m"])
+            thresholds[kind][r["share"]][r["arm"]][eps][int(r["seed"])] = v
+            if r.get("teacher_threshold") == "1":
+                trained[kind].add(eps)
     out = []
-    for share in sorted(data, key=float):
-        arms = data[share]
+    for share in sorted(scores, key=float):
+        arms = scores[share]  # arms[arm][metric][seed]
         out.append(f"## Share {float(share) * 100:g}%\n")
-        out.append("| Arm | " + " | ".join(METRICS) + " | seen / unseen join recall |")
-        out.append("|---|" + "---:|" * (len(METRICS) + 1))
+        out.append("| Arm | " + " | ".join(METRICS) + " |")
+        out.append("|---|" + "---:|" * len(METRICS))
         for arm in sorted(arms):
             cells = [mean_sd(list(arms[arm][m].values())) for m in METRICS]
-            seen = list(arms[arm]["join_recall_seen"].values())
-            unseen = list(arms[arm]["join_recall_unseen"].values())
-            su = f"{statistics.fmean(seen):.4f} / {statistics.fmean(unseen):.4f}" if seen and unseen else "–"
-            out.append(f"| {arm} | " + " | ".join(cells) + f" | {su} |")
+            out.append(f"| {arm} | " + " | ".join(cells) + " |")
         out.append("")
         cheap = [a for a in CHEAP if a in arms and arms[a]["J4"]]
         best = max(cheap, key=lambda a: statistics.fmean(arms[a]["J4"].values())) if cheap else None
@@ -134,16 +149,22 @@ def main():
                     row.append("–" if kept is None else f"{kept:.0%}")
                 out.append("| " + " | ".join(row) + " |")
             out.append("")
-        if share in other:
-            out.append("Normalised self-join F1 at the teacher's 150 m and at thresholds it does not optimise:\n")
-            out.append("| Arm | 100 m | 150 m | 300 m |")
-            out.append("|---|---:|---:|---:|")
+        for kind, title in JOINS:
+            metric = main_join[kind]
+            has_main = metric is not None and any(arms[arm][metric] for arm in arms)
+            eps_list = sorted({eps for arm in thresholds[kind][share] for eps in thresholds[kind][share][arm]})
+            if not has_main and not eps_list:
+                continue
+            out.append(f"{title} at join.eps_m and at the --eval-eps thresholds. "
+                       "* = a threshold the teacher trained on:\n")
+            header = (["join.eps_m"] if has_main else []) + [
+                f"{eps:g} m{' *' if eps in trained[kind] else ''}" for eps in eps_list]
+            out.append("| Arm | " + " | ".join(header) + " |")
+            out.append("|---|" + "---:|" * len(header))
             for arm in sorted(arms):
-                # Runs from before the held-out join have the self join in norm_join
-                at_150 = arms[arm]["norm_self_join"] or arms[arm]["norm_join"]
-                cells = [mean_sd(list(other[share][arm].get(100.0, {}).values())),
-                         mean_sd(list(at_150.values())),
-                         mean_sd(list(other[share][arm].get(300.0, {}).values()))]
+                cells = [mean_sd(list(arms[arm][metric].values()))] if has_main else []
+                cells += [mean_sd(list(thresholds[kind][share][arm].get(eps, {}).values()))
+                          for eps in eps_list]
                 out.append(f"| {arm} | " + " | ".join(cells) + " |")
             out.append("")
     text = "\n".join(out)

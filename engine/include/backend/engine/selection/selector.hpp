@@ -8,7 +8,7 @@
 
 namespace selection {
 
-enum class AlgorithmType { RDP, SED, UNIFORM };
+enum class AlgorithmType { RDP, SED, UNIFORM, RDP_GLOBAL };
 
 std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &, AlgorithmType,
                                              std::size_t);

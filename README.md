@@ -76,9 +76,9 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | --- | --- |
 | `data_path` | Parquet file produced by `convert` |
 | `seed` | Seed for all random sampling |
-| `budget_shares` | Point budgets to test, as a share of all points (`0.01` = 1%) |
+| `budget_shares` | Share of interior points to retain after reserving every endpoint: `B = 2T + round(share × (P − 2T))`. Report `B/P` for total retention |
 | `split` | `type` (`Random` or `Time`) and `query_percentage` held out for queries |
-| `algorithms` | Simplification algorithms to run: `RDP`, `SED`, `UNIFORM` |
+| `algorithms` | Simplification algorithms to run: `RDP`, `SED`, `UNIFORM`, `RDP_GLOBAL`. The global variant allocates the total budget by PED and runs once per share, independently of `allocation_alphas` |
 | `knn` | `k` and `query_count` (`0` = every trajectory in the query split) |
 | `range` | Box size (m), time window (s) and sampling limits for range queries |
 | `where_at` | Probes per trajectory and max time gap (s) between points to probe |
@@ -87,6 +87,13 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | `join` | `mode`, threshold `eps_m` (m), `query_count` and `self_join`. `HeldOut` (the default) joins `query_count` original trajectories from the query split (`0` = all) against the simplified database. `Self` joins the database with itself, both sides simplified. `self_join: true` also scores the self join next to a held-out join, as a diagnostic outside the combined score. `score_eps_m` lists more thresholds: the combined score's join term then averages the normalised join at `eps_m` and at each of them |
 | `clustering` | Route clustering metric: `enabled`, neighbour threshold `eps_m` (m) and `min_size` per cluster. Reuses the self join when one is scored with the same eps |
 | `allocation_alphas` | Allocation exponents to test: budgets follow size^α (`1` = size-proportional, `0` = equal). Exports for α ≠ 1 get an `_a<α>` suffix |
+
+`RDP_GLOBAL` is database-wide top-down PED: reserve endpoints, then repeatedly split the
+segment with the largest perpendicular error anywhere in the database. It uses no query
+workloads and receives exactly the same total point budget as the teacher.
+
+The teacher's range term uses macro F1 like J4. The loop tracks box coverage counts exactly;
+independent choices and value curves use F1 marginal gains against fixed partners.
 
 ## Tests
 

@@ -16,12 +16,10 @@ namespace teacher {
 // Offsets added to the run seed, one per random draw, so no two draws share a stream
 inline constexpr std::uint64_t kRangeSeedOffset = 7001;
 inline constexpr std::uint64_t kWhereAtSeedOffset = 7002;
-inline constexpr std::uint64_t kPairSplitSeedOffset = 7003;
 inline constexpr std::uint64_t kOrderSeedOffset = 7004;
-inline constexpr std::uint64_t kNegativeSeedOffset = 7005;
 inline constexpr std::uint64_t kShuffleSeedOffset = 7006;
 
-inline constexpr std::size_t kRangeQueryCount = 64000;
+inline constexpr std::size_t kRangeQueryCount = 128000;
 
 // Training workloads from the database alone, with their own seeds, never the held-out pool
 struct WorkloadConfig {
@@ -42,7 +40,6 @@ struct KnnEntry {
 
 struct JoinPair {
     std::uint32_t i, j; // i < j
-    bool seen;          // in the half used with all_join_pairs = false
 };
 
 // Self-join pairs at a threshold other than join_eps_m, all of them used
@@ -56,8 +53,8 @@ struct TeacherWorkloads {
     double join_eps_m = 0.0;
     query::FrechetVariant frechet = query::FrechetVariant::Continuous;
     std::vector<KnnEntry> knn;       // one per database trajectory
-    std::vector<JoinPair> positives; // self-join pairs, half seen
-    std::vector<JoinPair> negatives; // endpoint candidates that are not pairs, half seen
+    std::vector<JoinPair> positives; // self-join pairs
+    std::vector<JoinPair> negatives; // endpoint candidates that are not pairs
     std::vector<ExtraJoin> extra_joins;
     query::RangeWorkload range;
     query::WhereAtWorkload where_at;

@@ -18,6 +18,7 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/route_clustering.hpp"
+#include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
 #include "backend/engine/teacher/teacher.hpp"
@@ -43,7 +44,8 @@ namespace {
 
 using core::KeptSets;
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
-constexpr std::array kEvalEps{100.0, 125.0, 150.0, 175.0, 200.0, 250.0, 300.0};
+// Between the training thresholds, so the teacher never saw them
+constexpr std::array kEvalEps{125.0, 175.0, 250.0};
 constexpr double kRdpAlpha = 0.25; // RDP_a025
 constexpr std::array kPartnerLambdas{0.5, 1.0};
 constexpr std::size_t kExportBoxes = 100;
@@ -58,7 +60,6 @@ struct Args {
     std::optional<std::vector<double>> shares;       // config: budget_shares
     std::vector<std::string> arms{teacher::kArms.begin(), teacher::kArms.end()};
     bool baselines = true;
-    std::optional<bool> all_join_pairs;
     std::optional<query::JoinMode> teacher_join;     // config: teacher.join, else join.mode
     std::optional<std::vector<double>> train_eps;    // config: teacher.extra_join_eps_m
     std::optional<bool> held_out_term;               // config: teacher.held_out_term
@@ -133,8 +134,6 @@ Args parse_args(int argc, char **argv) {
             args.teacher_join = mode == "Self" ? query::JoinMode::Self : query::JoinMode::HeldOut;
         } else if (key == "--no-baselines")
             args.baselines = false;
-        else if (key == "--seen-pairs-only")
-            args.all_join_pairs = false;
         else if (key == "--no-teacher")
             args.arms.clear();
         else if (key == "--export-db")
@@ -148,8 +147,8 @@ Args parse_args(int argc, char **argv) {
                                         " (--config --data --out --cache --seeds --shares --arms "
                                         "--teacher-join --train-eps --held-out-term "
                                         "--independent-knn --knn-query --term-weights --eval-eps "
-                                        "--knn-check --no-baselines --seen-pairs-only --no-teacher "
-                                        "--export-db --external --external-dir)");
+                                        "--knn-check --no-baselines --no-teacher --export-db "
+                                        "--external --external-dir)");
     }
     teacher::check_arms(args.arms);
     if (!args.external.empty() && !args.external_dir)
@@ -165,8 +164,6 @@ pipeline::Config effective_config(const Args &args) {
         config.teacher.cache_dir = *args.cache;
     if (args.shares)
         config.budget_shares = *args.shares;
-    if (args.all_join_pairs)
-        config.teacher.all_join_pairs = *args.all_join_pairs;
     if (args.teacher_join)
         config.teacher.join = *args.teacher_join;
     if (args.train_eps)
@@ -264,13 +261,12 @@ struct Arm {
 
 // PARTNER: RDP with weight 1 + lambda for trajectories that have a join partner
 std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
-                               const std::vector<teacher::JoinPair> &pairs, bool all_join_pairs,
+                               const std::vector<teacher::JoinPair> &pairs,
                                std::span<const double> shares) {
     using selection::AlgorithmType;
     std::vector<char> partnered(db.size(), 0);
     for (const auto &pair : pairs)
-        if (all_join_pairs || pair.seen)
-            partnered[pair.i] = partnered[pair.j] = 1;
+        partnered[pair.i] = partnered[pair.j] = 1;
     std::vector<Arm> arms;
     for (const double share : shares) {
         const auto budget = allocation::total_budget(db, share);
@@ -279,6 +275,8 @@ std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
                 db, allocation::AllocatorType::SizeProportional, budget, alpha);
         };
         const auto equal = geometric(0.0);
+        arms.push_back(
+            {"RDP_GLOBAL", share, core::to_kept(selection::rdp::simplify_database(db, budget))});
         arms.push_back({"RDP_a0", share, select(db, AlgorithmType::RDP, equal)});
         arms.push_back({"RDP_a025", share, select(db, AlgorithmType::RDP, geometric(kRdpAlpha))});
         arms.push_back({"SED_a0", share, select(db, AlgorithmType::SED, equal)});
@@ -313,47 +311,11 @@ void validate(const Arm &arm, const core::TrajectoryDb &db) {
         throw std::runtime_error(std::format("{}: {} points, budget {}", arm.name, total, budget));
 }
 
-struct PairRecall {
-    double seen = kNan, unseen = kNan;
-};
-
-// Mean per-trajectory recall on the seen and unseen halves of the teacher's join pairs
-PairRecall pair_recall(const core::TrajectoryDb &compressed,
-                       const std::vector<teacher::JoinPair> &pairs, const query::JoinConfig &join) {
-    std::vector<char> matched(pairs.size());
-    core::parallel_for(pairs.size(), [&](std::size_t k) {
-        matched[k] =
-            query::frechet_within(compressed.trajectory(pairs[k].i),
-                                  compressed.trajectory(pairs[k].j), join.eps_m, join.frechet);
-    });
-    PairRecall result;
-    for (const bool seen : {true, false}) {
-        std::vector<std::size_t> total(compressed.size(), 0), hits(compressed.size(), 0);
-        for (std::size_t k = 0; k < pairs.size(); ++k) {
-            if (pairs[k].seen != seen)
-                continue;
-            for (const auto t : {pairs[k].i, pairs[k].j}) {
-                ++total[t];
-                hits[t] += matched[k];
-            }
-        }
-        double sum = 0;
-        std::size_t count = 0;
-        for (std::size_t t = 0; t < total.size(); ++t)
-            if (total[t] != 0) {
-                sum += static_cast<double>(hits[t]) / static_cast<double>(total[t]);
-                ++count;
-            }
-        (seen ? result.seen : result.unseen) = count ? sum / static_cast<double>(count) : kNan;
-    }
-    return result;
-}
-
 // Whether the teacher trained on the join at eps_m in mode: one of its thresholds in its own join
 // mode, or its held-out term at join.eps_m
 bool trained_on(const pipeline::Config &config, const teacher::ObjectiveConfig &objective,
                 double eps_m, query::JoinMode mode) {
-    const auto &extra = config.teacher.extra_join_eps_m;
+    const auto extra = pipeline::teacher_extra_join_eps_m(config);
     const bool teacher_eps =
         eps_m == config.join.eps_m || std::ranges::find(extra, eps_m) != extra.end();
     const bool held_out_term =
@@ -382,7 +344,7 @@ int main(int argc, char **argv) try {
         args.out / "results.csv",
         "seed,share,arm,budget,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,"
         "where_at_within_100,join_micro_f1,knn_tau,norm_knn,norm_range,norm_where_at,norm_join,"
-        "norm_clustering,J4,J_T,join_recall_seen,join_recall_unseen,predicted_clusters,"
+        "norm_clustering,J4,J_T,predicted_clusters,"
         "eval_s,join_mode,self_join_f1,norm_self_join,teacher_join_mode,norm_join_main,"
         "norm_clustering_main,self_knn_recall,norm_self_knn,norm_self_join_mean,J4_self,"
         "teacher_knn_query");
@@ -457,8 +419,7 @@ int main(int argc, char **argv) try {
             }
         }
         if (args.baselines) {
-            for (auto &arm :
-                 baseline_arms(db, pairs, config.teacher.all_join_pairs, config.budget_shares))
+            for (auto &arm : baseline_arms(db, pairs, config.budget_shares))
                 arms.push_back(std::move(arm));
             for (const double share : config.budget_shares)
                 for (auto &arm : model.single_recipes(allocation::total_budget(db, share)))
@@ -527,16 +488,15 @@ int main(int argc, char **argv) try {
             const auto scores =
                 evaluator::Evaluator(db, compressed, test, scoring).evaluate().scores;
             const auto normalized = evaluator::normalize_scores(scores, floor);
-            const auto recall = pair_recall(compressed, pairs, config.join);
             results << std::format(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
                 "{},{},{},{},{},{},{},{},{},{},{}\n",
                 seed, arm.share, arm.name, allocation::total_budget(db, arm.share),
                 scores.knn.recall_at_k, scores.range_f1, scores.where_at.average_hit,
                 scores.join.f1, scores.clustering.score, scores.where_at.within_radius,
                 scores.join.micro_f1, scores.knn.kendalls_tau_topk, normalized.knn,
                 normalized.range, normalized.where_at, normalized.join, normalized.clustering,
-                normalized.combined, objective.total(arm.kept), recall.seen, recall.unseen,
+                normalized.combined, objective.total(arm.kept),
                 scores.clustering.predicted_clusters, core::seconds_since(start),
                 mode_name(config.join.mode), scores.self_join.f1, normalized.self_join,
                 mode_name(objective.config().join_mode), normalized.join_f1,
