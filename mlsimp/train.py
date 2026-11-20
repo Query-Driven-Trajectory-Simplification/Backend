@@ -36,6 +36,62 @@ def save_atomic(torch, obj, path):
     os.replace(tmp, path)
 
 
+STAGES = ["grid", "node2vec", "T-BERT", "features", "GAT + Diff-TS"]
+
+
+class Progress:
+    def __init__(self):
+        self.path = None
+        self.data = {}
+        self.last = 0.0
+
+    def open(self, out, title):
+        self.path = out / "progress.json"
+        try:
+            self.data = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            self.data = {}
+        self.data["title"] = title
+        stages = self.data.setdefault("stages", {})
+        for name in STAGES:
+            stages.setdefault(name, {"status": "waiting"})
+        self.write(True)
+
+    def write(self, force=False):
+        if self.path is None or (not force and time.time() - self.last < 2):
+            return
+        self.last = time.time()
+        self.data["updated"] = time.time()
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data))
+        os.replace(tmp, self.path)
+
+    def start(self, stage):
+        info = self.data["stages"][stage]
+        if info.get("status") != "running":
+            info.update(status="running", started=time.time())
+        self.data["current"] = {"stage": stage}
+        self.write(True)
+
+    def update(self, detail, done, total, stage_done=None, stage_total=None):
+        current = self.data.setdefault("current", {})
+        if current.get("detail") != detail:
+            current.update(since=time.time(), done_at_since=done)
+        if stage_done is not None and "stage_since" not in current:
+            current.update(stage_since=time.time(), stage_done_at_since=stage_done)
+        current.update(detail=detail, done=done, total=total, stage_done=stage_done, stage_total=stage_total)
+        self.write()
+
+    def finish(self, stage):
+        info = self.data["stages"][stage]
+        info.update(status="done", seconds=time.time() - info.get("started", time.time()))
+        self.data.pop("current", None)
+        self.write(True)
+
+
+progress = Progress()
+
+
 class Clock:
     def __init__(self, minutes):
         self.every = minutes * 60
@@ -238,6 +294,7 @@ def train_node2vec(torch, db, grid, params, fixed, out, ckpt_path, device, args)
             batches += 1
         loss = total / batches
         state["epoch"] += 1
+        progress.update(f"epoch {state['epoch']}/{epochs}", state["epoch"], epochs)
         if abs(loss - state["last_loss"]) < 1e-3:
             state["cnt"] += 1
         else:
@@ -322,6 +379,8 @@ def train_tbert(torch, db, grid, params, fixed, grid_emb, out, ckpt_path, device
             optimizer.step()
             total += loss.item()
             state["batch"] += 1
+            progress.update(f"epoch {state['epoch'] + 1}/{epochs} | batch", state["batch"], count,
+                            state["epoch"] * count + state["batch"], epochs * count)
             if clock.due():
                 checkpoint()
                 print(f"T-BERT epoch {state['epoch'] + 1}/{epochs} batch {state['batch']}/{count} "
@@ -363,6 +422,7 @@ def trajectory_features(torch, tbert, db, grid, params, fixed, device):
             items.append({"feature": torch.cat([point, seg], 0).cpu(), "points": m,
                           "sizes": [ve - vs for _, _, vs, ve in spans],
                           "emb": point.mean(0).cpu(), "neighbor": neighbor.T.contiguous().cpu()})
+            progress.update("trajectories", i + 1, len(offsets) - 1)
             if (i + 1) % 2000 == 0:
                 print(f"features {i + 1}/{len(offsets) - 1}", flush=True)
     return items
@@ -510,7 +570,7 @@ def diffusion_batch(torch, trajs, idxs, device):
         labels.append(np.concatenate([[0], idx, [len(traj) - 1]]))
     traj_pad, traj_mask = pad(torch, trajs, device)
     simp_pad, simp_mask = pad(torch, simps, device)
-    label = torch.full((len(pick), simp_pad.size(1)), -100, dtype=torch.long)
+    label = torch.full((len(trajs), simp_pad.size(1)), -100, dtype=torch.long)
     for i, l in enumerate(labels):
         label[i, :len(l)] = torch.as_tensor(l)
     return traj_pad, traj_mask, simp_pad, simp_mask, label.to(device)
@@ -655,7 +715,7 @@ def make_diffusion(params):
 def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, device, args):
     gat_params = params["GAT"]
     diff_params = params["Diff"]
-    rounds = args.rounds or params["mutual_epochs"]
+    rounds = args.rounds or (2 if fixed else params["mutual_epochs"])
     gat_epochs = args.gat_epochs or gat_params["num_epoch"]
     diff_epochs = args.diff_epochs or diff_params["epochs"]
     amplify_len = diff_params["amplify_len"]
@@ -735,6 +795,9 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                     loss.backward()
                     gat_opt.step()
                     state["batch"] += 1
+                    progress.update(f"round {r + 1}/{rounds} | GNN-TS epoch {state['epoch'] + 1}/{gat_epochs} | batch",
+                                    state["batch"], count, r * 3 + (state["epoch"] + state["batch"] / count) / gat_epochs,
+                                    rounds * 3)
                     if clock.due():
                         checkpoint()
                         print(f"round {r + 1}/{rounds} GAT epoch {state['epoch'] + 1}/{gat_epochs} "
@@ -780,6 +843,9 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                     torch.nn.utils.clip_grad_norm_(diff_model.parameters(), 3)
                     diff_opt.step()
                     state["batch"] += 1
+                    progress.update(f"round {r + 1}/{rounds} | Diff-TS epoch {state['epoch'] + 1}/{diff_epochs} | batch",
+                                    state["batch"], len(batches),
+                                    r * 3 + 1 + (state["epoch"] + state["batch"] / len(batches)) / diff_epochs, rounds * 3)
                     if clock.due():
                         checkpoint()
                         print(f"round {r + 1}/{rounds} diffusion epoch {state['epoch'] + 1}/{diff_epochs} "
@@ -808,6 +874,8 @@ def train_mlsimp(torch, db, items, feats, params, fixed, out_dir, ckpt_path, dev
                     for c, chosen in zip(pick, diffusion_sample(torch, diff_model, diffusion, batch, amp,
                                                                 diff_params["diff_step_eval"], fixed, device)):
                         sampled.setdefault(b, {})[c] = chosen + chunks[c][1]
+                    progress.update(f"round {r + 1}/{rounds} | Diff-TS sampling | batch", len(sampled), len(batches),
+                                    r * 3 + 2 + len(sampled) / len(batches), rounds * 3)
                     if clock.due():
                         checkpoint()
                         print(f"round {r + 1}/{rounds} sampling batch {b + 1}/{len(batches)}", flush=True)
@@ -874,31 +942,39 @@ def main():
 
     started = time.time()
     lap = [time.time()]
+    progress.open(out, f"{data.name}/{out.name} | {'corrected' if args.fixed else 'published'} | "
+                       f"{config['trajectories']} trajectories")
 
     def timed(name):
         print(f"time: {name} {time.time() - lap[0]:.0f} s", flush=True)
         lap[0] = time.time()
+        progress.finish(name)
 
     if not (out / "grid.npz").exists():
+        progress.start("grid")
         build_grid(db, params, args.fixed, out / "grid.npz")
         timed("grid")
     grid = GridMap(out / "grid.npz")
     if not (out / "node2vec.pt").exists():
+        progress.start("node2vec")
         train_node2vec(torch, db, grid, params, args.fixed, out / "node2vec.pt", out / "node2vec_ckpt.pt", device, args)
         timed("node2vec")
     grid_emb = torch.load(out / "node2vec.pt")
     if not (out / "tbert.pt").exists():
+        progress.start("T-BERT")
         train_tbert(torch, db, grid, params, args.fixed, grid_emb, out / "tbert.pt", out / "tbert_ckpt.pt", device, args)
         timed("T-BERT")
     if not (out / "done.txt").exists():
+        progress.start("features")
         tbert = make_tbert(torch, grid.grid_size, params["gridemb_dim"])
         tbert.load_state_dict(torch.load(out / "tbert.pt", map_location="cpu"))
         items = trajectory_features(torch, tbert, db, grid, params, args.fixed, device)
         del tbert
         feats = diffusion_inputs(db, params)
         timed("features")
+        progress.start("GAT + Diff-TS")
         train_mlsimp(torch, db, items, feats, params, args.fixed, out, out / "mlsimp_ckpt.pt", device, args)
-        timed("GAT + diffusion")
+        timed("GAT + Diff-TS")
         (out / "done.txt").write_text(f"{time.time() - started:.0f} s\n")
     print(f"done, models in {out}", flush=True)
 
