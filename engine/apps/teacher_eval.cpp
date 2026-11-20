@@ -24,6 +24,8 @@
 #include "backend/engine/teacher/workloads.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -429,6 +431,30 @@ int main(int argc, char **argv) try {
                             .score);
                 }
 
+        // ---- eps check (scratch only) ----
+        const char *eps_dir = std::getenv("EPS_CHECK_DIR");
+        const auto frechet = config.knn.frechet;
+        std::vector<double> knn_cut; // distance to the (k+1)-th original neighbour per test query
+        if (eps_dir) {
+            const auto &kw = test_workloads.knn;
+            knn_cut.assign(kw.entries.size(), kNan);
+            core::parallel_for(kw.entries.size(), [&](std::size_t qi) {
+                const auto q = kw.queries.trajectory(kw.entries[qi].query_index);
+                const auto ids = query::knn(db, q, kw.k + 1, frechet);
+                if (ids.size() == kw.k + 1)
+                    knn_cut[qi] = query::knn_distance(q, db.trajectory(ids.back()), frechet);
+            });
+        }
+        std::ofstream eps_out, knn_out, join_out;
+        if (eps_dir) {
+            const std::filesystem::path d(eps_dir);
+            std::filesystem::create_directories(d);
+            eps_out = open_csv(d / "eps.csv", "seed,share,arm,traj,points,kept,eps");
+            knn_out = open_csv(d / "knn_pairs.csv",
+                               "seed,share,arm,q,traj,in_ref,in_ans,d_orig,d_comp,cut,eps");
+            join_out = open_csv(d / "join_pairs.csv",
+                                "seed,share,arm,q,traj,positive,found,d_orig,d_comp,join_eps,eps");
+        }
         const auto &objective = model.objective();
         const double db_knn_floor = args.knn_check ? objective.knn_recall(floor_db) : kNan;
         for (const auto &arm : arms) {
@@ -436,6 +462,62 @@ int main(int argc, char **argv) try {
             const auto compressed = core::materialize(db, arm.kept);
             const auto scores =
                 evaluator::Evaluator(db, compressed, test, scoring).evaluate().scores;
+            static const std::vector<std::string> kEpsArms{
+                "RDP_a0", "SED_a0", "UNI_a0", "RDP_GLOBAL", "BUDGET_RDP", "BUDGET_CHOICE",
+                "BUDGET_LOOP", "BUDGET_LOOP_TRADE"};
+            if (eps_dir && std::ranges::find(kEpsArms, arm.name) != kEpsArms.end()) {
+                std::vector<double> eps(db.size());
+                core::parallel_for(db.size(), [&](std::size_t i) {
+                    eps[i] = query::knn_distance(db.trajectory(i), compressed.trajectory(i), frechet);
+                });
+                for (std::size_t i = 0; i < db.size(); ++i)
+                    eps_out << std::format("{},{},{},{},{},{},{}\n", seed, arm.share, arm.name, i,
+                                           db.trajectory(i).size(), arm.kept[i].size(), eps[i]);
+                const auto &kw = test_workloads.knn;
+                std::vector<std::string> rows(kw.entries.size());
+                core::parallel_for(kw.entries.size(), [&](std::size_t qi) {
+                    const auto q = kw.queries.trajectory(kw.entries[qi].query_index);
+                    const auto &ref = kw.entries[qi].reference;
+                    const auto ans = query::knn(compressed, q, kw.k, frechet);
+                    std::vector<std::size_t> all(ref.begin(), ref.end());
+                    for (auto a : ans)
+                        if (std::ranges::find(all, a) == all.end())
+                            all.push_back(a);
+                    for (auto t : all) {
+                        const bool in_ref = std::ranges::find(ref, t) != ref.end();
+                        const bool in_ans = std::ranges::find(ans, t) != ans.end();
+                        rows[qi] += std::format(
+                            "{},{},{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name, qi, t,
+                            int(in_ref), int(in_ans), query::knn_distance(q, db.trajectory(t), frechet),
+                            query::knn_distance(q, compressed.trajectory(t), frechet), knn_cut[qi],
+                            eps[t]);
+                    }
+                });
+                for (auto &r : rows)
+                    knn_out << r;
+                const auto &jw = test_workloads.join;
+                std::vector<std::string> jrows(jw.entries.size());
+                core::parallel_for(jw.entries.size(), [&](std::size_t qi) {
+                    const auto &e = jw.entries[qi];
+                    const auto q = jw.queries.trajectory(e.query_index);
+                    std::vector<std::size_t> all(e.candidates.begin(), e.candidates.end());
+                    for (auto r : e.reference)
+                        if (std::ranges::find(all, r) == all.end())
+                            all.push_back(r);
+                    for (auto t : all) {
+                        const bool pos = std::ranges::find(e.reference, t) != e.reference.end();
+                        const double dc = query::knn_distance(q, compressed.trajectory(t), frechet);
+                        jrows[qi] += std::format(
+                            "{},{},{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name, qi, t,
+                            int(pos), int(dc <= jw.eps_m),
+                            query::knn_distance(q, db.trajectory(t), frechet), dc, jw.eps_m, eps[t]);
+                    }
+                });
+                for (auto &r : jrows)
+                    join_out << r;
+                for (auto *out : {&eps_out, &knn_out, &join_out})
+                    out->flush();
+            }
             const auto normalized = evaluator::normalize_scores(scores, floor);
             results << std::format(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2f},"
