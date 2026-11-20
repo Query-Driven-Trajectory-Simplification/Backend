@@ -14,7 +14,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <string>
 #include <vector>
 
 namespace pipeline {
@@ -29,8 +28,6 @@ struct Config {
     std::vector<double> budget_shares{0.0025, 0.005, 0.01, 0.02};
     std::vector<selection::AlgorithmType> algorithms{selection::AlgorithmType::RDP,
                                                      selection::AlgorithmType::SED};
-    std::vector<std::string> external_algorithms;
-    std::filesystem::path selection_dir = "data/selection";
     query::KnnConfig knn;
     query::RangeConfig range;
     query::WhereAtConfig where_at;

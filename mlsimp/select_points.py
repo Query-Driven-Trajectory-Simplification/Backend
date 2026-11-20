@@ -33,7 +33,7 @@ def sample(offsets, scores, count, rng):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data", type=Path, required=True,
-                        help="export folder (selection_dir, or <export-db>/seed<s>)")
+                        help="export folder (<export-db>/seed<s>)")
     parser.add_argument("--seed", type=int, default=0, help="sampling seed")
     args = parser.parse_args()
 

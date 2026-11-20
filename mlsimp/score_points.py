@@ -36,7 +36,7 @@ def main():
     parser.add_argument("--mlsimp", type=Path,
                         default=Path(__file__).resolve().parents[1] / "third_party" / "MLSimp",
                         help="MLSimp checkout (default: the third_party/MLSimp submodule)")
-    parser.add_argument("--data", type=Path, required=True, help="selection_dir from the config")
+    parser.add_argument("--data", type=Path, required=True, help="export folder (<export-db>/seed<s>)")
     parser.add_argument("--dataset", default="Geolife")
     parser.add_argument("--threads", type=int, help="CPU threads for torch (default: all cores)")
     parser.add_argument("--limit", type=int, help="stop after this many trajectories (to test)")

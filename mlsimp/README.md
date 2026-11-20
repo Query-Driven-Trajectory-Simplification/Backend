@@ -22,7 +22,7 @@ mlsimp/.venv/Scripts/python -m pip install -r mlsimp/requirements.txt
 If the submodule update fails with "active `post-checkout` hook found", prefix it with
 `GIT_CLONE_PROTECTION_ACTIVE=false`.
 
-## With teacher_eval
+## Run
 
 ```bash
 ./build/rel/engine/teacher_eval.exe --seeds 7,99,123 --export-db data/mlsimp_teacher
@@ -38,18 +38,8 @@ done
 ```
 
 Use the same `--config`, `--cache`, `--shares` and `--out` as the teacher run. Scoring takes about
-30 minutes per seed on 16 cores and resumes if stopped.
-
-## With run.exe (Travis)
-
-```bash
-./build/rel/engine/export_db.exe engine/configs/geolife_mlsimp.json
-mlsimp/.venv/Scripts/python mlsimp/score_points.py --data data/mlsimp
-mlsimp/.venv/Scripts/python mlsimp/select_points.py --data data/mlsimp
-./build/rel/engine/run.exe engine/configs/geolife_mlsimp.json
-```
-
-Rerun the export and both scripts when the seed, split or budget shares change.
+30 minutes per seed on 16 cores and resumes if stopped. Rerun the export and both scripts when
+the config changes.
 
 ## Selection
 
@@ -60,8 +50,8 @@ of every trajectory.
 
 ## Differences from MLSimp's validation.py
 
-- The range part uses 100 boxes like MLSimp, drawn from the teacher's training range queries
-  (`teacher_eval`) or generated with a separate seed (`export_db`). MLSimp uses its test queries.
+- The range part uses 100 boxes like MLSimp, drawn from the teacher's training range queries.
+  MLSimp uses its test queries.
 - Scores are normalized over the whole database only. MLSimp first divides each trajectory's
   scores by their L2 norm, which with our trajectory lengths (100 to 12,488 points) favors short
   trajectories.

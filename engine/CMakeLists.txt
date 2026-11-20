@@ -16,7 +16,6 @@ add_library(engine
     src/io/parquet_loader.cpp
     src/io/selection_file.cpp
     src/io/workload_export.cpp
-    src/pipeline/common.cpp
     src/pipeline/config.cpp
     src/pipeline/pipeline.cpp
     src/pipeline/scorer.cpp
@@ -66,12 +65,6 @@ add_executable(teacher_eval
 )
 
 target_link_libraries(teacher_eval PRIVATE engine)
-
-add_executable(export_db
-    apps/export_db.cpp
-)
-
-target_link_libraries(export_db PRIVATE engine)
 
 add_executable(engine_tests
     tests/parquet_loader_test.cpp
