@@ -12,6 +12,13 @@ Range scoring changed on 2026-11-20: J_T now uses macro F1, including its endpoi
 matching J4. Historical teacher selections and J_T values need a fresh run. `RDP_GLOBAL` is the
 query-independent database-wide top-down PED baseline in both experiment runners.
 
+Continuous kNN now uses one numerical ranking in both the evaluator and `KnnState`: the
+smallest millimetre-grid radius accepted by the Fréchet decision predicate, with equal keys
+ordered by database index. This replaces evaluator-specific overlapping intervals and the
+tracker's independently bisected scalar distances. Rankings near ties can change; V6 caches
+rebuild the reference neighbours, and earlier kNN/J4 results should be rerun. Generic Fréchet
+distances and join decisions are unchanged. Limited kNN watch lists remain an approximation.
+
 ## How it fits together
 
 ```
@@ -326,8 +333,8 @@ not. They matter because the join metric is F1: simplification can make negative
 - **Computation:** in parallel, for each trajectory e:
   1. find its k+2 nearest neighbours (`query::knn`) and remove e itself;
   2. keep the first k as `top`;
-  3. compute `cutoff`, the distance to the (k+1)th neighbour, with `query::frechet_distance`. For continuous
-     Fréchet, the discrete distance is used as the upper bound of the search.
+  3. compute `cutoff`, the distance to the (k+1)th neighbour, with `query::frechet_distance`. This cutoff remains a proxy used by value curves. Ranking kNN
+     uses `query::knn_distance`, shared with the evaluator.
 - **Output:** one `KnnEntry` per trajectory.
 
 ### `collect_pairs(db, eps_m, frechet, positives, negatives)` — internal
@@ -343,8 +350,9 @@ not. They matter because the join metric is F1: simplification can make negative
 ### `save` / `load` / `write_pairs` / `read_pairs` / `put` / `get` — internal
 
 - **Why:** the cache file format.
-- **Version 5** (read and written): a header (magic number, seed, full-content fingerprint, k,
-  eps, variant), then the kNN entries, positives and negatives. Version 4 also stored a seen /
+- **Version 6** (read and written): a header (magic number, seed, full-content fingerprint, k,
+  eps, variant), then the kNN entries, positives and negatives. Version 5 has the same layout
+  but an obsolete continuous-kNN ranking policy, so it is rebuilt. Version 4 also stored a seen /
   unseen flag per pair and is rejected. The version covers both file
   layout and cached workload generation and must be bumped when either changes.
 - **Versions 2 and 3** are rejected because they used metadata-only fingerprints.
@@ -731,6 +739,8 @@ These timings predate the seven-candidate teacher, allocation search and cache c
   real change in J_T.
 - `SeveralJoinTermsAreTrackedExactly`: the same exactness with two extra thresholds, with and
   without the held-out term.
+- `ContinuousKnnNearTiesMatchFullScoringThroughSwitches`: the former 23/24 versus 1 regression,
+  checked through original/compressed query switches and bounded proposals.
 - `RankingKnnIsTrackedExactly`: when every query watches every trajectory, `KnnState`'s tracked
   recall equals a full recompute after random switches, and the kNN, range, join and separable changes
   together predict the real change in J_T.

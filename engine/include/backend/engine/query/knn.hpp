@@ -9,6 +9,19 @@
 
 namespace query {
 
+inline constexpr double kKnnResolutionM = 1e-3;
+
+// Continuous distances are rounded up to a fixed millimetre grid using the decision predicate.
+// The grid makes ranking independent of the search bounds, candidate order and requested k.
+// Discrete distances are unchanged. Use this distance for cached kNN rankings too.
+double knn_distance(const core::TrajectoryView &a, const core::TrajectoryView &b,
+                    FrechetVariant variant = FrechetVariant::Continuous);
+
+inline bool knn_rank_less(double distance_a, std::size_t index_a, double distance_b,
+                          std::size_t index_b) {
+    return distance_a < distance_b || (distance_a == distance_b && index_a < index_b);
+}
+
 struct KnnQuery {
     std::size_t query_index;            // index into KnnWorkload::queries
     std::vector<std::size_t> reference; // knn in the uncompressed database, closest first
@@ -39,8 +52,8 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
                                  std::uint64_t seed = 42);
 
 // Indices into trajectories of the k trajectories closest to query by Fréchet distance, closest
-// first. Equal distances are ordered by database index; continuous distances within 1 mm count
-// as equal.
+// first, using knn_distance and knn_rank_less. Continuous distances in the same millimetre bin
+// are tied by database index; discrete distance ties also use the database index.
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectories,
                              const core::TrajectoryView &query, std::size_t k,
                              FrechetVariant variant = FrechetVariant::Continuous);

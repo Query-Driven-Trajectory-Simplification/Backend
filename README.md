@@ -89,6 +89,10 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 segment with the largest perpendicular error anywhere in the database. It uses no query
 workloads and receives exactly the same total point budget as the teacher.
 
+Continuous kNN uses the same fixed millimetre-grid ranking in the evaluator and teacher tracker,
+with ties resolved by database index. Teacher workload caches from earlier ranking versions are
+rebuilt automatically. Recompute older kNN/J4 results when comparing runs across this change.
+
 The teacher's range term uses macro F1 like J4. The loop tracks box coverage counts exactly;
 independent choices and value curves use F1 marginal gains against fixed partners.
 

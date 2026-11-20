@@ -242,6 +242,67 @@ struct RawLine {
     core::TrajectoryView view() const { return {0, t, {}, {}, x, y}; }
 };
 
+TEST(ContinuousFrechet, KnnDistanceUsesTheSameGridUnderDifferentSampling) {
+    const RawLine line({{0, 0}, {10, 0}});
+    const RawLine subdivided({{0, 0}, {3, 0}, {7, 0}, {10, 0}});
+    for (const double x : {8.0, 8.001, 8.0015}) {
+        const RawLine backtrack({{0, 0}, {x, 0}, {2, 0}, {10, 0}});
+        const double key = query::knn_distance(line.view(), backtrack.view());
+        EXPECT_DOUBLE_EQ(key, query::knn_distance(subdivided.view(), backtrack.view()));
+        EXPECT_DOUBLE_EQ(key, query::knn_distance(backtrack.view(), line.view()));
+        EXPECT_TRUE(query::continuous_frechet_within(line.view(), backtrack.view(), key));
+        EXPECT_FALSE(query::continuous_frechet_within(line.view(), backtrack.view(),
+                                                      key - query::kKnnResolutionM));
+    }
+    const RawLine a({{0, 0}, {8.001, 0}, {2, 0}, {10, 0}});
+    const RawLine b({{0, 0}, {8.0015, 0}, {2, 0}, {10, 0}});
+    EXPECT_DOUBLE_EQ(query::knn_distance(line.view(), a.view()),
+                     query::knn_distance(line.view(), b.view()));
+    EXPECT_DOUBLE_EQ(query::knn_distance(line.view(), a.view(), query::FrechetVariant::Discrete),
+                     query::frechet_distance(line.view(), a.view()));
+}
+
+TEST(ContinuousFrechet, KnnNearTiePrefixesMatchIndependentCachedDistancesForEveryK) {
+    const auto database = make_db({{{0, 0}, {8.001, 0}, {2, 0}, {10, 0}},
+                                   {{0, 0}, {8.0015, 0}, {2, 0}, {10, 0}},
+                                   {{0, 0}, {8, 0}, {2, 0}, {10, 0}},
+                                   {{0, 0}, {3, 0}, {7, 0}, {10, 0}},
+                                   {{0, 10}, {10, 10}},
+                                   {{0, 0}, {5, 20}, {10, 0}}});
+    for (std::size_t q = 0; q < database.size(); ++q) {
+        const auto query = database.trajectory(q);
+        std::vector<std::pair<double, std::size_t>> reference;
+        for (std::size_t i = 0; i < database.size(); ++i)
+            reference.push_back({query::knn_distance(query, database.trajectory(i)), i});
+        std::ranges::sort(reference);
+        for (std::size_t k = 1; k <= database.size() + 1; ++k) {
+            std::vector<std::size_t> expected;
+            for (std::size_t i = 0; i < std::min(k, reference.size()); ++i)
+                expected.push_back(reference[i].second);
+            EXPECT_EQ(query::knn(database, query, k), expected) << "q=" << q << ", k=" << k;
+        }
+    }
+}
+
+TEST(ContinuousFrechet, KnnMatchesCachedRankingOnRandomWalks) {
+    std::mt19937_64 rng(267);
+    const auto database = make_db(random_lines(rng, 32, 12));
+    const auto queries = make_db(random_lines(rng, 12, 10));
+    for (std::size_t q = 0; q < queries.size(); ++q) {
+        const auto trajectory = queries.trajectory(q);
+        std::vector<std::pair<double, std::size_t>> reference;
+        for (std::size_t i = 0; i < database.size(); ++i)
+            reference.push_back({query::knn_distance(trajectory, database.trajectory(i)), i});
+        std::ranges::sort(reference);
+        for (const std::size_t k : {1u, 2u, 5u, 10u, 32u, 40u}) {
+            std::vector<std::size_t> expected;
+            for (std::size_t i = 0; i < std::min(k, reference.size()); ++i)
+                expected.push_back(reference[i].second);
+            EXPECT_EQ(query::knn(database, trajectory, k), expected) << "q=" << q << ", k=" << k;
+        }
+    }
+}
+
 TEST(ContinuousFrechet, LongSegmentWithAVertexOnItIsAtDistanceZeroExactCoordinates) {
     const double bx = -81677.87045, by = -85151.97823;
     for (const double f : {0.75641311848, 0.5, 0.1, 0.999, 0.333333333}) {

@@ -185,14 +185,15 @@ TEST_F(TeacherTest, CacheWithLegacyFingerprintIsRebuilt) {
     const auto file = m_dir / "teacher_cache_seed5.bin";
     const auto current = read_cache(file);
     ASSERT_FALSE(current.empty());
-    for (const std::uint64_t legacy : {0x5431'4341'4348'4532ull, 0x5431'4341'4348'4533ull}) {
+    for (const std::uint64_t legacy :
+         {0x5431'4341'4348'4532ull, 0x5431'4341'4348'4533ull, 0x5431'4341'4348'4535ull}) {
         SCOPED_TRACE(legacy);
         {
             std::fstream out(file, std::ios::binary | std::ios::in | std::ios::out);
             out.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
             ASSERT_TRUE(out);
         }
-        // An obsolete version is rejected even when everything else matches
+        // Reject obsolete fingerprints and V5's adaptive continuous-kNN reference ordering
         ASSERT_NE(read_cache(file), current);
         const auto rebuilt = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
         EXPECT_EQ(read_cache(file), current);
@@ -560,6 +561,67 @@ TEST_F(TeacherTest, CompressedKnnQueriesNeedTheRankingTerm) {
     EXPECT_THROW(
         teacher::Objective(db, workloads, {.ranking_knn = false, .compressed_knn_query = true}),
         std::invalid_argument);
+}
+
+TEST_F(TeacherTest, ContinuousKnnNearTiesMatchFullScoringThroughSwitches) {
+    // The first trajectory is a line; the next two backtrack by almost the same amount.
+    // The old evaluator tied overlapping distance intervals, while the tracker sorted their
+    // independently approximated distances: even the full database scored 23/24 instead of 1.
+    const auto source = random_db(2, 24, 20);
+    const std::array line{0.0, 3.0, 7.0, 10.0}, loop{0.0, 8.0, 2.0, 10.0};
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> ids;
+    std::vector<std::int64_t> times;
+    std::vector<double> lat, lon;
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        ids.push_back(static_cast<std::int32_t>(i));
+        const auto original = source.trajectory(i);
+        for (std::size_t k = 0; k < (i < 3 ? line.size() : original.size()); ++k) {
+            const double x = i >= 3   ? original.x[k]
+                             : i == 0 ? line[k]
+                                      : loop[k] + (i == 1 && k == 1 ? 0.001 : 0.0);
+            const auto point = core::to_lat_lon(x, i < 3 ? 0.0 : original.y[k]);
+            times.push_back(static_cast<std::int64_t>(k));
+            lat.push_back(point.lat);
+            lon.push_back(point.lon);
+        }
+        offsets.push_back(times.size());
+    }
+    const core::TrajectoryDb db(offsets, ids, times, lat, lon);
+    auto config = small_config();
+    config.k = 1;
+    config.join_eps_m = 2.0;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 99, m_dir);
+    const auto full = every_point(db), floor = endpoints(db);
+    const teacher::PreparedTrajectories prepared_full(db, full), prepared_floor(db, floor);
+    const auto full_views = prepared_full.views(), floor_views = prepared_floor.views();
+    for (const bool compressed : {false, true}) {
+        SCOPED_TRACE(compressed ? "compressed queries" : "original queries");
+        const teacher::Objective objective(db, workloads,
+                                           {.join_mode = query::JoinMode::HeldOut,
+                                            .ranking_knn = true,
+                                            .compressed_knn_query = compressed});
+        auto kept = full;
+        auto views = full_views;
+        teacher::KnnState knn(objective, kept, {}, db.size());
+        EXPECT_DOUBLE_EQ(objective.knn_recall(core::materialize(db, kept)), 1.0);
+        EXPECT_DOUBLE_EQ(knn.metric(), 1.0);
+        for (const auto i : {1u, 2u, 0u, 5u, 1u, 0u, 2u, 5u}) {
+            const bool shrink = kept[i].size() != 2;
+            const auto candidate = shrink ? floor_views[i] : full_views[i];
+            const double before = objective.knn_recall(core::materialize(db, kept));
+            const auto move = knn.move(i, candidate, views);
+            const double gain = knn.propose(move);
+            if (!compressed)
+                EXPECT_NEAR(knn.propose_bounded(i, candidate), gain, 1e-12);
+            kept[i] = shrink ? floor[i] : full[i];
+            views[i] = candidate;
+            knn.apply(move);
+            const double after = objective.knn_recall(core::materialize(db, kept));
+            EXPECT_NEAR(knn.metric(), after, 1e-12);
+            EXPECT_NEAR(gain, objective.scale(teacher::Objective::Knn) * (after - before), 1e-12);
+        }
+    }
 }
 
 TEST_F(TeacherTest, CompressedKnnArmsKeepTheBudgetAndLoopOnlyImproves) {

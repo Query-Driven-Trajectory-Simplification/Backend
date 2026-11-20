@@ -72,8 +72,8 @@ double range_marginal(std::size_t others, std::size_t expected, std::size_t scor
 }
 
 constexpr std::size_t kMaxJoinTerms = 8;
-// query::frechet_distance's continuous search tolerance
-constexpr double kKnnDistanceError = 1e-3;
+// Cached kNN distances are upper bounds on a fixed millimetre grid.
+constexpr double kKnnDistanceError = query::kKnnResolutionM;
 
 double f1_of(std::size_t hits, std::size_t found, std::size_t expected) {
     return 2.0 * static_cast<double>(hits) / static_cast<double>(found + expected);
@@ -761,8 +761,8 @@ std::vector<double> KnnState::distances(std::size_t i, const core::TrajectoryVie
     const auto &watchers = m_watchers[i];
     std::vector<double> result(watchers.size());
     auto one = [&](std::size_t s) {
-        result[s] = query::frechet_distance(db.trajectory(watchers[s].query), candidate,
-                                            m_objective.workloads().frechet);
+        result[s] = query::knn_distance(db.trajectory(watchers[s].query), candidate,
+                                        m_objective.workloads().frechet);
     };
     if (parallel)
         core::parallel_for(watchers.size(), one);
@@ -781,7 +781,7 @@ std::vector<double> KnnState::own_row(std::size_t e, const core::TrajectoryView 
     std::vector<double> row;
     row.reserve(m_list[e].size());
     for (const auto j : m_list[e])
-        row.push_back(query::frechet_distance(query, state[j], m_objective.workloads().frechet));
+        row.push_back(query::knn_distance(query, state[j], m_objective.workloads().frechet));
     return row;
 }
 
@@ -792,8 +792,8 @@ KnnState::Move KnnState::move(std::size_t i, const core::TrajectoryView &candida
     Move result{i, {}, own_row(i, candidate, state)};
     result.watched.reserve(m_watchers[i].size());
     for (const auto &watcher : m_watchers[i])
-        result.watched.push_back(query::frechet_distance(state[watcher.query], candidate,
-                                                         m_objective.workloads().frechet));
+        result.watched.push_back(
+            query::knn_distance(state[watcher.query], candidate, m_objective.workloads().frechet));
     return result;
 }
 
@@ -844,7 +844,7 @@ std::size_t KnnState::ranked_hits(std::size_t e,
     // Ties go to the lower database index, like query::knn
     std::ranges::partial_sort(
         order, order.begin() + static_cast<std::ptrdiff_t>(k), [&](const auto &a, const auto &b) {
-            return a.first < b.first || (a.first == b.first && list[a.second] < list[b.second]);
+            return query::knn_rank_less(a.first, list[a.second], b.first, list[b.second]);
         });
     std::size_t count = 0;
     for (std::size_t p = 0; p < k; ++p)
@@ -882,9 +882,8 @@ void KnnState::watch(std::span<const std::vector<core::TrajectoryView>> versions
                 continue;
             for (const auto &version : versions[i])
                 if (query::frechet_within(db.trajectory(e), version, radius[e], frechet)) {
-                    added[i].push_back(
-                        {static_cast<std::uint32_t>(e),
-                         query::frechet_distance(db.trajectory(e), state[i], frechet)});
+                    added[i].push_back({static_cast<std::uint32_t>(e),
+                                        query::knn_distance(db.trajectory(e), state[i], frechet)});
                     break;
                 }
         }
@@ -935,7 +934,7 @@ double KnnState::propose_bounded(std::size_t i, const core::TrajectoryView &cand
             else if (!query::frechet_within(query, candidate, *kth + margin, frechet))
                 now = outside;
             else
-                now = hits(e, position, query::frechet_distance(query, candidate, frechet));
+                now = hits(e, position, query::knn_distance(query, candidate, frechet));
         }
         change += static_cast<long>(now) - static_cast<long>(m_hits[e]);
     }
