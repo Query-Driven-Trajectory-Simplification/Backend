@@ -6,6 +6,7 @@
 #include "backend/engine/teacher/greedy.hpp"
 #include "backend/engine/teacher/objective.hpp"
 #include "backend/engine/teacher/teacher.hpp"
+#include "backend/engine/teacher/trade_matching.hpp"
 #include "backend/engine/teacher/workloads.hpp"
 
 #include <algorithm>
@@ -856,6 +857,38 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
             EXPECT_GE(reallocate_jt, budget_loop_jt - 1e-12);
             EXPECT_GE(trade_jt, budget_loop_jt - 1e-12);
         }
+}
+
+TEST(TradeMatching, SelfSellerRemainsAvailableAfterAnUnprofitableBuyer) {
+    // Buyer 0 cannot sell to itself, and seller 2 is too expensive. Buyer 1 can still profitably
+    // buy from seller 0; neither skipping seller 0 nor ending the buyer sweep is valid.
+    const std::vector<std::pair<double, std::size_t>> sellers{{0.0, 0}, {-20.0, 2}};
+    const std::vector<char> used(3, 0);
+    std::size_t first = 0;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 0, 10.0, 1e-12),
+              sellers.size());
+    EXPECT_EQ(first, 0u);
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 1, 9.0, 1e-12), 0u);
+
+    // The same applies when the buyer itself is the only remaining seller.
+    const auto only = std::span(sellers).first(1);
+    EXPECT_EQ(teacher::detail::find_profitable_seller(only, used, first, 0, 10.0, 1e-12),
+              only.size());
+    EXPECT_EQ(teacher::detail::find_profitable_seller(only, used, first, 1, 9.0, 1e-12), 0u);
+}
+
+TEST(TradeMatching, AdvancesOnlyPastUsedSellers) {
+    const std::vector<std::pair<double, std::size_t>> sellers{{3.0, 0}, {2.0, 1}, {1.0, 2}};
+    std::vector<char> used{1, 0, 0};
+    std::size_t first = 0;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 1, 1.0, 1e-12), 2u);
+    EXPECT_EQ(first, 1u);
+    used[2] = 1;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 0, 1.0, 1e-12), 1u);
+    used[1] = 1;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 0, 1.0, 1e-12),
+              sellers.size());
+    EXPECT_EQ(first, sellers.size());
 }
 
 // Each trajectory of random_db twice, the copy shift metres north

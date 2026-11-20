@@ -8,6 +8,7 @@
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/teacher/curves.hpp"
 #include "backend/engine/teacher/greedy.hpp"
+#include "backend/engine/teacher/trade_matching.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -617,11 +618,11 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
             for (const auto &[buy_gain, r] : buyers) {
                 if (used[r])
                     continue;
-                while (s < sellers.size() && (used[sellers[s].second] || sellers[s].second == r))
-                    ++s;
-                if (s == sellers.size() || buy_gain + sellers[s].first <= kMinImprovement)
-                    break;
-                const auto seller = sellers[s++].second;
+                const auto match =
+                    detail::find_profitable_seller(sellers, used, s, r, buy_gain, kMinImprovement);
+                if (match == sellers.size())
+                    continue;
+                const auto seller = sellers[match].second;
                 used[r] = used[seller] = 1;
                 ++profitable;
                 // Exact: the seller first, then the buyer against the changed state
