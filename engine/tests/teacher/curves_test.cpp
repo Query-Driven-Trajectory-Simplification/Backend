@@ -57,6 +57,22 @@ TEST(TeacherAllocate, StepsOverFlatStretches) {
     EXPECT_EQ(b, (std::vector<std::size_t>{4, 2}));
 }
 
+TEST(TeacherAllocate, StepsOverFlatStretchesOfAnyLength) {
+    // A gains only at its fourth point, which a lookahead of 1 to 3 points would never see
+    const std::vector curves{curve({0.0, 0.0, 0.0, 0.0, 1.0}), curve({0.0, 0.1, 0.15, 0.2, 0.25})};
+    const auto b = teacher::allocate(curves, 8);
+    EXPECT_EQ(b, (std::vector<std::size_t>{6, 2}));
+}
+
+TEST(TeacherAllocate, IsOptimalOnEnvelopeVertices) {
+    // Budgets that end on envelope vertices are optimal even on non-concave curves
+    const std::vector curves{curve({0.0, 0.0, 0.9, 0.9, 1.0}), curve({0.0, 0.5, 0.6})};
+    for (const std::size_t budget : {std::size_t{5}, std::size_t{7}, std::size_t{8}}) {
+        const auto b = teacher::allocate(curves, budget);
+        EXPECT_NEAR(value_of(curves, b), brute_force(curves, budget), 1e-12) << budget;
+    }
+}
+
 TEST(TeacherAllocate, KeepsTheExactBudgetAndBounds) {
     std::mt19937_64 rng(3);
     std::uniform_real_distribution<double> step(0.0, 1.0);

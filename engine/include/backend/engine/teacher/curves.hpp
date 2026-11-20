@@ -16,8 +16,9 @@ struct Curve {
     double at(std::size_t budget) const { return value[budget - 2]; }
 };
 
-// Maximises sum curves[i].at(b_i) with sum b_i = total_budget, greedily on the best gain per point
-// over the next 1 to 3 points, which steps over flat stretches. Throws if the budget cannot fit
+// Maximises sum curves[i].at(b_i) with sum b_i = total_budget: greedy on the slopes of each curve's
+// upper concave envelope, which steps over flat stretches of any length. Optimal when the budget
+// ends on envelope vertices. Throws if the budget cannot fit
 std::vector<std::size_t> allocate(const std::vector<Curve> &curves, std::size_t total_budget,
                                   double *value = nullptr);
 

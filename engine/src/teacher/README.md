@@ -53,8 +53,8 @@ Files:
   it is built from the same Fréchet neighbour test as the join and would count it twice.
   With `join.mode` `HeldOut` (the Geolife config) the join term compares original trajectories
   from the query pool with the simplified database, so all four terms are held out. The database
-  self join, whose pairs the teacher trains on, is then reported separately (`norm_self_join`,
-  the seen / unseen recall and the 100 / 300 m thresholds) and is not part of J4. Results quoted
+  self join, whose pairs the teacher trains on, is then reported separately (`norm_self_join`
+  and the thresholds in `thresholds.csv`) and is not part of J4. Results quoted
   below predate this and have the self join inside the score.
 - **J4-self** (`J4_self`): the in-database setting, where the database's own trajectories are
   the kNN and join queries. Its terms are self kNN (each database trajectory, compressed, searched
@@ -88,16 +88,17 @@ Files:
   experiment. Held out, `EQUAL_CHOICE_RDP_PARTNERS` and `EQUAL_CHOICE` are the same arm, and best response is
   coupled only through each query's F1. Everything below describing the join term as "both
   sides compressed" is the `Self` mode.
-- **Join terms:** the join term can pool several terms. `teacher.extra_join_eps_m` (or
-  `teacher_eval --train-eps`) adds self-join thresholds next to `join.eps_m`, so the join gain is
-  not fitted to one threshold. `teacher.held_out_term` (or `--held-out-term`) adds the held-out
+- **Join terms:** the join term can pool several terms. By default the teacher trains on
+  `join.eps_m` and `join.score_eps_m`, the thresholds J4 averages over, so the join gain is not
+  fitted to one threshold. `teacher.extra_join_eps_m` (or `teacher_eval --train-eps`) overrides
+  the extra thresholds. `teacher.held_out_term` (or `--held-out-term`) adds the held-out
   form of the join at `join.eps_m` next to a `Self` join term, so one teacher keeps both the self
-  join and the join from outside queries. Each trajectory's F1 is counted once per term and the
-  metric is the mean over all of them, so a term with more matching trajectories weighs more.
-- **Join pairs:** the teacher uses every 150 m pair, because whoever compresses the database knows
-  all of it. The pairs are also split in half (seen / unseen); with `all_join_pairs = false` the
-  teacher only gets the seen half, which shows how much of its join gain is fitting those
-  specific pairs. Whether the join gain generalises is tested at other thresholds (100 m, 300 m).
+  join and the join from outside queries. Like J4's join grid, each term's macro F1 is normalised
+  by its own endpoints-only floor and the terms are averaged equally. A term without true pairs is
+  left out, as J4 skips NaN entries.
+- **Join pairs:** the teacher uses every pair at each of its thresholds, because whoever
+  compresses the database knows all of it. Whether the join gain generalises to thresholds the
+  teacher never saw is tested in `teacher_eval` at 125, 175 and 250 m, between the trained ones.
 - **Arm:** one named output of the teacher, e.g. `EQUAL_CHOICE_RDP_PARTNERS`.
 
 ---
@@ -162,7 +163,7 @@ actual J_T once both sides of every join pair use their chosen candidates.
 
 ### Allocation arms
 `build_curves` scores budgets from 2 up to a per-trajectory cap. `allocate` fills the total budget
-with greedy additions of up to three points at a time. `BUDGET_RDP` uses RDP-only curves; `BUDGET_CHOICE` uses the best of all candidates.
+with greedy steps along each curve's upper concave envelope. `BUDGET_RDP` uses RDP-only curves; `BUDGET_CHOICE` uses the best of all candidates.
 `BUDGET_LOOP` applies best response at those allocated budgets. `BUDGET_LOOP_SHUFFLED` is a control that
 searches with relabelled partners and kNN neighbours, then scores the result against the real
 workloads. `BUDGET_LOOP_NO_UPDATE` is the second control: one pass from the same start in which
@@ -177,7 +178,7 @@ beat.
 
 `BUDGET_LOOP_REALLOCATE` starts from `BUDGET_LOOP`. Each round rebuilds curves against the current partner
 state, reallocates and runs best response. A round is accepted only if the exact J_T improves by
-more than 1e-12; at most three rounds are tried.
+more than 1e-12. Rounds continue until J_T stops rising, at most `kMaxAllocationRounds` (10).
 With only held-out join terms (the outside-query teacher) the curves do not depend on how partners are compressed, so rebuilding them gives the same curves and budgets, and each round only reruns the loop from the same start in a new visit order. Re-budgeting only reacts to neighbours when the teacher has a self join term.
 
 ### Stage 2: BR (`best_response`)
@@ -254,8 +255,7 @@ pairs, and the result is exact: the tests check it against a full recompute.
 ### What it shows
 In an earlier three-candidate run, seed 42 at 0.25%: EQUAL_CHOICE_RDP_PARTNERS 0.506 → EQUAL_LOOP 0.544 J5, with the same
 methods and budgets. The gain is in join (0.522 → 0.621) and clustering. The only difference is using the
-partners' actual choices. Part of the join gain is in-sample, though: recall on unseen pairs falls
-below seen pairs (0.78 against 0.89).
+partners' actual choices.
 
 ---
 
@@ -275,9 +275,9 @@ on disk.
 
 | Struct | Fields | Meaning |
 |---|---|---|
-| `WorkloadConfig` | `k`, `join_eps_m`, `extra_join_eps_m`, `frechet`, `range`, `where_at` | Settings, taken from the pipeline config (`knn.k`, `join.eps_m`, `teacher.extra_join_eps_m`, `frechet`, `range` with the teacher's own query count, `where_at`) |
+| `WorkloadConfig` | `k`, `join_eps_m`, `extra_join_eps_m`, `frechet`, `range`, `where_at` | Settings, taken from the pipeline config (`knn.k`, `join.eps_m`, `teacher.extra_join_eps_m` or else `join.score_eps_m`, `frechet`, `range` with the teacher's own query count, `where_at`) |
 | `KnnEntry` | `valid`, `top`, `cutoff` | Database trajectory e as a kNN query: its k nearest other trajectories, and `cutoff`, the Fréchet distance to the (k+1)th. `valid = false` if it has fewer than k+1 neighbours. |
-| `JoinPair` | `i < j`, `seen` | A pair of database trajectories |
+| `JoinPair` | `i < j` | A pair of database trajectories |
 | `ExtraJoin` | `eps_m`, `positives`, `negatives` | The self-join pairs at one extra threshold, all of them used |
 | `TeacherWorkloads` | `knn`, `positives`, `negatives`, `extra_joins`, `range`, `where_at`, plus the settings | Everything the objective needs |
 
@@ -293,7 +293,7 @@ not. They matter because the join metric is F1: simplification can make negative
   2. Calls `load`. If the file matches the current workload version, fingerprint, seed, `k`,
      `join_eps_m` and `frechet`, it uses the cached kNN entries and pairs. Older cache versions
      are rebuilt once because their metadata-only fingerprints cannot verify the point contents.
-  3. Otherwise, it builds everything with `build_knn` and `build_pairs`, then `save`s it.
+  3. Otherwise, it builds everything with `build_knn` and `collect_pairs`, then `save`s it.
   4. Always regenerates the range boxes and where-at probes. They are fast, and use their own seeds
      (`seed + 7001` and `seed + 7002`).
   5. Always regenerates the extra joins, one self join per extra threshold. They are not cached, so
@@ -324,28 +324,22 @@ not. They matter because the join metric is F1: simplification can make negative
      Fréchet, the discrete distance is used as the upper bound of the search.
 - **Output:** one `KnnEntry` per trajectory.
 
-### `build_pairs(db, config, seed, positives, negatives)` — internal
+### `collect_pairs(db, eps_m, frechet, positives, negatives)` — internal
 
 - **Why:** this gives the join term its training pairs: what should match (positives) and what
   shouldn't (negatives).
-- **Input:** the database, the settings, the seed, and output vectors.
+- **Input:** the database, the threshold, the Fréchet variant, and output vectors.
 - **Computation:** runs the engine's `query::generate_self_join`. For every candidate pair of each
-  entry, a pair in `reference` is a positive and any other pair is a negative. Each list then goes
-  through `split_seen`.
+  entry, a pair in `reference` is a positive and any other pair is a negative. The pairs at
+  `join_eps_m` are cached; the extra thresholds are collected on every load.
 - **Output:** the filled vectors.
-
-### `split_seen(pairs, seed)` — internal
-
-- **Input:** a pair list and a seed.
-- **Computation:** a seeded shuffle; the first half is marked `seen`; then sorted by (i, j).
-  Positives use `seed + 7003`, negatives `seed + 7005`.
-- **Output:** the same pairs, half of them seen. The split is deterministic for a given seed.
 
 ### `save` / `load` / `write_pairs` / `read_pairs` / `put` / `get` — internal
 
 - **Why:** the cache file format.
-- **Version 4** (read and written): a header (magic number, seed, full-content fingerprint, k,
-  eps, variant), then the kNN entries, positives and negatives. The version covers both file
+- **Version 5** (read and written): a header (magic number, seed, full-content fingerprint, k,
+  eps, variant), then the kNN entries, positives and negatives. Version 4 also stored a seen /
+  unseen flag per pair and is rejected. The version covers both file
   layout and cached workload generation and must be bumped when either changes.
 - **Versions 2 and 3** are rejected because they used metadata-only fingerprints.
 - `save` writes to a `.tmp` file and renames it, so a crash never leaves a half-written cache.
@@ -368,7 +362,7 @@ The four terms, each normalised `(metric − floor) / (1 − floor)` and then av
 | kNN | for each query e that has i in its top k: Fréchet(original e, simplified i) ≤ cutoff(e) | recall@k |
 | Range | for each box i is in: does a kept point still lie inside the box? | range F1, as recall (there are no false positives) |
 | Where-at | average-hit ramp over i's probes: `clamp((max − err) / (max − min), 0, 1)` | where-at average-hit |
-| Join | macro F1 over the pairs used, both sides simplified | join F1, computed the same way |
+| Join | macro F1 over the pairs per threshold, both sides simplified, each normalised by its floor, then averaged | J4's join grid mean, computed the same way |
 
 The first three are **separable**: they add up over trajectories, because each check only involves
 trajectory i (the others stay original). Join is **not separable**: whether a pair matches depends
@@ -413,11 +407,13 @@ trajectory can't have a point in a box the original had none in.
   3. **Groups where-at probes** per trajectory in `m_probes[i]`, with
      `m_where_at_weight = 1 / trajectories with probes` (averaged per trajectory, like the
      evaluator).
-  4. **Builds the join links.** Positives first, then negatives (all, or only the seen half), stored in
+  4. **Builds the join links.** Positives first, then negatives, stored in
      `m_pair_i`/`m_pair_j`. Each pair is linked from both sides in `m_links`. `m_truth[t]` counts
      t's positives.
-  5. **Floors:** `metrics(endpoints)` gives each metric's floor. If a floor is already 1, it
-     throws, because that metric can't be normalised.
+  5. **Floors:** each join term's macro F1 with endpoints only gives `m_join_floor`, and
+     `m_join_weight[k] = 1 / (terms with true pairs · (1 − floor_k))`, so the join metric is already
+     normalised and 0 at the floor. Then `metrics(endpoints)` gives each metric's floor. If a floor
+     is already 1, it throws, because that metric can't be normalised.
   6. **Scales:** `m_scale[m] = 1 / (4 · (1 − floor_m))`. This applies the normalisation and the
      equal average in one factor.
   7. **`m_endpoint_separable[i]`:** trajectory i's scaled separable terms with endpoints only. Subtracting it makes
@@ -454,7 +450,7 @@ trajectory can't have a point in a box the original had none in.
   at equal budgets for `EQUAL_CHOICE_RDP_PARTNERS`.
 - **Computation:** `separable(i, candidate)` plus i's own join F1 against those fixed partners: count
   `found` and `hits` over i's links using `match`, then add
-  `m_scale[Join] · F1_i / (trajectories with truth)`.
+  `m_scale[Join] · Σ_k m_join_weight[k] · F1_ik / (trajectories with truth in term k)`.
 - **Output:** an approximate per-trajectory score. It's approximate because the real join depends
   on partners' actual choices and counts each pair on both sides. That is exactly what
   `best_response` corrects.
@@ -507,8 +503,8 @@ The result is exact, not approximate: the tests check it against a full recomput
 
 - **Input:** the objective and a starting simplified database.
 - **Computation:** matches every pair used once (from its smaller side, in parallel). It fills
-  `m_matched`, `m_hits[t]` and `m_found[t]`, then sums F1 over counted trajectories into `m_sum`
-  and `m_counted`.
+  `m_matched`, `m_hits[t]` and `m_found[t]`, then sums F1 over counted slots into `m_sum` and
+  `m_counted`, per join term.
 - **Output:** a state whose `metric()` equals `join_metric(state)`.
 
 #### `propose(i, candidate, state)`
@@ -523,7 +519,7 @@ The result is exact, not approximate: the tests check it against a full recomput
   3. For each affected trajectory, remove its old F1 from the sum and add its new one, adjusting
      the counted trajectories when one starts or stops being counted.
 - **Output:** a `Proposal` with the trajectory index, pair outcomes, and
-  `gain = m_scale[Join] · (new macro F1 − current macro F1)`. Added to the cached `separable`
+  `gain = m_scale[Join] · (new join metric − current join metric)`. Added to the cached `separable`
   difference, this is the exact change in J_T. Proposals remain valid until the next `apply`.
 
 #### `apply(proposal)`
@@ -535,7 +531,7 @@ The result is exact, not approximate: the tests check it against a full recomput
 
 #### `metric()`, `counted(t, found)`, `f1(t, hits, found)`
 
-Helpers: the current macro F1; whether trajectory t counts (it has truth or matches); and t's F1.
+Helpers: the current join metric; whether slot t counts (it has truth or matches); and t's F1.
 
 ---
 
@@ -552,7 +548,10 @@ Helpers: the current macro F1; whether trajectory t counts (it has truth or matc
   every step.
 
 `allocate(curves, total_budget, value)` starts with endpoints and fills the remaining budget with
-greedy steps of up to three points, taking the best gain per point each time. A donor/receiver
+steps along each curve's upper concave envelope: each time it takes the step, of any length, with
+the best gain per point. This is greedy allocation on the concave envelope, exactly optimal for the
+relaxed problem and whenever the budget ends on envelope vertices, with no step-length limit to
+choose. It replaced greedy steps of up to three points. A donor/receiver
 exchange pass used to follow; across the runs of November 2026 it never changed the curve sum by
 more than 0.0001, so it was removed. It preserves the exact total budget and respects every curve's maximum budget. It is a
 heuristic search of the curve sum, which is distinct from the exact J_T with both partners
@@ -568,18 +567,18 @@ simplified.
 |---|---|
 | `CandidateIndex`, `kCandidates` | Named indices and labels for the six candidate recipes. The index is the "method". |
 | `kArms` | the nine valid arm names, listed in `teacher.hpp` |
-| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count`, `all_join_pairs`, `join` (optional, default: the pipeline's `join.mode`), `extra_join_eps_m`, `held_out_term`, `ranking_knn` (default true), `term_weights` (kNN, range, where-at, join; equal by default) |
+| `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count` (default 128000), `join` (optional, default: the pipeline's `join.mode`), `extra_join_eps_m` (default: `join.score_eps_m`), `held_out_term`, `ranking_knn` (default true), `term_weights` (kNN, range, where-at, join; equal by default) |
 | `Arm` | one result: `name`, `simplification` (for the pipeline), `objective` (its J_T) |
 | `Candidates` | `candidates[c][i]` = trajectory i simplified with method c |
 | `Methods` | one method index per trajectory, i.e. a selection |
 | `kMaxResponsePasses` | at most 10 best-response passes |
 | `kKnnWatchFactor` | each kNN query watches its 3k nearest trajectories under each candidate state |
-| `kMaxAllocationRounds` | at most 3 iterative reallocation rounds |
+| `kMaxAllocationRounds` | at most 10 iterative reallocation rounds; they stop once J_T stops rising |
 | `kMinImprovement` | strict gain threshold, 1e-12 |
 
 ### `Teacher(db, workloads, config, seed)` — constructor
 
-- **Input:** the database, the workloads (moved in), the where-at tolerances, and the seed.
+- **Input:** the database, the workloads (moved in), the objective settings, and the seed.
 - **Computation:** stores the workloads, then builds the `Objective` on them. `m_workloads` is
   declared before `m_objective`, so it is constructed first. That ordering matters because the
   objective keeps a reference to it. Prints the pair counts and floors.
@@ -725,5 +724,7 @@ These timings predate the seven-candidate teacher, allocation search and cache c
 - `SingleRecipesKeepTheBudget`: the six single-recipe baselines each keep exactly the budget.
 - `ArmsKeepTheBudgetAndBestResponseOnlyImproves`: every arm keeps exactly the budget, endpoints
   kept, indices sorted; and `EQUAL_LOOP`'s J_T ≥ `EQUAL_CHOICE_RDP_PARTNERS`'s.
+- `JoinTermsAreNormalisedApartAndAveragedLikeJ4`: the join metric equals the mean over thresholds
+  of each threshold's macro F1, normalised by its own endpoints-only floor.
 
 `engine/tests/config_test.cpp` has the three teacher config tests.

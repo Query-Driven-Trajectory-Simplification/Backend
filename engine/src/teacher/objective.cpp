@@ -71,6 +71,15 @@ double f1_of(std::size_t hits, std::size_t found, std::size_t expected) {
     return 2.0 * static_cast<double>(hits) / static_cast<double>(found + expected);
 }
 
+// The join metric from each term's sum of F1 over its counted slots
+double mean_f1(const Objective &objective, std::span<const double> sum,
+               std::span<const long> counted) {
+    std::array<double, kMaxJoinTerms> f1s{};
+    for (std::size_t k = 0; k < sum.size(); ++k)
+        f1s[k] = counted[k] ? sum[k] / static_cast<double>(counted[k]) : 0.0;
+    return objective.join_value(std::span(f1s).first(sum.size()));
+}
+
 } // namespace
 
 double check_term_weights(const TermWeights &weights) {
@@ -96,10 +105,6 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     const double weight_sum = check_term_weights(config.term_weights);
     if (config.compressed_knn_query && !config.ranking_knn)
         throw std::invalid_argument("objective: compressed kNN queries need the ranking kNN term");
-    // Extra thresholds use every pair, which would train on the pairs held back as unseen
-    if (!config.all_join_pairs && !workloads.extra_joins.empty())
-        throw std::invalid_argument(
-            "objective: seen-pairs-only training cannot use extra join thresholds");
 
     // kNN: invert each query's top k
     m_knn.resize(n);
@@ -161,8 +166,6 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     m_links.resize(n);
     m_truth.assign(n * terms.size(), 0);
     auto add = [&](const JoinPair &join_pair, bool positive, std::size_t term) {
-        if (!config.all_join_pairs && !join_pair.seen)
-            return;
         const auto pair = static_cast<std::uint32_t>(m_pair_i.size());
         const auto k = static_cast<std::uint8_t>(term);
         m_pair_i.push_back(join_pair.i);
@@ -182,11 +185,23 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     for (std::size_t k = 0; k < terms.size(); ++k)
         for (const auto &join_pair : *terms[k].negatives)
             add(join_pair, false, k);
-    m_with_truth = static_cast<std::size_t>(
-        std::ranges::count_if(m_truth, [](auto count) { return count > 0; }));
+    m_with_truth.assign(terms.size(), 0);
+    for (std::size_t t = 0; t < m_truth.size(); ++t)
+        m_with_truth[t / n] += m_truth[t] > 0;
 
-    // Floors: endpoints only, partners included, like the J4 floor
+    // Floors: endpoints only, partners included, like the J4 floor. Each join term has its own,
+    // so the join metric is 0 there. Terms without true pairs are left out, as J4 skips NaNs
     const auto endpoints = core::endpoints_only(db);
+    m_join_floor = join_f1s(PreparedTrajectories(db, endpoints).views());
+    const auto active = std::ranges::count_if(m_with_truth, [](auto count) { return count > 0; });
+    m_join_weight.assign(terms.size(), 0.0);
+    for (std::size_t k = 0; k < terms.size(); ++k) {
+        if (m_with_truth[k] == 0)
+            continue;
+        if (m_join_floor[k] >= 1.0)
+            throw std::runtime_error("objective: a join term is already perfect with endpoints only");
+        m_join_weight[k] = 1.0 / (static_cast<double>(active) * (1.0 - m_join_floor[k]));
+    }
     m_floor = metrics(endpoints);
     for (std::size_t m = 0; m < TermCount; ++m) {
         if (m_floor[m] >= 1.0)
@@ -282,12 +297,12 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
         found[link.term] += matched;
         hits[link.term] += matched && link.positive;
     }
-    double f1_sum = 0;
+    double join = 0;
     for (std::size_t k = 0; k < m_eps.size(); ++k)
-        if (found[k] + m_truth[slot(i, k)] != 0)
-            f1_sum += f1_of(hits[k], found[k], m_truth[slot(i, k)]);
-    score.join =
-        m_with_truth != 0 ? m_scale[Join] * f1_sum / static_cast<double>(m_with_truth) : 0.0;
+        if (found[k] + m_truth[slot(i, k)] != 0 && m_with_truth[k] != 0)
+            join += m_join_weight[k] * f1_of(hits[k], found[k], m_truth[slot(i, k)]) /
+                    static_cast<double>(m_with_truth[k]);
+    score.join = m_scale[Join] * join;
     score.bound = independent_sum(score, score.terms[Knn]) +
                   m_scale[Knn] * knn_check_weight() * static_cast<double>(knn_checks(i));
     return score;
@@ -352,7 +367,18 @@ double Objective::independent_bound(std::size_t i, const core::TrajectoryView &c
     return prepare_independent(i, candidate, partners).bound;
 }
 
+double Objective::join_value(std::span<const double> f1s) const {
+    double value = 0;
+    for (std::size_t k = 0; k < f1s.size(); ++k)
+        value += m_join_weight[k] * (f1s[k] - m_join_floor[k]);
+    return value;
+}
+
 double Objective::join_metric(std::span<const core::TrajectoryView> state) const {
+    return join_value(join_f1s(state));
+}
+
+std::vector<double> Objective::join_f1s(std::span<const core::TrajectoryView> state) const {
     // matched[p]: the pair's outcome, counted for i. reverse[p]: counted for j, the same outcome
     // unless held out, where each side is in turn the original query
     std::vector<char> matched(m_pair_i.size()), reverse(m_pair_i.size());
@@ -380,14 +406,16 @@ double Objective::join_metric(std::span<const core::TrajectoryView> state) const
             hits[slot_j] += positive;
         }
     }
-    double sum = 0;
-    std::size_t counted = 0;
+    std::vector<double> f1s(m_eps.size(), 0.0);
+    std::vector<std::size_t> counted(m_eps.size(), 0);
     for (std::size_t t = 0; t < m_truth.size(); ++t)
         if (found[t] + m_truth[t] != 0) {
-            sum += f1_of(hits[t], found[t], m_truth[t]);
-            ++counted;
+            f1s[t / m_db.size()] += f1_of(hits[t], found[t], m_truth[t]);
+            ++counted[t / m_db.size()];
         }
-    return counted ? sum / static_cast<double>(counted) : 0.0;
+    for (std::size_t k = 0; k < f1s.size(); ++k)
+        f1s[k] = counted[k] ? f1s[k] / static_cast<double>(counted[k]) : 0.0;
+    return f1s;
 }
 
 Objective::Terms Objective::metrics(const KeptSets &kept) const {
@@ -442,6 +470,8 @@ JoinState::JoinState(const Objective &objective, std::span<const core::Trajector
     m_matched.assign(2 * objective.pair_count(), 0);
     m_hits.assign(objective.slots(), 0);
     m_found.assign(objective.slots(), 0);
+    m_sum.assign(objective.join_terms(), 0.0);
+    m_counted.assign(objective.join_terms(), 0);
     // Each pair once, from its smaller side. Held out: each direction from its compressed side
     std::vector<std::vector<std::pair<std::size_t, char>>> outcome(n);
     core::parallel_for(n, [&](std::size_t i) {
@@ -468,8 +498,8 @@ JoinState::JoinState(const Objective &objective, std::span<const core::Trajector
             }
     for (std::size_t t = 0; t < objective.slots(); ++t)
         if (counted(t, m_found[t])) {
-            m_sum += f1(t, m_hits[t], m_found[t]);
-            ++m_counted;
+            m_sum[t / n] += f1(t, m_hits[t], m_found[t]);
+            ++m_counted[t / n];
         }
 }
 
@@ -482,7 +512,7 @@ double JoinState::f1(std::size_t t, std::size_t hits, std::size_t found) const {
 }
 
 double JoinState::metric() const {
-    return m_counted ? m_sum / static_cast<double>(m_counted) : 0.0;
+    return mean_f1(m_objective, m_sum, m_counted);
 }
 
 JoinState::Proposal JoinState::propose(std::size_t i, const core::TrajectoryView &candidate,
@@ -510,23 +540,28 @@ JoinState::Proposal JoinState::propose(std::size_t i, const core::TrajectoryView
     }
     if (change.empty())
         return proposal;
-    double sum = m_sum;
-    long n_counted = static_cast<long>(m_counted);
+    const std::size_t n = m_objective.db().size();
+    std::array<double, kMaxJoinTerms> sum{};
+    std::array<long, kMaxJoinTerms> n_counted{};
+    std::ranges::copy(m_sum, sum.begin());
+    std::ranges::copy(m_counted, n_counted.begin());
     for (const auto &[t, counts] : change) {
         const auto old_found = m_found[t], old_hits = m_hits[t];
         const auto new_found =
             static_cast<std::size_t>(static_cast<long>(old_found) + counts.second);
         const auto new_hits = static_cast<std::size_t>(static_cast<long>(old_hits) + counts.first);
         if (counted(t, old_found)) {
-            sum -= f1(t, old_hits, old_found);
-            --n_counted;
+            sum[t / n] -= f1(t, old_hits, old_found);
+            --n_counted[t / n];
         }
         if (counted(t, new_found)) {
-            sum += f1(t, new_hits, new_found);
-            ++n_counted;
+            sum[t / n] += f1(t, new_hits, new_found);
+            ++n_counted[t / n];
         }
     }
-    const double after = n_counted ? sum / static_cast<double>(n_counted) : 0.0;
+    const auto terms = m_objective.join_terms();
+    const double after = mean_f1(m_objective, std::span(sum).first(terms),
+                                 std::span(n_counted).first(terms));
     proposal.gain = m_objective.scale(Objective::Join) * (after - metric());
     return proposal;
 }
@@ -546,16 +581,17 @@ void JoinState::apply(const Proposal &proposal) {
         const long delta = then ? 1 : -1;
         const std::array<std::size_t, 2> touched{count(link.other, link), count(i, link)};
         for (const auto t : std::span(touched).first(sides(link))) {
+            const auto term = t / m_objective.db().size();
             if (counted(t, m_found[t])) {
-                m_sum -= f1(t, m_hits[t], m_found[t]);
-                --m_counted;
+                m_sum[term] -= f1(t, m_hits[t], m_found[t]);
+                --m_counted[term];
             }
             m_found[t] = static_cast<std::size_t>(static_cast<long>(m_found[t]) + delta);
             if (link.positive)
                 m_hits[t] = static_cast<std::size_t>(static_cast<long>(m_hits[t]) + delta);
             if (counted(t, m_found[t])) {
-                m_sum += f1(t, m_hits[t], m_found[t]);
-                ++m_counted;
+                m_sum[term] += f1(t, m_hits[t], m_found[t]);
+                ++m_counted[term];
             }
         }
     }

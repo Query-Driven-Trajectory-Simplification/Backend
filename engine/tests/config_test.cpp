@@ -247,8 +247,12 @@ TEST(Config, TeacherIsOffByDefault) {
     EXPECT_FALSE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "cache");
     EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"BUDGET_CHOICE", "BUDGET_LOOP"}));
-    EXPECT_TRUE(config.teacher.all_join_pairs);
-    EXPECT_TRUE(config.teacher.extra_join_eps_m.empty());
+    EXPECT_FALSE(config.teacher.extra_join_eps_m);
+    // The teacher trains on the thresholds J4 averages over, unless told otherwise
+    const auto grid = pipeline::load_config(write_config(
+        "teacher_grid.json", R"({"data_path": "d", "join": {"score_eps_m": [100, 300]}})"));
+    EXPECT_EQ(pipeline::teacher_workload_config(grid).extra_join_eps_m,
+              (std::vector<double>{100.0, 300.0}));
     EXPECT_FALSE(pipeline::teacher_objective_config(config).held_out_term);
     EXPECT_TRUE(pipeline::teacher_objective_config(config).ranking_knn);
     // The teacher's join term follows the join it is scored on
@@ -274,7 +278,7 @@ TEST(Config, ReadsTheTeacherSection) {
     const auto config = pipeline::load_config(write_config("teacher.json", R"({
         "data_path": "d",
         "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["EQUAL_CHOICE", "EQUAL_LOOP"],
-                    "range_query_count": 1000, "all_join_pairs": false,
+                    "range_query_count": 1000,
                     "join": "Self", "extra_join_eps_m": [100, 300], "held_out_term": true,
                     "ranking_knn": false, "term_weights": [2, 1, 1, 0]}
     })"));
@@ -289,7 +293,6 @@ TEST(Config, ReadsTheTeacherSection) {
     EXPECT_EQ(config.teacher.cache_dir, "my_cache");
     EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"EQUAL_CHOICE", "EQUAL_LOOP"}));
     EXPECT_EQ(config.teacher.range_query_count, 1000u);
-    EXPECT_FALSE(config.teacher.all_join_pairs);
 }
 
 TEST(Config, RejectsBadTeacherSections) {

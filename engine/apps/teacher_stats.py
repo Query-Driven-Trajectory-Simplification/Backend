@@ -71,7 +71,7 @@ def main():
             parts = [num(r.get(c, "")) for c in ["norm_knn", "norm_range", "norm_where_at", "norm_join"]]
             parts = [x for x in parts if x is not None]
             r["J4"] = str(statistics.fmean(parts)) if parts else ""
-        for m in METRICS + ["J_T", "join_recall_seen", "join_recall_unseen"]:
+        for m in METRICS + ["J_T"]:
             v = num(r.get(m, ""))
             if v is not None:
                 data[r["share"]][r["arm"]][m][int(r["seed"])] = v
@@ -87,14 +87,11 @@ def main():
     for share in sorted(data, key=float):
         arms = data[share]
         out.append(f"## Share {float(share) * 100:g}%\n")
-        out.append("| Arm | " + " | ".join(METRICS) + " | seen / unseen join recall |")
-        out.append("|---|" + "---:|" * (len(METRICS) + 1))
+        out.append("| Arm | " + " | ".join(METRICS) + " |")
+        out.append("|---|" + "---:|" * len(METRICS))
         for arm in sorted(arms):
             cells = [mean_sd(list(arms[arm][m].values())) for m in METRICS]
-            seen = list(arms[arm]["join_recall_seen"].values())
-            unseen = list(arms[arm]["join_recall_unseen"].values())
-            su = f"{statistics.fmean(seen):.4f} / {statistics.fmean(unseen):.4f}" if seen and unseen else "–"
-            out.append(f"| {arm} | " + " | ".join(cells) + f" | {su} |")
+            out.append(f"| {arm} | " + " | ".join(cells) + " |")
         out.append("")
         cheap = [a for a in CHEAP if a in arms and arms[a]["J4"]]
         best = max(cheap, key=lambda a: statistics.fmean(arms[a]["J4"].values())) if cheap else None

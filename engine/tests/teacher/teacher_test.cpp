@@ -106,7 +106,7 @@ void expect_same_cached_workloads(const teacher::TeacherWorkloads &a,
     }
     auto same_pairs = [](const auto &x, const auto &y) {
         return std::ranges::equal(x, y, [](const auto &p, const auto &q) {
-            return p.i == q.i && p.j == q.j && p.seen == q.seen;
+            return p.i == q.i && p.j == q.j;
         });
     };
     EXPECT_TRUE(same_pairs(a.positives, b.positives));
@@ -307,6 +307,57 @@ TEST_F(TeacherTest, SeveralJoinTermsAreTrackedExactly) {
     EXPECT_GT(single.pair_count(), base.pair_count());
 }
 
+TEST_F(TeacherTest, JoinTermsAreNormalisedApartAndAveragedLikeJ4) {
+    const auto db = random_db(2, 24, 20);
+    auto config = small_config();
+    config.extra_join_eps_m = {config.join_eps_m * 1.5, config.join_eps_m * 2.0};
+    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    ASSERT_FALSE(workloads.positives.empty());
+    for (const auto &extra : workloads.extra_joins)
+        ASSERT_FALSE(extra.positives.empty());
+    const teacher::Objective objective(db, workloads, {.join_mode = query::JoinMode::Self});
+    ASSERT_EQ(objective.join_terms(), 3u);
+
+    auto macro_f1 = [&](const teacher::KeptSets &kept, std::size_t term) {
+        const teacher::PreparedTrajectories prepared(db, kept);
+        const auto views = prepared.views();
+        double sum = 0;
+        std::size_t counted = 0;
+        for (std::size_t i = 0; i < db.size(); ++i) {
+            std::size_t hits = 0, found = 0;
+            for (const auto &link : objective.links(i)) {
+                if (link.term != term)
+                    continue;
+                const bool matched = objective.match(views[i], views[link.other], term);
+                found += matched;
+                hits += matched && link.positive;
+            }
+            const auto truth = objective.truth(objective.slot(i, term));
+            if (found + truth == 0)
+                continue;
+            sum += 2.0 * static_cast<double>(hits) / static_cast<double>(found + truth);
+            ++counted;
+        }
+        return counted ? sum / static_cast<double>(counted) : 0.0;
+    };
+
+    std::mt19937_64 rng(31);
+    auto kept = endpoints(db);
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        for (std::size_t k = 1; k + 1 < db.trajectory(i).size(); ++k)
+            if (rng() % 3 == 0)
+                kept[i].push_back(k);
+        std::ranges::sort(kept[i]);
+    }
+    double expected = 0;
+    for (std::size_t term = 0; term < 3; ++term) {
+        const double floor = macro_f1(endpoints(db), term);
+        EXPECT_NEAR(objective.join_floor(term), floor, 1e-12);
+        expected += (macro_f1(kept, term) - floor) / (1.0 - floor) / 3.0;
+    }
+    EXPECT_NEAR(objective.metrics(kept)[teacher::Objective::Join], expected, 1e-12);
+}
+
 TEST_F(TeacherTest, RankingKnnIsTrackedExactly) {
     const auto db = random_db(2, 24, 20);
     auto config = small_config();
@@ -456,16 +507,6 @@ TEST_F(TeacherTest, TermWeightsScaleTheTerms) {
                  std::invalid_argument);
 }
 
-TEST_F(TeacherTest, SeenPairsOnlyRejectsExtraThresholds) {
-    const auto db = random_db(2, 24, 20);
-    auto config = small_config();
-    config.extra_join_eps_m = {config.join_eps_m * 2.0};
-    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
-    EXPECT_THROW(teacher::Objective(db, workloads, {.all_join_pairs = false}),
-                 std::invalid_argument);
-    EXPECT_NO_THROW(teacher::Objective(db, workloads, {.all_join_pairs = true}));
-}
-
 TEST_F(TeacherTest, ExtraJoinThresholdsMustBeDistinctAndPositive) {
     const auto db = random_db(2, 24, 20);
     for (const auto &extra :
@@ -509,8 +550,10 @@ TEST_F(TeacherTest, HeldOutJoinScoresOriginalQueriesAgainstCompressedPartners) {
         ++counted;
     }
     ASSERT_GT(counted, 0u);
+    // One term, normalised by its own floor
+    const double floor = objective.join_floor(0);
     EXPECT_NEAR(objective.metrics(kept)[teacher::Objective::Join],
-                sum / static_cast<double>(counted), 1e-12);
+                (sum / static_cast<double>(counted) - floor) / (1.0 - floor), 1e-12);
 }
 
 TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) {
@@ -557,9 +600,11 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                                               ? 2.0 * static_cast<double>(hits) /
                                                     static_cast<double>(found + objective.truth(i))
                                               : 0.0;
-                        const double join = with_truth ? objective.scale(teacher::Objective::Join) *
-                                                             f1 / static_cast<double>(with_truth)
-                                                       : 0.0;
+                        const double join =
+                            with_truth ? objective.scale(teacher::Objective::Join) * f1 /
+                                             (static_cast<double>(with_truth) *
+                                              (1.0 - objective.join_floor(0)))
+                                       : 0.0;
                         const double expected = objective.separable(i, views[i]) + join;
                         const auto score = objective.prepare_independent(i, views[i], partners);
                         EXPECT_GE(score.bound + 1e-12, expected);

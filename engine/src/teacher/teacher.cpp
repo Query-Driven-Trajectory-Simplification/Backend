@@ -40,7 +40,7 @@ constexpr std::array<std::string_view, kCandidateCount> kCandidates{
     "RDP", "SED", "UNIFORM", "GREEDY", "GREEDY_SED2", "GREEDY_RDP2"};
 constexpr std::size_t kMaxResponsePasses = 10;
 constexpr std::size_t kKnnWatchFactor = 3;
-constexpr std::size_t kMaxAllocationRounds = 3;
+constexpr std::size_t kMaxAllocationRounds = 10;
 constexpr double kMinImprovement = 1e-12;
 
 // candidates[c][i]: trajectory i simplified by kCandidates[c] at budgets[i]

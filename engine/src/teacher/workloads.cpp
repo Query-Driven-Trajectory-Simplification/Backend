@@ -12,15 +12,14 @@
 #include <format>
 #include <fstream>
 #include <iostream>
-#include <random>
 #include <stdexcept>
 
 namespace teacher {
 
 namespace {
 
-// Bump when the layout or workload generation changes. V4 fingerprints every point
-constexpr std::uint64_t kMagicV4 = 0x5431'4341'4348'4534ull;
+// Bump when the layout or workload generation changes. V5 drops the seen / unseen split
+constexpr std::uint64_t kMagicV5 = 0x5431'4341'4348'4535ull;
 constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
@@ -80,26 +79,16 @@ std::vector<KnnEntry> build_knn(const core::TrajectoryDb &db, const WorkloadConf
     return result;
 }
 
-void split_seen(std::vector<JoinPair> &pairs, std::uint64_t seed) {
-    std::mt19937_64 rng(seed);
-    std::shuffle(pairs.begin(), pairs.end(), rng);
-    for (std::size_t k = 0; k < pairs.size(); ++k)
-        pairs[k].seen = k < pairs.size() / 2;
-    std::ranges::sort(pairs, [](const JoinPair &a, const JoinPair &b) {
-        return a.i < b.i || (a.i == b.i && a.j < b.j);
-    });
-}
-
 // Positives and negatives from one self-join
 void collect_pairs(const core::TrajectoryDb &db, double eps_m, query::FrechetVariant frechet,
-                   bool seen, std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
+                   std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
     const auto join = query::generate_self_join(db, eps_m, frechet);
     positives.clear();
     negatives.clear();
     for (const auto &entry : join.entries)
         for (const auto j : entry.candidates) {
             const JoinPair pair{static_cast<std::uint32_t>(entry.query_index),
-                                static_cast<std::uint32_t>(j), seen};
+                                static_cast<std::uint32_t>(j)};
             if (std::ranges::binary_search(entry.reference, j))
                 positives.push_back(pair);
             else
@@ -107,20 +96,11 @@ void collect_pairs(const core::TrajectoryDb &db, double eps_m, query::FrechetVar
         }
 }
 
-// The pairs at join_eps_m, each list split into seen and unseen halves
-void build_pairs(const core::TrajectoryDb &db, const WorkloadConfig &config, std::uint64_t seed,
-                 std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
-    collect_pairs(db, config.join_eps_m, config.frechet, false, positives, negatives);
-    split_seen(positives, seed + kPairSplitSeedOffset);
-    split_seen(negatives, seed + kNegativeSeedOffset);
-}
-
 void write_pairs(std::ofstream &out, const std::vector<JoinPair> &pairs) {
     put<std::uint64_t>(out, pairs.size());
     for (const auto &pair : pairs) {
         put(out, pair.i);
         put(out, pair.j);
-        put<std::uint8_t>(out, pair.seen);
     }
 }
 
@@ -129,7 +109,6 @@ void read_pairs(std::ifstream &in, std::vector<JoinPair> &pairs) {
     for (auto &pair : pairs) {
         pair.i = get<std::uint32_t>(in);
         pair.j = get<std::uint32_t>(in);
-        pair.seen = get<std::uint8_t>(in) != 0;
     }
 }
 
@@ -140,7 +119,7 @@ void save(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t d
     const auto tmp = file.string() + ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary);
-        put(out, kMagicV4);
+        put(out, kMagicV5);
         put(out, seed);
         put(out, db_fingerprint);
         put<std::uint64_t>(out, workloads.k);
@@ -166,7 +145,7 @@ bool load(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t d
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return false;
-    if (get<std::uint64_t>(in) != kMagicV4 || get<std::uint64_t>(in) != seed ||
+    if (get<std::uint64_t>(in) != kMagicV5 || get<std::uint64_t>(in) != seed ||
         get<std::uint64_t>(in) != db_fingerprint)
         return false;
     const auto k = get<std::uint64_t>(in);
@@ -214,7 +193,8 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
         workloads.knn = build_knn(db, config);
         std::cout << std::format("teacher: kNN {:.1f} s\n", core::seconds_since(start));
         start = std::chrono::steady_clock::now();
-        build_pairs(db, config, seed, workloads.positives, workloads.negatives);
+        collect_pairs(db, config.join_eps_m, config.frechet, workloads.positives,
+                      workloads.negatives);
         std::cout << std::format("teacher: self-join pairs {:.1f} s\n", core::seconds_since(start));
         save(file, seed, db_fingerprint, workloads);
         std::cout << "teacher: cache saved to " << file.string() << '\n';
@@ -225,7 +205,7 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
         query::generate_where_at_queries(db, config.where_at, seed + kWhereAtSeedOffset);
     for (const double eps : config.extra_join_eps_m) {
         ExtraJoin extra{.eps_m = eps, .positives = {}, .negatives = {}};
-        collect_pairs(db, eps, config.frechet, true, extra.positives, extra.negatives);
+        collect_pairs(db, eps, config.frechet, extra.positives, extra.negatives);
         std::cout << std::format("teacher: extra join at {} m, {} pairs, {} negatives\n", eps,
                                  extra.positives.size(), extra.negatives.size());
         workloads.extra_joins.push_back(std::move(extra));

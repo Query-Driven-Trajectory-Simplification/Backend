@@ -48,10 +48,10 @@ struct TeacherConfig {
     std::filesystem::path cache_dir = "cache";
     std::vector<std::string> arms{"BUDGET_CHOICE", "BUDGET_LOOP"};
     std::size_t range_query_count = kRangeQueryCount;
-    bool all_join_pairs = true; // false: only the seen half of the join pairs
     // Unset: join.mode
     std::optional<query::JoinMode> join;
-    std::vector<double> extra_join_eps_m;
+    // Unset: join.score_eps_m, the thresholds J4 averages over
+    std::optional<std::vector<double>> extra_join_eps_m;
     bool held_out_term = false;
     bool ranking_knn = true;
     // ObjectiveConfig::compressed_knn_query. Unset: compressed with a Self join, the in-database

@@ -49,7 +49,6 @@ using TermWeights = std::array<double, kTermCount>;
 struct ObjectiveConfig {
     double min_tolerance_m = 25.0; // where-at ramp, as in the evaluator
     double max_tolerance_m = 500.0;
-    bool all_join_pairs = true; // false: only the seen half
     // Self: both sides compressed. HeldOut: each trajectory also queries its partners as original
     query::JoinMode join_mode = query::JoinMode::Self;
     bool held_out_term = false; // with Self: add the held-out form at join_eps_m as a term
@@ -76,7 +75,8 @@ struct JoinLink {
 // (metric - floor) / (1 - floor) with floor = endpoints only, like J4.
 //   range     recall: some kept point still inside each box i is in
 //   where-at  average-hit ramp over i's probes
-//   join      macro F1 over candidate pairs, pooled over all join terms (thresholds, held-out form)
+//   join      macro F1 over candidate pairs per join term (threshold, held-out form), each
+//             normalised by its own floor, then averaged: J4's join grid mean
 // Range, where-at and the per-trajectory kNN add up over trajectories; join and ranking kNN do
 // not, and are tracked under one-at-a-time changes by JoinState and KnnState
 class Objective {
@@ -133,6 +133,10 @@ class Objective {
     std::size_t positive_count() const { return m_positive_count; }
     std::size_t slot(std::size_t t, std::size_t term) const { return t + term * m_db.size(); }
     std::size_t slots() const { return m_truth.size(); }
+    std::size_t join_terms() const { return m_eps.size(); }
+    double join_floor(std::size_t term) const { return m_join_floor[term]; }
+    // The join metric from each term's macro F1
+    double join_value(std::span<const double> f1s) const;
     std::size_t truth(std::size_t slot) const { return m_truth[slot]; }
     bool held_out(std::size_t term) const { return m_term_held_out[term]; }
 
@@ -163,6 +167,7 @@ class Objective {
     std::size_t knn_checks(std::size_t i) const;
     double knn_check_weight() const;
     double join_metric(std::span<const core::TrajectoryView> state) const;
+    std::vector<double> join_f1s(std::span<const core::TrajectoryView> state) const;
 
     const core::TrajectoryDb &m_db;
     const TeacherWorkloads &m_workloads;
@@ -181,7 +186,9 @@ class Objective {
     std::size_t m_positive_count = 0;
     std::vector<std::vector<JoinLink>> m_links; // per trajectory
     std::vector<std::size_t> m_truth;           // positives per slot
-    std::size_t m_with_truth = 0;               // slots with any positive
+    std::vector<std::size_t> m_with_truth;      // per join term, slots with any positive
+    std::vector<double> m_join_floor;           // per join term, macro F1 with endpoints only
+    std::vector<double> m_join_weight;          // per join term, 1 / (terms * (1 - floor))
 
     Terms m_floor{};
     Terms m_scale{};                          // weight / (weight sum * (1 - floor))
@@ -204,7 +211,7 @@ class JoinState {
                      std::span<const core::TrajectoryView> state) const;
     void apply(const Proposal &proposal);
 
-    double metric() const; // macro F1 over the pairs used
+    double metric() const; // as Objective's join metric
 
   private:
     bool counted(std::size_t t, std::size_t found) const;
@@ -224,8 +231,8 @@ class JoinState {
     const Objective &m_objective;
     std::vector<char> m_matched; // per pair and direction
     std::vector<std::size_t> m_hits, m_found;
-    double m_sum = 0; // sum of F1 over counted trajectories
-    std::size_t m_counted = 0;
+    std::vector<double> m_sum; // per join term, sum of F1 over counted slots
+    std::vector<long> m_counted;
 };
 
 // The ranking kNN metric under one-at-a-time changes. Each query watches its true top k and its
