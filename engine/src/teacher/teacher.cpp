@@ -297,9 +297,49 @@ class Search {
            const Methods &method)
         : m_start(method), m_compressed_queries(objective.config().compressed_knn_query) {
         auto start = std::chrono::steady_clock::now();
-        if (objective.config().ranking_knn)
-            m_knn.emplace(objective, assemble(candidates, method), candidates,
-                          kKnnWatchFactor * objective.workloads().k);
+        // Every distinct candidate prepared, since any of them can enter a query's watch list
+        m_prepared.resize(db.size());
+        for (auto &views : m_views)
+            views.resize(db.size());
+        m_representative.resize(db.size());
+        core::parallel_for(db.size(), [&](std::size_t i) {
+            auto &owned = m_prepared[i];
+            // Reserve first: views borrow from these
+            owned.reserve(kCandidates.size());
+            for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+                const auto first =
+                    first_equal(c, [&](std::size_t k) -> const auto & { return candidates[k][i]; });
+                m_representative[i][c] = first;
+                if (first == c) {
+                    owned.emplace_back(db.trajectory(i), candidates[c][i]);
+                    m_views[c][i] = owned.back().view();
+                } else {
+                    m_views[c][i] = m_views[first][i];
+                }
+            }
+        });
+        m_state.resize(db.size());
+        for (std::size_t i = 0; i < db.size(); ++i)
+            m_state[i] = m_views[method[i]][i];
+        const double prepare_s = core::seconds_since(start);
+        start = std::chrono::steady_clock::now();
+        if (objective.config().ranking_knn) {
+            const std::size_t watch = kKnnWatchFactor * objective.workloads().k;
+            if (m_compressed_queries) {
+                m_knn.emplace(objective, assemble(candidates, method), candidates, watch);
+            } else {
+                // Lists from the start, then every query also watches any candidate within the
+                // distance of its watch-th nearest there
+                m_knn.emplace(objective, assemble(candidates, method), std::span<const KeptSets>{},
+                              watch);
+                std::vector<std::vector<core::TrajectoryView>> versions(db.size());
+                for (std::size_t i = 0; i < db.size(); ++i)
+                    for (std::size_t c = 0; c < kCandidates.size(); ++c)
+                        if (m_representative[i][c] == c)
+                            versions[i].push_back(m_views[c][i]);
+                m_knn->watch(versions, m_state);
+            }
+        }
         const double knn_s = core::seconds_since(start);
         start = std::chrono::steady_clock::now();
         const auto active = [&](std::size_t i) {
@@ -309,44 +349,45 @@ class Search {
         for (std::size_t i = 0; i < db.size(); ++i)
             if (active(i))
                 m_order.push_back(i);
-        m_prepared.resize(db.size());
-        for (auto &views : m_views)
-            views.resize(db.size());
         m_separable.resize(db.size());
-        m_representative.resize(db.size());
         m_knn_distances.resize(db.size());
         core::parallel_for(db.size(), [&](std::size_t i) {
-            auto &owned = m_prepared[i];
-            const auto original = db.trajectory(i);
-            if (!active(i)) {
-                owned.emplace_back(original, candidates[method[i]][i]);
-                m_views[method[i]][i] = owned.back().view();
+            if (!active(i))
                 return;
-            }
-            // Reserve first: views borrow from these
-            owned.reserve(kCandidates.size());
             for (std::size_t c = 0; c < kCandidates.size(); ++c) {
-                const auto first =
-                    first_equal(c, [&](std::size_t k) -> const auto & { return candidates[k][i]; });
-                m_representative[i][c] = first;
+                const auto first = m_representative[i][c];
                 if (first == c) {
-                    owned.emplace_back(original, candidates[c][i]);
-                    m_views[c][i] = owned.back().view();
                     m_separable[i][c] = objective.separable(i, m_views[c][i]);
                     // Compressed queries depend on the partners' state, so are computed later
                     if (m_knn && !m_compressed_queries)
                         m_knn_distances[i][c] = m_knn->distances(i, m_views[c][i]);
                 } else {
-                    m_views[c][i] = m_views[first][i];
                     m_separable[i][c] = m_separable[i][first];
                 }
             }
         });
-        m_state.resize(db.size());
-        for (std::size_t i = 0; i < db.size(); ++i)
-            m_state[i] = m_views[method[i]][i];
+        std::cout << std::format("teacher:   loop setup: prepare {:.1f} s\n", prepare_s);
         m_join.emplace(objective, m_state);
         m_range.emplace(objective, m_state);
+        // Box coverage and held-out join outcomes do not depend on the others, so are tested once
+        m_coverage.resize(db.size());
+        m_held_out.resize(db.size());
+        core::parallel_for(db.size(), [&](std::size_t i) {
+            if (!active(i))
+                return;
+            const auto links = objective.links(i);
+            for (std::size_t c = 0; c < kCandidates.size(); ++c) {
+                if (m_representative[i][c] != c)
+                    continue;
+                m_coverage[i][c] = m_range->coverage(i, m_views[c][i]);
+                auto &known = m_held_out[i][c];
+                known.assign(links.size(), 0);
+                double own_error = -1.0;
+                for (std::size_t k = 0; k < links.size(); ++k)
+                    if (objective.held_out(links[k].term))
+                        known[k] = objective.held_out_match(i, links[k], m_views[c][i], own_error);
+            }
+        });
         std::cout << std::format("teacher:   loop setup: kNN lists {:.1f} s, candidates {:.1f} s\n",
                                  knn_s, core::seconds_since(start));
     }
@@ -380,8 +421,9 @@ class Search {
                     const bool current = m_representative[i][c] == m_representative[i][method[i]];
                     if (duplicate || current)
                         continue;
-                    auto proposal = join.propose(i, m_views[c][i], state);
-                    auto range_proposal = range.propose(i, m_views[c][i]);
+                    auto proposal =
+                        join.propose(i, join.outcomes(i, m_views[c][i], state, m_held_out[i][c]));
+                    auto range_proposal = range.propose(i, m_coverage[i][c]);
                     KnnState::Move move;
                     double knn_gain = 0.0;
                     if (knn && m_compressed_queries) {
@@ -433,6 +475,7 @@ class Search {
     std::vector<std::array<double, kCandidates.size()>> m_separable;
     std::vector<std::array<std::size_t, kCandidates.size()>> m_representative;
     std::vector<std::array<std::vector<double>, kCandidates.size()>> m_knn_distances;
+    std::vector<std::array<std::vector<char>, kCandidates.size()>> m_coverage, m_held_out;
     std::optional<KnnState> m_knn;
     std::vector<core::TrajectoryView> m_state;
     std::optional<JoinState> m_join;
@@ -476,7 +519,7 @@ struct Traded {
 // buyers with the cheapest sellers, and keeps a pair only if its exact gain, rescored when applied,
 // is positive. Each round the kNN lists are extended to watch the offered versions
 Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
-                     const std::vector<std::size_t> &caps, KeptSets kept) {
+                     const std::vector<std::size_t> &caps, KeptSets kept, double start_value) {
     const std::size_t n = db.size();
     const bool ranking = objective.config().ranking_knn;
     const bool compressed = objective.config().compressed_knn_query;
@@ -542,12 +585,13 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
     };
     const std::size_t watch = kKnnWatchFactor * objective.workloads().k;
     const auto start_kept = kept;
-    const double start_value = objective.total(kept);
     double value = start_value;
     std::cout << std::format("teacher: trading from J_T {:.6f}\n", value);
     // Built once: the trades keep it current
     if (ranking)
         knn.emplace(objective, kept, std::span<const KeptSets>{}, watch);
+    // Sequences depend only on the trajectory and its cap, so are built once for every round
+    std::vector<std::optional<CandidateMaker>> makers(n);
     for (std::size_t round = 1; round <= kMaxTradeRounds; ++round) {
         auto start = std::chrono::steady_clock::now();
         // buy[d][i], sell[d][i]: i's best exact change at b_i + delta and b_i - delta
@@ -559,7 +603,9 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         core::parallel_for(n, [&](std::size_t i) {
             const std::size_t b = kept[i].size();
             const std::size_t top = std::min(caps[i], db.trajectory(i).size());
-            CandidateMaker maker(objective, i, caps[i], true);
+            if (!makers[i])
+                makers[i].emplace(objective, i, caps[i], true);
+            auto &maker = *makers[i];
             auto best_at = [&](std::size_t budget) {
                 Offer best;
                 std::vector<std::vector<std::size_t>> seen;
@@ -911,7 +957,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             if (want_loop)
                 keep("BUDGET_LOOP", candidates, looped, checked.value);
             if (want_trade) {
-                auto traded = trade_budgets(db, objective, caps, assemble(candidates, looped));
+                auto traded = trade_budgets(db, objective, caps, assemble(candidates, looped), checked.value);
                 outputs["BUDGET_LOOP_TRADE"] = {"BUDGET_LOOP_TRADE",
                                                 core::to_simplification(traded.kept), traded.value};
                 timed("BUDGET_LOOP_TRADE");

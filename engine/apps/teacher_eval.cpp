@@ -293,6 +293,24 @@ void validate(const Arm &arm, const core::TrajectoryDb &db) {
         throw std::runtime_error(std::format("{}: {} points, budget {}", arm.name, total, budget));
 }
 
+// FNV-1a over every kept index, so two runs can be checked for identical selections
+std::uint64_t kept_hash(const KeptSets &kept) {
+    std::uint64_t hash = 14695981039346656037ull;
+    auto mix = [&](std::uint64_t value) {
+        for (unsigned int byte = 0; byte < 8; ++byte) {
+            hash ^= value & 0xff;
+            hash *= 1099511628211ull;
+            value >>= 8;
+        }
+    };
+    for (const auto &trajectory : kept) {
+        mix(trajectory.size());
+        for (const auto index : trajectory)
+            mix(index);
+    }
+    return hash;
+}
+
 // Whether the teacher trained on the join at eps_m in mode: one of its thresholds in its own join
 // mode, or its held-out term at join.eps_m
 bool trained_on(const pipeline::Config &config, const teacher::ObjectiveConfig &objective,
@@ -342,6 +360,7 @@ int main(int argc, char **argv) try {
                           "norm_knn,norm_range,norm_where_at,norm_join,norm_self_join");
     auto budgets = open_csv(args.out / "budgets.csv", "seed,share,arm,points,budget");
     auto timings = open_csv(args.out / "timings.csv", "seed,step,seconds");
+    auto hashes = open_csv(args.out / "kept_hashes.csv", "seed,share,arm,hash");
     std::ofstream knn_check;
     if (args.knn_check)
         knn_check = open_csv(args.out / "knn_check.csv",
@@ -380,8 +399,12 @@ int main(int argc, char **argv) try {
                 for (auto &arm : model.single_recipes(allocation::total_budget(db, share)))
                     arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
         }
-        for (const auto &arm : arms)
+        for (const auto &arm : arms) {
             validate(arm, db);
+            hashes << std::format("{},{},{},{:016x}\n", seed, arm.share, arm.name,
+                                  kept_hash(arm.kept));
+        }
+        hashes.flush();
 
         // Held-out data from here on
         start = std::chrono::steady_clock::now();
