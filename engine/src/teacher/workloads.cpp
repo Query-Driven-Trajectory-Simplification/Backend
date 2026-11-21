@@ -18,8 +18,8 @@ namespace teacher {
 
 namespace {
 
-// Bump when the layout or workload generation changes. V5 drops the seen / unseen split
-constexpr std::uint64_t kMagicV5 = 0x5431'4341'4348'4535ull;
+// Bump when the layout or workload generation changes. V6 uses fixed-grid continuous kNN.
+constexpr std::uint64_t kMagicV6 = 0x5431'4341'4348'4536ull;
 constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
@@ -119,7 +119,7 @@ void save(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t d
     const auto tmp = file.string() + ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary);
-        put(out, kMagicV5);
+        put(out, kMagicV6);
         put(out, seed);
         put(out, db_fingerprint);
         put<std::uint64_t>(out, workloads.k);
@@ -145,7 +145,7 @@ bool load(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t d
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return false;
-    if (get<std::uint64_t>(in) != kMagicV5 || get<std::uint64_t>(in) != seed ||
+    if (get<std::uint64_t>(in) != kMagicV6 || get<std::uint64_t>(in) != seed ||
         get<std::uint64_t>(in) != db_fingerprint)
         return false;
     const auto k = get<std::uint64_t>(in);

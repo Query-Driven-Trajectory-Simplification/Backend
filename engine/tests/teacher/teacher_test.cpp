@@ -6,6 +6,7 @@
 #include "backend/engine/teacher/greedy.hpp"
 #include "backend/engine/teacher/objective.hpp"
 #include "backend/engine/teacher/teacher.hpp"
+#include "backend/engine/teacher/trade_matching.hpp"
 #include "backend/engine/teacher/workloads.hpp"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <random>
 #include <span>
 #include <string>
@@ -184,14 +186,15 @@ TEST_F(TeacherTest, CacheWithLegacyFingerprintIsRebuilt) {
     const auto file = m_dir / "teacher_cache_seed5.bin";
     const auto current = read_cache(file);
     ASSERT_FALSE(current.empty());
-    for (const std::uint64_t legacy : {0x5431'4341'4348'4532ull, 0x5431'4341'4348'4533ull}) {
+    for (const std::uint64_t legacy :
+         {0x5431'4341'4348'4532ull, 0x5431'4341'4348'4533ull, 0x5431'4341'4348'4535ull}) {
         SCOPED_TRACE(legacy);
         {
             std::fstream out(file, std::ios::binary | std::ios::in | std::ios::out);
             out.write(reinterpret_cast<const char *>(&legacy), sizeof(legacy));
             ASSERT_TRUE(out);
         }
-        // An obsolete version is rejected even when everything else matches
+        // Reject obsolete fingerprints and V5's adaptive continuous-kNN reference ordering
         ASSERT_NE(read_cache(file), current);
         const auto rebuilt = teacher::load_or_build_workloads(db, small_config(), 5, m_dir);
         EXPECT_EQ(read_cache(file), current);
@@ -561,6 +564,67 @@ TEST_F(TeacherTest, CompressedKnnQueriesNeedTheRankingTerm) {
         std::invalid_argument);
 }
 
+TEST_F(TeacherTest, ContinuousKnnNearTiesMatchFullScoringThroughSwitches) {
+    // The first trajectory is a line; the next two backtrack by almost the same amount.
+    // The old evaluator tied overlapping distance intervals, while the tracker sorted their
+    // independently approximated distances: even the full database scored 23/24 instead of 1.
+    const auto source = random_db(2, 24, 20);
+    const std::array line{0.0, 3.0, 7.0, 10.0}, loop{0.0, 8.0, 2.0, 10.0};
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> ids;
+    std::vector<std::int64_t> times;
+    std::vector<double> lat, lon;
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        ids.push_back(static_cast<std::int32_t>(i));
+        const auto original = source.trajectory(i);
+        for (std::size_t k = 0; k < (i < 3 ? line.size() : original.size()); ++k) {
+            const double x = i >= 3   ? original.x[k]
+                             : i == 0 ? line[k]
+                                      : loop[k] + (i == 1 && k == 1 ? 0.001 : 0.0);
+            const auto point = core::to_lat_lon(x, i < 3 ? 0.0 : original.y[k]);
+            times.push_back(static_cast<std::int64_t>(k));
+            lat.push_back(point.lat);
+            lon.push_back(point.lon);
+        }
+        offsets.push_back(times.size());
+    }
+    const core::TrajectoryDb db(offsets, ids, times, lat, lon);
+    auto config = small_config();
+    config.k = 1;
+    config.join_eps_m = 2.0;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 99, m_dir);
+    const auto full = every_point(db), floor = endpoints(db);
+    const teacher::PreparedTrajectories prepared_full(db, full), prepared_floor(db, floor);
+    const auto full_views = prepared_full.views(), floor_views = prepared_floor.views();
+    for (const bool compressed : {false, true}) {
+        SCOPED_TRACE(compressed ? "compressed queries" : "original queries");
+        const teacher::Objective objective(db, workloads,
+                                           {.join_mode = query::JoinMode::HeldOut,
+                                            .ranking_knn = true,
+                                            .compressed_knn_query = compressed});
+        auto kept = full;
+        auto views = full_views;
+        teacher::KnnState knn(objective, kept, {}, db.size());
+        EXPECT_DOUBLE_EQ(objective.knn_recall(core::materialize(db, kept)), 1.0);
+        EXPECT_DOUBLE_EQ(knn.metric(), 1.0);
+        for (const auto i : {1u, 2u, 0u, 5u, 1u, 0u, 2u, 5u}) {
+            const bool shrink = kept[i].size() != 2;
+            const auto candidate = shrink ? floor_views[i] : full_views[i];
+            const double before = objective.knn_recall(core::materialize(db, kept));
+            const auto move = knn.move(i, candidate, views);
+            const double gain = knn.propose(move);
+            if (!compressed)
+                EXPECT_NEAR(knn.propose_bounded(i, candidate), gain, 1e-12);
+            kept[i] = shrink ? floor[i] : full[i];
+            views[i] = candidate;
+            knn.apply(move);
+            const double after = objective.knn_recall(core::materialize(db, kept));
+            EXPECT_NEAR(knn.metric(), after, 1e-12);
+            EXPECT_NEAR(gain, objective.scale(teacher::Objective::Knn) * (after - before), 1e-12);
+        }
+    }
+}
+
 TEST_F(TeacherTest, CompressedKnnArmsKeepTheBudgetAndLoopOnlyImproves) {
     const auto db = random_db(3, 30, 25);
     auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
@@ -745,44 +809,189 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
 
 TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto db = random_db(3, 30, 25);
-    for (const auto mode : {query::JoinMode::Self, query::JoinMode::HeldOut}) {
-        SCOPED_TRACE(mode == query::JoinMode::Self ? "Self" : "HeldOut");
-        auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
-        const teacher::Teacher model(db, std::move(workloads), {.join_mode = mode}, 11);
-        const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
-        const std::size_t budget = 2 * db.size() + 40;
-        const auto result = model.run(budget, arms);
+    for (const auto mode : {query::JoinMode::Self, query::JoinMode::HeldOut})
+        for (const bool ranking : {false, true}) {
+            SCOPED_TRACE(std::string(mode == query::JoinMode::Self ? "Self" : "HeldOut") +
+                         (ranking ? ", ranking kNN" : ""));
+            auto workloads = teacher::load_or_build_workloads(db, small_config(), 11, m_dir);
+            const teacher::Teacher model(
+                db, std::move(workloads),
+                {.join_mode = mode,
+                 .ranking_knn = ranking,
+                 .compressed_knn_query = ranking && mode == query::JoinMode::Self},
+                11);
+            const std::vector<std::string> arms(teacher::kArms.begin(), teacher::kArms.end());
+            const std::size_t budget = 2 * db.size() + 40;
+            const auto result = model.run(budget, arms);
 
-        ASSERT_EQ(result.size(), arms.size());
-        double rdp_partners_jt = 0, equal_loop_jt = 0, budget_choice_jt = 0, budget_loop_jt = 0,
-               reallocate_jt = 0;
-        for (const auto &arm : result) {
-            SCOPED_TRACE(arm.name);
-            ASSERT_EQ(arm.simplification.size(), db.size());
-            EXPECT_EQ(arm.simplification.num_points(), budget);
-            for (std::size_t i = 0; i < db.size(); ++i) {
-                const auto kept = arm.simplification.trajectory(i);
-                ASSERT_GE(kept.size(), 2u);
-                EXPECT_EQ(kept.front(), 0u);
-                EXPECT_EQ(kept.back(), db.trajectory(i).size() - 1);
-                EXPECT_TRUE(std::ranges::is_sorted(kept));
-                EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
+            ASSERT_EQ(result.size(), arms.size());
+            double rdp_partners_jt = 0, equal_loop_jt = 0, budget_choice_jt = 0, budget_loop_jt = 0,
+                   reallocate_jt = 0, trade_jt = 0;
+            for (const auto &arm : result) {
+                SCOPED_TRACE(arm.name);
+                ASSERT_EQ(arm.simplification.size(), db.size());
+                EXPECT_EQ(arm.simplification.num_points(), budget);
+                for (std::size_t i = 0; i < db.size(); ++i) {
+                    const auto kept = arm.simplification.trajectory(i);
+                    ASSERT_GE(kept.size(), 2u);
+                    EXPECT_EQ(kept.front(), 0u);
+                    EXPECT_EQ(kept.back(), db.trajectory(i).size() - 1);
+                    EXPECT_TRUE(std::ranges::is_sorted(kept));
+                    EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
+                }
+                if (arm.name == "EQUAL_CHOICE_RDP_PARTNERS")
+                    rdp_partners_jt = arm.objective;
+                if (arm.name == "EQUAL_LOOP")
+                    equal_loop_jt = arm.objective;
+                if (arm.name == "BUDGET_CHOICE")
+                    budget_choice_jt = arm.objective;
+                if (arm.name == "BUDGET_LOOP")
+                    budget_loop_jt = arm.objective;
+                if (arm.name == "BUDGET_LOOP_REALLOCATE")
+                    reallocate_jt = arm.objective;
+                if (arm.name == "BUDGET_LOOP_TRADE")
+                    trade_jt = arm.objective;
             }
-            if (arm.name == "EQUAL_CHOICE_RDP_PARTNERS")
-                rdp_partners_jt = arm.objective;
-            if (arm.name == "EQUAL_LOOP")
-                equal_loop_jt = arm.objective;
-            if (arm.name == "BUDGET_CHOICE")
-                budget_choice_jt = arm.objective;
-            if (arm.name == "BUDGET_LOOP")
-                budget_loop_jt = arm.objective;
-            if (arm.name == "BUDGET_LOOP_REALLOCATE")
-                reallocate_jt = arm.objective;
+            EXPECT_GE(equal_loop_jt, rdp_partners_jt - 1e-12);
+            EXPECT_GE(budget_loop_jt, budget_choice_jt - 1e-12);
+            EXPECT_GE(reallocate_jt, budget_loop_jt - 1e-12);
+            EXPECT_GE(trade_jt, budget_loop_jt - 1e-12);
         }
-        EXPECT_GE(equal_loop_jt, rdp_partners_jt - 1e-12);
-        EXPECT_GE(budget_loop_jt, budget_choice_jt - 1e-12);
-        EXPECT_GE(reallocate_jt, budget_loop_jt - 1e-12);
+}
+
+TEST(TradeMatching, SelfSellerRemainsAvailableAfterAnUnprofitableBuyer) {
+    // Buyer 0 cannot sell to itself, and seller 2 is too expensive. Buyer 1 can still profitably
+    // buy from seller 0; neither skipping seller 0 nor ending the buyer sweep is valid.
+    const std::vector<std::pair<double, std::size_t>> sellers{{0.0, 0}, {-20.0, 2}};
+    const std::vector<char> used(3, 0);
+    std::size_t first = 0;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 0, 10.0, 1e-12),
+              sellers.size());
+    EXPECT_EQ(first, 0u);
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 1, 9.0, 1e-12), 0u);
+
+    // The same applies when the buyer itself is the only remaining seller.
+    const auto only = std::span(sellers).first(1);
+    EXPECT_EQ(teacher::detail::find_profitable_seller(only, used, first, 0, 10.0, 1e-12),
+              only.size());
+    EXPECT_EQ(teacher::detail::find_profitable_seller(only, used, first, 1, 9.0, 1e-12), 0u);
+}
+
+TEST(TradeMatching, AdvancesOnlyPastUsedSellers) {
+    const std::vector<std::pair<double, std::size_t>> sellers{{3.0, 0}, {2.0, 1}, {1.0, 2}};
+    std::vector<char> used{1, 0, 0};
+    std::size_t first = 0;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 1, 1.0, 1e-12), 2u);
+    EXPECT_EQ(first, 1u);
+    used[2] = 1;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 0, 1.0, 1e-12), 1u);
+    used[1] = 1;
+    EXPECT_EQ(teacher::detail::find_profitable_seller(sellers, used, first, 0, 1.0, 1e-12),
+              sellers.size());
+    EXPECT_EQ(first, sellers.size());
+}
+
+// Each trajectory of random_db twice, the copy shift metres north
+core::TrajectoryDb near_duplicates(std::uint64_t seed, std::size_t count, std::size_t length,
+                                   double shift = 1e-4) {
+    const auto source = random_db(seed, count, length);
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> ids;
+    std::vector<std::int64_t> t;
+    std::vector<double> lat, lon;
+    for (std::size_t copy = 0; copy < 2; ++copy)
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            const auto trajectory = source.trajectory(i);
+            ids.push_back(static_cast<std::int32_t>(ids.size()));
+            for (std::size_t k = 0; k < trajectory.size(); ++k) {
+                const auto ll = core::to_lat_lon(
+                    trajectory.x[k], trajectory.y[k] + shift * static_cast<double>(copy));
+                t.push_back(trajectory.t[k]);
+                lat.push_back(ll.lat);
+                lon.push_back(ll.lon);
+            }
+            offsets.push_back(t.size());
+        }
+    return {std::move(offsets), std::move(ids), std::move(t), std::move(lat), std::move(lon)};
+}
+
+TEST_F(TeacherTest, BoundedKnnProposalsMatchFullDistances) {
+    const auto db = near_duplicates(5, 24, 20);
+    auto config = small_config();
+    config.extra_join_eps_m.clear();
+    config.k = 2;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 3, m_dir);
+    const teacher::Objective objective(db, workloads, {.ranking_knn = true});
+    std::mt19937_64 rng(8);
+    auto random_kept = [&](std::size_t i) {
+        const std::size_t n = db.trajectory(i).size();
+        std::vector<std::size_t> kept{0};
+        for (std::size_t k = 1; k + 1 < n; ++k)
+            if (rng() % 3 == 0)
+                kept.push_back(k);
+        kept.push_back(n - 1);
+        return kept;
+    };
+    for (const bool start_full : {true, false}) {
+        teacher::KeptSets state = start_full ? every_point(db) : teacher::KeptSets(db.size());
+        if (!start_full)
+            for (std::size_t i = 0; i < db.size(); ++i)
+                state[i] = random_kept(i);
+        const teacher::KnnState knn(objective, state, {}, db.size());
+        std::size_t changed = 0;
+        for (std::size_t i = 0; i < db.size(); ++i)
+            for (int trial = 0; trial < 8; ++trial) {
+                const teacher::PreparedTrajectory candidate(db.trajectory(i), random_kept(i));
+                const double full = knn.propose(i, knn.distances(i, candidate.view()));
+                EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view()), full) << i;
+                changed += full != 0.0;
+            }
+        EXPECT_GT(changed, 0u);
     }
+}
+
+TEST_F(TeacherTest, WatchingVersionsMakesKnnProposalsExact) {
+    // Copies 20 m apart: a copy with all points sits next to its twin, inside queries' top k
+    const auto db = near_duplicates(6, 24, 20, 20.0);
+    auto config = small_config();
+    config.extra_join_eps_m.clear();
+    const auto workloads = teacher::load_or_build_workloads(db, config, 3, m_dir);
+    const teacher::Objective objective(db, workloads, {.ranking_knn = true});
+    std::mt19937_64 rng(9);
+    auto random_kept = [&](std::size_t i, std::size_t every) {
+        const std::size_t n = db.trajectory(i).size();
+        std::vector<std::size_t> kept{0};
+        for (std::size_t k = 1; k + 1 < n; ++k)
+            if (rng() % every == 0)
+                kept.push_back(k);
+        kept.push_back(n - 1);
+        return kept;
+    };
+    teacher::KeptSets state(db.size());
+    for (std::size_t i = 0; i < db.size(); ++i)
+        state[i] = random_kept(i, 1000);
+    const teacher::PreparedTrajectories prepared(db, state);
+    const auto views = prepared.views();
+    const double before = objective.knn_recall(core::materialize(db, state));
+    const double scale = objective.scale(teacher::Objective::Knn);
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        // One spare place for whoever replaces a leaver, so versions entering a top k are the only
+        // ones unwatched until watch()
+        teacher::KnnState knn(objective, state, {}, workloads.k + 1);
+        const auto kept = random_kept(i, 1);
+        const teacher::PreparedTrajectory version(db.trajectory(i), kept);
+        std::vector<std::vector<core::TrajectoryView>> versions(db.size());
+        versions[i] = {version.view()};
+        knn.watch(versions, views);
+        auto next = state;
+        next[i] = kept;
+        const double exact = scale * (objective.knn_recall(core::materialize(db, next)) - before);
+        EXPECT_NEAR(knn.propose(i, knn.distances(i, version.view())), exact, 1e-12) << i;
+        EXPECT_NEAR(knn.propose_bounded(i, version.view()), exact, 1e-12) << i;
+        changed += exact != 0.0;
+    }
+    EXPECT_GT(changed, 0u);
 }
 
 TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {

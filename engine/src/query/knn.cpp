@@ -229,92 +229,56 @@ std::vector<std::size_t> discrete_knn(const core::TrajectoryDb &trajectory_db,
     return neighbor_ids;
 }
 
-// A candidate whose continuous distance is known to lie in [lo, hi]
-struct Bracket {
+// The first millimetre radius accepted by the continuous decision predicate. Unlike an
+// arbitrary bisection midpoint, this key is identical for different valid initial bounds.
+double continuous_rank_distance(const core::TrajectoryView &a, const core::TrajectoryView &b,
+                                double lower, double upper) {
+    if (!std::isfinite(upper))
+        return std::numeric_limits<double>::infinity();
+    // Geometric lower bounds and the decision predicate have rounding slack. Start below it,
+    // so an accepted grid point is never skipped just because a bound rounded upward.
+    const double slack = 2e-12 * std::max(1.0, lower);
+    const double first = std::ceil(std::max(0.0, lower - slack) / kKnnResolutionM);
+    const double last = std::ceil(upper / kKnnResolutionM);
+    if (last >= static_cast<double>(std::numeric_limits<std::uint64_t>::max()))
+        throw std::overflow_error("knn: distance exceeds millimetre ranking range");
+    auto lo = static_cast<std::uint64_t>(first);
+    auto hi = static_cast<std::uint64_t>(last);
+    // Most distances equal their Hausdorff bound. Resolve those with one decision instead of
+    // bisecting the entire interval up to the discrete upper bound.
+    if (lo < hi && continuous_frechet_within(a, b, static_cast<double>(lo) * kKnnResolutionM))
+        return static_cast<double>(lo) * kKnnResolutionM;
+    if (lo < hi)
+        ++lo;
+    while (lo < hi) {
+        const auto mid = lo + (hi - lo) / 2;
+        if (continuous_frechet_within(a, b, static_cast<double>(mid) * kKnnResolutionM))
+            hi = mid;
+        else
+            lo = mid + 1;
+    }
+    return static_cast<double>(lo) * kKnnResolutionM;
+}
+
+struct RankedNeighbor {
+    double distance;
     std::size_t idx;
-    double lo;
-    double hi;
+    bool operator<(const RankedNeighbor &other) const {
+        return knn_rank_less(distance, idx, other.distance, other.idx);
+    }
 };
 
-// Each distance is narrowed only as far as top-k membership and order need. Distances within
-// tolerance of each other count as equal and are ordered by database index, and the same rule
-// decides membership at the k-th place. Every prune allows the tolerance as well.
 std::vector<std::size_t> continuous_knn(const core::TrajectoryDb &trajectory_db,
                                         const core::TrajectoryView &query, std::size_t k) {
-    constexpr double tolerance = 1e-3;
     CandidateQueue queue(trajectory_db, query, k);
-    std::vector<Bracket> kept;
-    std::vector<double> scratch;
-    const auto halve = [&](Bracket &b) {
-        const double mid = 0.5 * (b.lo + b.hi);
-        if (continuous_frechet_within(query, trajectory_db.trajectory(b.idx), mid))
-            b.hi = mid;
-        else
-            b.lo = mid;
-    };
-    const auto kth_upper = [&] {
-        scratch.clear();
-        for (const auto &b : kept)
-            scratch.push_back(b.hi);
-        std::nth_element(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(k - 1),
-                         scratch.end());
-        return scratch[k - 1];
-    };
-    // Narrows overlapping brackets until they are disjoint or within tolerance, then orders runs
-    // of overlapping brackets, which are ties, by index
-    const auto rank = [&] {
-        const auto by_lower = [](const Bracket &b) { return std::pair(b.lo, b.idx); };
-        for (bool overlapping = true; overlapping;) {
-            overlapping = false;
-            std::ranges::sort(kept, {}, by_lower);
-            for (std::size_t i = 0; i + 1 < kept.size(); ++i) {
-                Bracket &a = kept[i], &b = kept[i + 1];
-                if (a.hi < b.lo)
-                    continue;
-                Bracket &wider = a.hi - a.lo >= b.hi - b.lo ? a : b;
-                if (wider.hi - wider.lo <= tolerance)
-                    continue;
-                halve(wider);
-                overlapping = true;
-            }
-        }
-        for (std::size_t start = 0; start < kept.size();) {
-            std::size_t end = start + 1;
-            double reach = kept[start].hi;
-            while (end < kept.size() && kept[end].lo <= reach)
-                reach = std::max(reach, kept[end++].hi);
-            std::ranges::sort(kept.begin() + static_cast<std::ptrdiff_t>(start),
-                              kept.begin() + static_cast<std::ptrdiff_t>(end), {}, &Bracket::idx);
-            start = end;
-        }
-    };
-    // Drops brackets that are certainly beyond the k-th, refining the widest uncertain one.
-    // Once only ties remain at the boundary, the ranking decides who stays.
-    const auto trim = [&] {
-        while (kept.size() > k) {
-            const double cutoff = kth_upper();
-            std::erase_if(kept, [&](const Bracket &b) { return b.lo > cutoff + tolerance; });
-            if (kept.size() <= k)
-                return;
-            Bracket *widest = nullptr;
-            for (auto &b : kept)
-                if (b.hi >= cutoff && b.hi - b.lo > tolerance &&
-                    (!widest || b.hi - b.lo > widest->hi - widest->lo))
-                    widest = &b;
-            if (!widest) {
-                rank();
-                kept.resize(k);
-                return;
-            }
-            halve(*widest);
-        }
-    };
-
+    std::priority_queue<RankedNeighbor> nearest;
     std::vector<double> prev, curr;
     while (!queue.empty()) {
         const Candidate candidate = queue.next();
-        const double cutoff = kept.size() < k ? std::sqrt(queue.initial_cutoff()) : kth_upper();
-        const double limit = cutoff + tolerance;
+        // One extra bin absorbs floating-point rounding in bounds and includes all distance ties.
+        const double limit =
+            (nearest.size() < k ? std::sqrt(queue.initial_cutoff()) : nearest.top().distance) +
+            kKnnResolutionM;
         const double squared_limit = limit * limit;
         if (candidate.squared_lower_bound > squared_limit)
             break;
@@ -328,35 +292,49 @@ std::vector<std::size_t> continuous_knn(const core::TrajectoryDb &trajectory_db,
             std::max(forward, squared_directed_hausdorff(reference, query, squared_limit));
         if (squared_hausdorff > squared_limit)
             continue;
-        // The discrete distance bounds the continuous one from above
-        double hi = limit;
-        const double squared_discrete = get_squared_frechet_distance(
-            query, reference, std::nextafter(squared_limit, squared_limit + 1.0), prev, curr);
-        if (squared_discrete <= squared_limit)
-            hi = std::min(hi, std::sqrt(squared_discrete));
+        double upper = limit;
+        const double discrete = get_squared_frechet_distance(
+            query, reference,
+            std::nextafter(squared_limit, std::numeric_limits<double>::infinity()), prev, curr);
+        if (discrete <= squared_limit)
+            upper = std::min(upper, std::sqrt(discrete));
         else if (!continuous_frechet_within(query, reference, limit))
             continue;
-        double lo = std::min(
-            hi, std::max(std::sqrt(candidate.squared_lower_bound), std::sqrt(squared_hausdorff)));
-        // The distance often equals the Hausdorff bound
-        if (hi - lo > tolerance) {
-            if (continuous_frechet_within(query, reference, lo + tolerance))
-                hi = lo + tolerance;
-            else
-                lo += tolerance;
+        const double lower =
+            std::min(upper, std::sqrt(std::max(candidate.squared_lower_bound, squared_hausdorff)));
+        const RankedNeighbor next{continuous_rank_distance(query, reference, lower, upper),
+                                  candidate.idx};
+        if (!std::isfinite(next.distance))
+            continue;
+        if (nearest.size() < k)
+            nearest.push(next);
+        else if (next < nearest.top()) {
+            nearest.pop();
+            nearest.push(next);
         }
-        kept.push_back({candidate.idx, lo, hi});
-        trim();
     }
-
-    rank();
-    std::vector<std::size_t> neighbor_ids;
-    for (const auto &b : kept)
-        neighbor_ids.push_back(b.idx);
-    return neighbor_ids;
+    std::vector<std::size_t> result(nearest.size());
+    for (std::size_t i = result.size(); i > 0; --i) {
+        result[i - 1] = nearest.top().idx;
+        nearest.pop();
+    }
+    return result;
 }
 
 } // namespace
+
+double knn_distance(const core::TrajectoryView &a, const core::TrajectoryView &b,
+                    FrechetVariant variant) {
+    const double upper = frechet_distance(a, b);
+    if (variant == FrechetVariant::Discrete || !std::isfinite(upper))
+        return upper;
+    const double squared_upper = upper * upper;
+    const double lower = std::sqrt(
+        std::max({squared_endpoint_lower_bound(a, b), squared_box_extent_lower_bound(a, b),
+                  squared_directed_hausdorff(a, b, squared_upper),
+                  squared_directed_hausdorff(b, a, squared_upper)}));
+    return continuous_rank_distance(a, b, std::min(lower, upper), upper);
+}
 
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
                              const core::TrajectoryView &query_trajectory, std::size_t k,

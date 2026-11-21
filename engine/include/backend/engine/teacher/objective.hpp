@@ -280,9 +280,17 @@ class KnnState {
     // Whether i's choice can change the metric: watched, or with compressed queries a query
     bool active(std::size_t i) const;
     // Original queries only. From every query watching i, in the order propose and apply expect
-    std::vector<double> distances(std::size_t i, const core::TrajectoryView &candidate) const;
+    std::vector<double> distances(std::size_t i, const core::TrajectoryView &candidate,
+                                  bool parallel = false) const;
     // Change in J_T
     double propose(std::size_t i, std::span<const double> distances) const;
+    // The same change from i becoming candidate, computing a distance only near a query's k-th
+    // place
+    double propose_bounded(std::size_t i, const core::TrajectoryView &candidate) const;
+    // Original queries only. Adds trajectory i to the list of every query that one of versions[i]
+    // comes within the query's watch radius of, the distance of its watch-th nearest in state
+    void watch(std::span<const std::vector<core::TrajectoryView>> versions,
+               std::span<const core::TrajectoryView> state);
     void apply(std::size_t i, std::span<const double> distances);
 
     // Either query kind. With compressed queries a distance depends on both sides, so a move also
@@ -307,12 +315,16 @@ class KnnState {
     std::size_t hits(std::size_t e, std::size_t position, double distance) const;
     // The same with e's whole row replaced
     std::size_t hits(std::size_t e, std::span<const double> row) const;
+    // True neighbours in the top k of order (distance, position)
+    std::size_t ranked_hits(std::size_t e,
+                            std::vector<std::pair<double, std::uint32_t>> &order) const;
     // Distances from query, e in some state, to e's list in state
     std::vector<double> own_row(std::size_t e, const core::TrajectoryView &query,
                                 std::span<const core::TrajectoryView> state) const;
 
     const Objective &m_objective;
     std::size_t m_valid = 0;
+    std::size_t m_watch = 0;
     std::vector<std::vector<std::uint32_t>> m_list; // per query, its true top k first
     std::vector<std::vector<double>> m_distance;    // per query, in list order
     std::vector<std::size_t> m_hits;                // per query

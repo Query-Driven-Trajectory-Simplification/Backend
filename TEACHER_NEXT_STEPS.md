@@ -4,7 +4,9 @@ Implementation update, 2026-11-20: the range objective and endpoint floor now us
 J4, with exact incremental updates in the loop and F1 marginals for candidate and budget scoring.
 `RDP_GLOBAL`, a database-wide top-down PED baseline, runs alongside the other baselines in
 `teacher_eval` and is enabled in `geolife.json`. It is included in the best-cheap-baseline comparison.
-The numerical findings below predate this change and need to be checked with fresh runs.
+Continuous kNN now shares a deterministic millimetre-grid ranking between the evaluator and
+tracker; V6 caches rebuild old reference rankings. Limited watch lists remain approximate.
+The numerical findings below predate these changes and need to be checked with fresh runs.
 
 Updated 2026-11-17 on branch `teacher`. The teacher is described in
 [engine/src/teacher/README.md](engine/src/teacher/README.md); this file says what is settled and
