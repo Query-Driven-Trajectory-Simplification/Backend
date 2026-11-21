@@ -957,7 +957,8 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
             if (want_loop)
                 keep("BUDGET_LOOP", candidates, looped, checked.value);
             if (want_trade) {
-                auto traded = trade_budgets(db, objective, caps, assemble(candidates, looped), checked.value);
+                auto traded =
+                    trade_budgets(db, objective, caps, assemble(candidates, looped), checked.value);
                 outputs["BUDGET_LOOP_TRADE"] = {"BUDGET_LOOP_TRADE",
                                                 core::to_simplification(traded.kept), traded.value};
                 timed("BUDGET_LOOP_TRADE");

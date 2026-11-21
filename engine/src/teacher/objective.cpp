@@ -75,6 +75,8 @@ constexpr std::size_t kMaxJoinTerms = 8;
 // Relative margin for certificates, far above the decision predicate's 1e-12 rounding slack
 constexpr double kCertificateMargin = 1e-9;
 
+} // namespace
+
 // Upper bound on the continuous Fréchet distance between original and a simplification keeping
 // a subsequence of its points: each kept segment walks its original stretch at the same share
 // of arc length. Along each original edge the gap is convex, so its maximum is at a vertex
@@ -98,11 +100,13 @@ double simplification_bound(const core::TrajectoryView &original,
             return std::numeric_limits<double>::infinity();
         double length = 0.0;
         for (std::size_t j = at; j < end; ++j)
-            length += std::hypot(original.x[j + 1] - original.x[j], original.y[j + 1] - original.y[j]);
+            length +=
+                std::hypot(original.x[j + 1] - original.x[j], original.y[j + 1] - original.y[j]);
         double walked = 0.0;
         for (std::size_t j = at; j <= end; ++j) {
             if (j > at)
-                walked += std::hypot(original.x[j] - original.x[j - 1], original.y[j] - original.y[j - 1]);
+                walked += std::hypot(original.x[j] - original.x[j - 1],
+                                     original.y[j] - original.y[j - 1]);
             const double u = length > 0 ? walked / length : 0.0;
             const double x = kept.x[k] + u * (kept.x[k + 1] - kept.x[k]);
             const double y = kept.y[k] + u * (kept.y[k + 1] - kept.y[k]);
@@ -112,6 +116,9 @@ double simplification_bound(const core::TrajectoryView &original,
     }
     return bound;
 }
+
+namespace {
+
 // Cached kNN distances are upper bounds on a fixed millimetre grid.
 constexpr double kKnnDistanceError = query::kKnnResolutionM;
 
@@ -599,8 +606,8 @@ std::vector<char> RangeState::coverage(std::size_t i, const core::TrajectoryView
     std::vector<char> covered;
     covered.reserve(memberships.size());
     for (const auto &membership : memberships)
-        covered.push_back(
-            query::intersects(candidate, m_objective.workloads().range.queries[membership.box].box));
+        covered.push_back(query::intersects(
+            candidate, m_objective.workloads().range.queries[membership.box].box));
     return covered;
 }
 

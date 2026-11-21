@@ -43,6 +43,10 @@ class PreparedTrajectories {
     std::vector<PreparedTrajectory> m_trajectories;
 };
 
+// Upper bound on the continuous Fréchet distance between a trajectory and a simplification
+// keeping a subsequence of its points. Infinity if kept is not such a subsequence
+double simplification_bound(const core::TrajectoryView &original, const core::TrajectoryView &kept);
+
 inline constexpr std::size_t kTermCount = 4; // kNN, range, where-at, join
 using TermWeights = std::array<double, kTermCount>;
 
@@ -193,7 +197,7 @@ class Objective {
     std::vector<std::uint32_t> m_pair_i, m_pair_j; // pairs used, positives first
     std::vector<std::uint8_t> m_pair_term;
     std::vector<double> m_pair_upper; // held-out positives: bound on the originals' distance
-    std::vector<double> m_eps; // threshold of each join term
+    std::vector<double> m_eps;        // threshold of each join term
     std::vector<char> m_term_held_out;
     std::size_t m_positive_count = 0;
     std::vector<std::vector<JoinLink>> m_links; // per trajectory
