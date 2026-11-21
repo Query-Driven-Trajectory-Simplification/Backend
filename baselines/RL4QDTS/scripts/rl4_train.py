@@ -8,8 +8,6 @@ Differences from the authors' script:
   Training cycles through --chunk sized slices of the first --train trajectories, as the authors
   cycle through 500-trajectory slices; the trajectories after that are the validation set.
 - Validation builds a fresh cube sampler each time, so every checkpoint is scored on the same samples.
-- Keras predict/fit are replaced by direct model calls and train_on_batch: the same maths with
-  far less per-call overhead in TF 2.
 
 Writes one checkpoint pair per round, a log (train_log.csv) and best_INB.h5/best_OUB.h5 (best
 validation F1). Simplify with: rl4_simplify.py --inb <out>/best_INB.h5 --oub <out>/best_OUB.h5
@@ -17,6 +15,7 @@ validation F1). Simplify with: rl4_simplify.py --inb <out>/best_INB.h5 --oub <ou
 import argparse
 import csv
 import os
+import random
 import shutil
 import sys
 import time
@@ -42,19 +41,14 @@ def main():
                     help="authors' loop: never store the stop action (it stays untrained)")
     args = ap.parse_args()
 
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     rl4_shims.install(os.path.abspath(args.rl4))
-    import tensorflow as tf
-    tf.set_random_seed = tf.compat.v1.set_random_seed  # rl_brain calls it on import
-    import keras.optimizers
-    if hasattr(keras.optimizers, "legacy"):  # Keras 2.11-2.15: the new Adam ignores lr=
-        keras.optimizers.Adam = keras.optimizers.legacy.Adam
     import numpy as np
     import data_utils as F
     from rl_env import TrajComp, TrajSam
     from rl_brain import AGENT_Sel, AGENT_Sam
 
-    tf.keras.utils.set_random_seed(args.seed)  # python, numpy and TF
+    random.seed(args.seed)
+    np.random.seed(args.seed)
     K, LEN = 2, 2
     level_start, level_end = 9, 12
     batch_size = 32
@@ -69,10 +63,6 @@ def main():
 
     RL_INB = AGENT_Sel(K * LEN, K)
     RL_OUB = AGENT_Sam(2 * 8, 9)
-    for agent in (RL_INB, RL_OUB):
-        for model in (agent.model, agent.target_model):
-            model.predict = (lambda m: lambda x, *a, **k: m(x, training=False).numpy())(model)
-            model.fit = (lambda m: lambda x, y, *a, **k: m.train_on_batch(x, y))(model)
 
     # --- validation data, built once ---
     val_env = TrajComp(path, args.train, val_end, K, LEN)
