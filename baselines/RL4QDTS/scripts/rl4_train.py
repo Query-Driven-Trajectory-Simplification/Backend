@@ -1,9 +1,14 @@
 """Trains RL4's agents on our exported data: rl_main_by_data.py's training loop, resized to our database
 
-Differences from the authors' script:
-- Agent-Cube's stop action (8) is stored as a terminal transition, so it gets trained. The authors'
-  loop breaks out before storing it, so its weights never leave their random init.
-  --keep-stop-bug restores the authors' behaviour.
+Differences from the authors' script (--legacy turns the first three off, giving the authors' loop):
+- Stop action: Agent-Cube's stop decision (action 8; action 9 in the paper) is stored as a terminal
+  transition, so it is trained like the other 8 actions. The authors' loop breaks out before storing
+  it, so its weights never leave their random init.
+- First reward: the reward is the F1 *change* since the previous query (paper, Eq. 10). The authors
+  start from pre = 0, so the first reward of every round is the whole F1 of the initial database
+  (endpoints only), ~100x a normal reward.
+- Last window: transitions after the last full window of --query-count steps get their reward too.
+  The authors drop them, so e.g. Agent-Point's terminal transition is never stored.
 - Database sizes, training budget and number of rounds are arguments instead of constants.
   Training cycles through --chunk sized slices of the first --train trajectories, as the authors
   cycle through 500-trajectory slices; the trajectories after that are the validation set.
@@ -37,9 +42,13 @@ def main():
     ap.add_argument("--ratio", type=float, default=0.0025, help="training budget, share of points")
     ap.add_argument("--query-count", type=int, default=50, help="steps between rewards")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--keep-stop-bug", action="store_true",
-                    help="authors' loop: never store the stop action (it stays untrained)")
+    ap.add_argument("--keep-stop-bug", action="store_true", help="authors' loop: stop is never stored")
+    ap.add_argument("--keep-reward-bugs", action="store_true",
+                    help="authors' loop: first reward is the absolute F1, last window gets no reward")
+    ap.add_argument("--legacy", action="store_true", help="= --keep-stop-bug --keep-reward-bugs")
     args = ap.parse_args()
+    if args.legacy:
+        args.keep_stop_bug = args.keep_reward_bugs = True
 
     rl4_shims.install(os.path.abspath(args.rl4))
     import numpy as np
@@ -151,6 +160,8 @@ def main():
                 s, e = (t, 0), (t, len(env_sel.ori_traj_set[t]) - 1)
                 env_sel.read(s, e)
                 env_sel.add_buffer(s, e)
+            if not args.keep_reward_bugs:  # the fix: rewards are F1 changes from the start
+                env_sel.submit_query(rtree_ref_tra, train_query)  # sets env_sel.pre
 
             obs_inb, act_inb, trans_inb, trans_oub_tmp = [], [], [], []
             step = 0
@@ -165,7 +176,7 @@ def main():
                     trans_inb.append([obs_inb[-2], act_inb[-1], obs_inb[-1], done])
                 act_inb.append(action)
 
-                if step % args.query_count == 0:
+                if step % args.query_count == 0 or (done and not args.keep_reward_bugs):
                     reward = env_sel.submit_query(rtree_ref_tra, train_query)
                     for tr in trans_inb:
                         RL_INB.remember(tr[0], tr[1], reward, tr[2], tr[3])
