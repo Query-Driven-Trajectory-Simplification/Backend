@@ -9,15 +9,18 @@ Differences from the authors' script (--legacy turns the first three off, giving
   (endpoints only), ~100x a normal reward.
 - Last window: transitions after the last full window of --query-count steps get their reward too.
   The authors drop them, so e.g. Agent-Point's terminal transition is never stored.
-- Database sizes, training budget and number of rounds are arguments instead of constants.
+- Database sizes, training budget, rounds and seeds are arguments.
   Training cycles through --chunk sized slices of the first --train trajectories, as the authors
   cycle through 500-trajectory slices; the trajectories after that are the validation set.
-- Validation builds a fresh cube sampler each time, so every checkpoint is scored on the same samples.
+- Each round reseeds numpy with (seed, epoch, round). The authors' TrajSam() resets numpy's global
+  seed to 0 every round, so all seeds explored with the same random numbers.
+- Validation builds a fresh cube sampler each time, so every checkpoint is scored the same way.
 
 Writes one checkpoint pair per round, a log (train_log.csv) and best_INB.h5/best_OUB.h5 (best
 validation F1). Simplify with: rl4_simplify.py --inb <out>/best_INB.h5 --oub <out>/best_OUB.h5
 """
 import argparse
+import collections
 import csv
 import os
 import random
@@ -31,7 +34,7 @@ import rl4_shims
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--rl4", required=True, help="checkout of zhengwang125/Query-TS")
+    ap.add_argument("--rl4", required=True, help="RL4QDTS code folder (baselines/RL4QDTS)")
     ap.add_argument("--db", required=True, help="folder written by export_rl4.py (use --shuffle-seed)")
     ap.add_argument("--out", required=True, help="folder for checkpoints and the log")
     ap.add_argument("--train", type=int, default=1500, help="trajectories 0..train-1 are for training")
@@ -70,8 +73,8 @@ def main():
         sys.exit(f"--train {args.train} leaves no validation data ({n} trajectories)")
     os.makedirs(args.out, exist_ok=True)
 
-    RL_INB = AGENT_Sel(K * LEN, K)
-    RL_OUB = AGENT_Sam(2 * 8, 9)
+    RL_INB = AGENT_Sel(K * LEN, K, seed=args.seed)
+    RL_OUB = AGENT_Sam(2 * 8, 9, seed=args.seed + 1000)
 
     # --- validation data, built once ---
     val_env = TrajComp(path, args.train, val_end, K, LEN)
@@ -83,18 +86,18 @@ def main():
     print(f"validation: trajectories {args.train}..{val_end - 1}, {val_env.DB_size} points")
 
     def validate():
-        """rl_main_by_data.py run_dqn(); also returns the share of samples ended by the stop action"""
+        """rl_main_by_data.py run_dqn(); also returns the levels of the chosen cubes"""
         env_sam = TrajSam(val_set, level_start, "data")
-        samples, stops = [], 0
+        samples, levels = [], collections.Counter()
         for _ in range(int(val_env.DB_size * args.ratio)):
             obs = env_sam.starting(level_start)
             while True:
                 action = RL_OUB.online_act(obs)
                 if action == 8 or env_sam.level_cur == level_end:
-                    stops += action == 8
                     break
                 obs = env_sam.get_agent_oub_state(action)
             samples.append(env_sam.cubeID)
+            levels[env_sam.level_cur - 1] += 1  # level_cur is the level of the observed children
         env_sam.get_ID2Grids(samples)
         env = TrajComp(path, args.train, val_end, K, LEN, val_distri, env_sam.ID2Grids, "V")
         budget = int(args.ratio * env.DB_size) + 2 * len(val_set)
@@ -106,13 +109,14 @@ def main():
         while len(env.F_ward) < budget:
             env.update_inb(RL_INB.online_act(env.get_agent_inb_state(samples[step])))
             step += 1
-        return env.submit_query(rtree_ref_val, val_query), stops / max(1, len(samples))
+        return env.submit_query(rtree_ref_val, val_query), levels
 
     chunks = [(s, min(s + args.chunk, args.train)) for s in range(0, args.train, args.chunk)]
     log_path = os.path.join(args.out, "train_log.csv")
     with open(log_path, "w", newline="") as f:
         csv.writer(f).writerow(["epoch", "round", "first_traj", "last_traj", "val_f1",
-                                "val_stop_share", "train_stop_share", "epsilon_cube", "seconds"])
+                                "val_level9", "val_level10", "val_level11", "train_stop_share",
+                                "epsilon_cube", "seconds"])
     best = -1.0
     started = time.time()
 
@@ -130,7 +134,8 @@ def main():
             t0 = time.time()
             transitions_oub, samples = [], []
             sam_size = int(env_sel.DB_size * args.ratio)
-            env_sam = TrajSam(tra_set, level_start, "data")
+            env_sam = TrajSam(tra_set, level_start, "data")  # resets numpy's seed to 0 ...
+            np.random.seed([args.seed, epoch, rnd])  # ... so reseed per seed and round
             train_stops = 0
             for _ in range(int(sam_size * 1.2)):
                 obs_oub, act_oub, trans = [], [], []
@@ -195,7 +200,7 @@ def main():
             RL_INB.update_target_model()
             RL_OUB.update_target_model()
 
-            val_f1, val_stops = validate()
+            val_f1, levels = validate()
             tag = f"e{epoch:02d}_r{rnd}"
             RL_INB.save(os.path.join(args.out, f"ckpt_{tag}_INB.h5"))
             RL_OUB.save(os.path.join(args.out, f"ckpt_{tag}_OUB.h5"))
@@ -205,13 +210,17 @@ def main():
                     shutil.copyfile(os.path.join(args.out, f"ckpt_{tag}_{agent_name}.h5"),
                                     os.path.join(args.out, f"best_{agent_name}.h5"))
             seconds = time.time() - t0
+            total = max(1, sum(levels.values()))
+            shares = [levels[lv] / total for lv in (9, 10, 11)]
             with open(log_path, "a", newline="") as f:
-                csv.writer(f).writerow([epoch, rnd, cs, ce - 1, f"{val_f1:.4f}", f"{val_stops:.3f}",
-                                        f"{train_stops / max(1, len(samples)):.3f}",
-                                        f"{RL_OUB.epsilon:.3f}", f"{seconds:.0f}"])
+                csv.writer(f).writerow([epoch, rnd, cs, ce - 1, f"{val_f1:.4f}"]
+                                       + [f"{s:.3f}" for s in shares]
+                                       + [f"{train_stops / max(1, len(samples)):.3f}",
+                                          f"{RL_OUB.epsilon:.3f}", f"{seconds:.0f}"])
             print(f"epoch {epoch} round {rnd} (trajectories {cs}..{ce - 1}): val F1 {val_f1:.4f}, "
-                  f"stop share {val_stops:.1%}, best {best:.4f}, {seconds:.0f}s "
-                  f"(total {(time.time() - started) / 60:.0f} min)", flush=True)
+                  f"cube levels 9/10/11 {shares[0]:.0%}/{shares[1]:.0%}/{shares[2]:.0%}, "
+                  f"best {best:.4f}, {seconds:.0f}s (total {(time.time() - started) / 60:.1f} min)",
+                  flush=True)
 
     print(f"done: best validation F1 {best:.4f}; models in {args.out}")
 
