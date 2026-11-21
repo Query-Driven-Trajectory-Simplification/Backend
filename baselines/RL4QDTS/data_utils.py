@@ -41,6 +41,22 @@ def to_traj(file):
     f.close()
     return traj
 
+_SPLIT = 134217729.0  # 2**27 + 1, Veltkamp splitting
+
+def _norm2(a, b):
+    """np.linalg.norm(np.array([a, b])) without numpy, bit for bit: numpy computes it as a BLAS dot,
+    sqrt(fma(b, b, a*a)); the fma is emulated exactly with Dekker's two-product and two-sum"""
+    c = a * a
+    p = b * b
+    t = _SPLIT * b
+    hi = t - (t - b)
+    lo = b - hi
+    e = ((hi * hi - p) + 2.0 * hi * lo) + lo * lo  # b*b == p + e exactly
+    s = p + c
+    bb = s - p
+    t2 = (p - (s - bb)) + (c - bb)  # p + c == s + t2 exactly
+    return math.sqrt(s + (t2 + e))
+
 def Eu(segment):
     ps = segment[0]
     pe = segment[-1]    
@@ -48,7 +64,7 @@ def Eu(segment):
     time_ratio = 1 if (pe[2]- ps[2]) == 0  else (syn_time-ps[2]) / (pe[2]-ps[2])
     syn_x = ps[0] + (pe[0] - ps[0]) * time_ratio
     syn_y = ps[1] + (pe[1] - ps[1]) * time_ratio
-    e = np.linalg.norm(np.array([segment[1][0],segment[1][1]]) - np.array([syn_x,syn_y]))
+    e = _norm2(segment[1][0] - syn_x, segment[1][1] - syn_y)
     return e
 
 def Et(segment):
@@ -63,8 +79,10 @@ def Et(segment):
     else:
         x = (B*B*pm[0] - A*B*pm[1] - A*C)/(A*A + B*B)
         y = (-A*B*pm[0] + A*A*pm[1] - B*C)/(A*A + B*B)
-        speed = np.linalg.norm(np.array([ps[0], ps[1]]) - np.array([pe[0], pe[1]]))/(pe[2]-ps[2])
-        return abs(ps[2] + np.linalg.norm(np.array([ps[0], ps[1]]) - np.array([x,y]))/speed - pm[2])
+        dt = pe[2]-ps[2]
+        # numpy gave inf (with a warning) for equal timestamps; the time error is then |ps_t - pm_t|
+        speed = _norm2(ps[0] - pe[0], ps[1] - pe[1])/dt if dt != 0 else math.inf
+        return abs(ps[2] + _norm2(ps[0] - x, ps[1] - y)/speed - pm[2])
 
 def sed_op(segment):
     if len(segment) <= 2:
@@ -215,18 +233,23 @@ def speed_error(ori_traj, sim_traj):
     return t_map, error
 
 class Rtree():
-    def __init__(self, *args):
+    def __init__(self, *args, stream=None):
         self.p = index.Property()
         self.p.dimension = 3
-        if len(args) == 0:
+        self.cache = {}  # query box -> result, kept by range_query_operator until the tree changes
+        if stream is not None:  # bulk loading: ~20x faster than inserting points one by one
+            self.idx = index.Index(stream, properties=self.p)
+        elif len(args) == 0:
             self.idx = index.Index(properties=self.p)
         else:
             self.idx = index.Index(args[0], properties=self.p)
     
     def insert(self, id, data, obj): #id = int, data = (lat, lon), obj_trajID
+        self.cache.clear()
         self.idx.insert(id, data, obj=obj)
     
     def delete(self, id, data): #id = int, data = (lat, lon), obj_trajID
+        self.cache.clear()
         self.idx.delete(id, data)
 
     def knn(self, width, num=1, objects=True):# width = (xmin, ymin, tmin, xmax, ymax, tmax)
@@ -259,6 +282,21 @@ def files_clean(file, name):
             
 def build_Rtree(DB, filename=''): # can set a save=''
     #query on ref_DB
+    if filename=='' and any(len(traj) > 0 for traj in DB):  # in-memory tree: bulk load, same ids and objects
+        def stream():
+            c = 0
+            for trajID in range(len(DB)):
+                for point in DB[trajID]:
+                    yield (c, (point[0],point[1],point[2],point[0],point[1],point[2]), trajID)
+                    c += 1
+        Rtree_ = Rtree(stream=stream())
+        delete_rec = {}
+        c = 0
+        for trajID in range(len(DB)):
+            for pointID in range(len(DB[trajID])):
+                delete_rec[(trajID, pointID)] = c
+                c += 1
+        return Rtree_, delete_rec
     if filename=='':
         Rtree_ = Rtree()
     else:
@@ -568,20 +606,18 @@ def range_query_operator(Rtree_ref, Rtree_sim, QUERY, verbose=False):
     for i in range(len(QUERY)):
         (x_idx, y_idx, t_idx) = QUERY[i]
         x_center, y_center, t_center = Xmin+x_length*(0.5+x_idx), Ymin+y_length*(0.5+y_idx), Tmin+t_length*(0.5+t_idx)
-        ref_R = Rtree_ref.range_query((x_center-x_length/2,
-                                       y_center-y_length/2,
-                                       t_center-t_length/2,
-                                       x_center+x_length/2,
-                                       y_center+y_length/2,
-                                       t_center+t_length/2))
-        sim_R = Rtree_sim.range_query((x_center-x_length/2,
-                                       y_center-y_length/2,
-                                       t_center-t_length/2,
-                                       x_center+x_length/2,
-                                       y_center+y_length/2,
-                                       t_center+t_length/2))
-        A = set([item.object for item in ref_R])
-        B = set([item.object for item in sim_R])
+        box = (x_center-x_length/2,
+               y_center-y_length/2,
+               t_center-t_length/2,
+               x_center+x_length/2,
+               y_center+y_length/2,
+               t_center+t_length/2)
+        # objects='raw' returns the stored trajIDs directly; the reference database does not change
+        # between calls, so its answers are cached (Rtree.insert/delete clear the cache)
+        A = Rtree_ref.cache.get(box)
+        if A is None:
+            A = Rtree_ref.cache[box] = set(Rtree_ref.idx.intersection(box, objects='raw'))
+        B = set(Rtree_sim.idx.intersection(box, objects='raw'))
         
         if verbose:
             if A != B:

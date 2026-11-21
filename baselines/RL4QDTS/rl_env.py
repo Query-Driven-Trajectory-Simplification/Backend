@@ -3,6 +3,8 @@ import data_utils as F
 from sortedcontainers import SortedList
 import random
 
+_TRAJ_CACHE = {}  # file path -> parsed trajectory, see TrajComp._load
+
 class TrajComp():
     def __init__(self, path, s, e, K, LEN, DB_DISTRI='', ID2Grids='', label='T'):
         self.K = K
@@ -23,7 +25,11 @@ class TrajComp():
         self.ori_traj_set = []
         self.DB_size = 0
         for num in range(s, e):
-            traj = F.to_traj(path + str(num))
+            # parsed files are cached: training re-creates TrajComp several times per round and
+            # nothing modifies the loaded trajectories
+            traj = _TRAJ_CACHE.get(path + str(num))
+            if traj is None:
+                traj = _TRAJ_CACHE[path + str(num)] = F.to_traj(path + str(num))
             self.ori_traj_set.append(traj)
             self.DB_size += len(traj)
     
