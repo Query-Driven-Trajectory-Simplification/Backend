@@ -866,8 +866,8 @@ TEST_F(TeacherTest, LoopsNeverEndBelowTheirStartOnALargeDatabase) {
     auto workloads = teacher::load_or_build_workloads(db, small_config(), 13, m_dir);
     const teacher::Teacher model(db, std::move(workloads),
                                  {.join_mode = query::JoinMode::HeldOut, .ranking_knn = true}, 13);
-    const std::vector<std::string> arms{"EQUAL_CHOICE_RDP_PARTNERS", "EQUAL_LOOP",
-                                        "BUDGET_CHOICE", "BUDGET_LOOP"};
+    const std::vector<std::string> arms{"EQUAL_CHOICE_RDP_PARTNERS", "EQUAL_LOOP", "BUDGET_CHOICE",
+                                        "BUDGET_LOOP"};
     for (const std::size_t extra : {100u, 400u}) {
         SCOPED_TRACE(extra);
         const auto result = model.run(2 * db.size() + extra, arms);

@@ -453,9 +453,8 @@ struct Checked {
     Methods methods;
     double value; // exact J_T of methods
 };
-Checked checked_loop(const Objective &objective, const Candidates &candidates,
-                     const Methods &start, std::optional<double> before, Methods looped,
-                     std::string_view name) {
+Checked checked_loop(const Objective &objective, const Candidates &candidates, const Methods &start,
+                     std::optional<double> before, Methods looped, std::string_view name) {
     if (!before)
         before = objective.total(assemble(candidates, start));
     const double after = objective.total(assemble(candidates, looped));
@@ -869,10 +868,9 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         if (want_guess)
             guess_value = keep("EQUAL_CHOICE_RDP_PARTNERS", equal_candidates, guess);
         if (want_equal_loop) {
-            const auto looped =
-                checked_loop(objective, equal_candidates, guess, guess_value,
-                             best_response(db, objective, equal_candidates, guess, m_seed),
-                             "EQUAL_LOOP");
+            const auto looped = checked_loop(
+                objective, equal_candidates, guess, guess_value,
+                best_response(db, objective, equal_candidates, guess, m_seed), "EQUAL_LOOP");
             keep("EQUAL_LOOP", equal_candidates, looped.methods, looped.value);
             timed("EQUAL_LOOP");
         }
@@ -932,8 +930,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                     const auto round_start = curve_methods(round_curves.best, round_budgets);
                     auto round_loop = checked_loop(
                         objective, next_candidates, round_start, std::nullopt,
-                        best_response(db, objective, next_candidates, round_start,
-                                      m_seed + round),
+                        best_response(db, objective, next_candidates, round_start, m_seed + round),
                         std::format("reallocation round {}", round));
                     auto next_methods = std::move(round_loop.methods);
                     auto next = assemble(next_candidates, next_methods);
