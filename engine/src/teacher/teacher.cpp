@@ -447,15 +447,24 @@ Methods best_response(const core::TrajectoryDb &db, const Objective &objective,
 
 // The loop accepts switches on the tracked J_T, whose kNN term only watches each query's top k
 // plus its nearest others in the start and single-recipe states. In a mixed state an unwatched
-// trajectory can enter a top k unseen, so the result is checked exactly against the start
-Methods checked_loop(const Objective &objective, const Candidates &candidates,
-                     const Methods &start, Methods looped, std::string_view name) {
-    const double before = objective.total(assemble(candidates, start));
+// trajectory can enter a top k unseen, so the result is checked exactly against the start.
+// before is the start's exact J_T when the caller already has it
+struct Checked {
+    Methods methods;
+    double value; // exact J_T of methods
+};
+Checked checked_loop(const Objective &objective, const Candidates &candidates,
+                     const Methods &start, std::optional<double> before, Methods looped,
+                     std::string_view name) {
+    if (!before)
+        before = objective.total(assemble(candidates, start));
     const double after = objective.total(assemble(candidates, looped));
-    const bool lost = after < before;
-    std::cout << std::format("teacher: {} exact check, J_T {:.6f} -> {:.6f}{}\n", name, before,
+    const bool lost = after < *before;
+    std::cout << std::format("teacher: {} exact check, J_T {:.6f} -> {:.6f}{}\n", name, *before,
                              after, lost ? ", lost: keeping the start" : "");
-    return lost ? start : std::move(looped);
+    if (lost)
+        return {start, *before};
+    return {std::move(looped), after};
 }
 
 struct Traded {
@@ -817,11 +826,14 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         caps[i] = std::min(std::max(cap, equal_budgets[i]), db.trajectory(i).size());
 
     std::map<std::string, Arm, std::less<>> outputs;
-    auto keep = [&](std::string_view name, const Candidates &from, const Methods &method) {
+    // Returns the arm's exact J_T; known skips recomputing it
+    auto keep = [&](std::string_view name, const Candidates &from, const Methods &method,
+                    std::optional<double> known = {}) {
         auto kept = assemble(from, method);
-        const double j_t = objective.total(kept);
+        const double j_t = known ? *known : objective.total(kept);
         std::cout << std::format("teacher {}: {}, J_T {:.4f}\n", name, wins(method), j_t);
         outputs[std::string(name)] = {std::string(name), core::to_simplification(kept), j_t};
+        return j_t;
     };
     auto start = std::chrono::steady_clock::now();
     auto timed = [&](std::string_view step) {
@@ -853,13 +865,15 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         const auto guess = needs_curves ? curve_methods(curves.best, equal_budgets)
                                         : independent_choice(db, objective, equal_candidates,
                                                              &equal_candidates[kRdp]);
+        std::optional<double> guess_value;
         if (want_guess)
-            keep("EQUAL_CHOICE_RDP_PARTNERS", equal_candidates, guess);
+            guess_value = keep("EQUAL_CHOICE_RDP_PARTNERS", equal_candidates, guess);
         if (want_equal_loop) {
-            keep("EQUAL_LOOP", equal_candidates,
-                 checked_loop(objective, equal_candidates, guess,
-                              best_response(db, objective, equal_candidates, guess, m_seed),
-                              "EQUAL_LOOP"));
+            const auto looped =
+                checked_loop(objective, equal_candidates, guess, guess_value,
+                             best_response(db, objective, equal_candidates, guess, m_seed),
+                             "EQUAL_LOOP");
+            keep("EQUAL_LOOP", equal_candidates, looped.methods, looped.value);
             timed("EQUAL_LOOP");
         }
     }
@@ -884,18 +898,20 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         const auto choice = curve_methods(curves.best, budgets);
         const auto candidates =
             make_candidates(objective, budgets, caps, needs_loop_candidates ? nullptr : &choice);
+        std::optional<double> choice_value;
         if (want_budget_choice)
-            keep("BUDGET_CHOICE", candidates, choice);
+            choice_value = keep("BUDGET_CHOICE", candidates, choice);
         // The loop and its no-update control start from the same state and share the setup
         std::optional<Search> search;
         if (want_loop || want_reallocate || want_trade || want_no_update)
             search.emplace(db, objective, candidates, choice);
         if (want_loop || want_reallocate || want_trade) {
-            const auto looped =
-                checked_loop(objective, candidates, choice, search->run(m_seed), "BUDGET_LOOP");
+            const auto checked = checked_loop(objective, candidates, choice, choice_value,
+                                              search->run(m_seed), "BUDGET_LOOP");
+            const auto &looped = checked.methods;
             timed("BUDGET_LOOP");
             if (want_loop)
-                keep("BUDGET_LOOP", candidates, looped);
+                keep("BUDGET_LOOP", candidates, looped, checked.value);
             if (want_trade) {
                 auto traded = trade_budgets(db, objective, caps, assemble(candidates, looped));
                 outputs["BUDGET_LOOP_TRADE"] = {"BUDGET_LOOP_TRADE",
@@ -906,7 +922,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                 // Each round is kept only if J_T rises
                 auto current = assemble(candidates, looped);
                 auto current_methods = looped;
-                double current_value = objective.total(current);
+                double current_value = checked.value;
                 for (std::size_t round = 1; round <= kMaxAllocationRounds; ++round) {
                     const auto round_curves = build_curves(db, objective, current, caps, false);
                     double round_value = 0;
@@ -914,13 +930,14 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
                         allocate(round_curves.best, total_budget, &round_value);
                     const auto next_candidates = make_candidates(objective, round_budgets, caps);
                     const auto round_start = curve_methods(round_curves.best, round_budgets);
-                    auto next_methods = checked_loop(
-                        objective, next_candidates, round_start,
+                    auto round_loop = checked_loop(
+                        objective, next_candidates, round_start, std::nullopt,
                         best_response(db, objective, next_candidates, round_start,
                                       m_seed + round),
                         std::format("reallocation round {}", round));
+                    auto next_methods = std::move(round_loop.methods);
                     auto next = assemble(next_candidates, next_methods);
-                    const double next_value = objective.total(next);
+                    const double next_value = round_loop.value;
                     std::cout << std::format(
                         "teacher: reallocation round {}, J_T {:.4f} -> {:.4f}\n", round,
                         current_value, next_value);
