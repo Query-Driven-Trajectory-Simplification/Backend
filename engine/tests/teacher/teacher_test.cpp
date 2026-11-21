@@ -859,6 +859,24 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
         }
 }
 
+// With 200 trajectories and k = 3 the kNN watch lists cover a small part of the database, so the
+// tracked J_T can miss a trajectory entering a top k; the exact check must still hold the loops
+TEST_F(TeacherTest, LoopsNeverEndBelowTheirStartOnALargeDatabase) {
+    const auto db = random_db(5, 200, 14);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 13, m_dir);
+    const teacher::Teacher model(db, std::move(workloads),
+                                 {.join_mode = query::JoinMode::HeldOut, .ranking_knn = true}, 13);
+    const std::vector<std::string> arms{"EQUAL_CHOICE_RDP_PARTNERS", "EQUAL_LOOP",
+                                        "BUDGET_CHOICE", "BUDGET_LOOP"};
+    for (const std::size_t extra : {100u, 400u}) {
+        SCOPED_TRACE(extra);
+        const auto result = model.run(2 * db.size() + extra, arms);
+        ASSERT_EQ(result.size(), arms.size());
+        EXPECT_GE(result[1].objective, result[0].objective - 1e-12);
+        EXPECT_GE(result[3].objective, result[2].objective - 1e-12);
+    }
+}
+
 TEST(TradeMatching, SelfSellerRemainsAvailableAfterAnUnprofitableBuyer) {
     // Buyer 0 cannot sell to itself, and seller 2 is too expensive. Buyer 1 can still profitably
     // buy from seller 0; neither skipping seller 0 nor ending the buyer sweep is valid.
