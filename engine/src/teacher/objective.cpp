@@ -946,7 +946,6 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state, std::size_
     m_hits.assign(n, 0);
     m_watchers.resize(n);
     const auto compressed = core::materialize(db, state);
-    const bool continuous = workloads.frechet == query::FrechetVariant::Continuous;
     const PreparedTrajectories prepared(db, state);
     const auto views = prepared.views();
     // Each list with its distances in state; the search already has its own neighbours'
@@ -961,13 +960,9 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state, std::size_
         distance.assign(list.size(), unknown);
         const auto query = db.trajectory(e);
         const std::size_t count = std::min(watch + 1, n);
-        std::vector<std::pair<std::size_t, double>> found;
-        if (continuous)
-            found = query::knn_with_distances(compressed, query, count);
-        else
-            for (const auto j : query::knn(compressed, query, count, workloads.frechet))
-                found.push_back({j, unknown});
-        for (const auto &[j, d] : found) {
+        // Either variant: the search's own distances, as knn_distance gives them
+        for (const auto &[j, d] :
+             query::knn_with_distances(compressed, query, count, workloads.frechet)) {
             if (j == e)
                 continue;
             const auto at = std::ranges::find(list, j);

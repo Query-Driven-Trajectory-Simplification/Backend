@@ -20,7 +20,7 @@ namespace {
 
 // Bump when the layout or workload generation changes. V6 uses fixed-grid continuous kNN.
 constexpr std::uint64_t kMagicV6 = 0x5431'4341'4348'4536ull;
-constexpr std::uint64_t kMagicRanked = 0x5431'5241'4e4b'4431ull;
+constexpr std::uint64_t kMagicRanked = 0x5431'5241'4e4b'4432ull;
 constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
@@ -253,13 +253,11 @@ void add_ranked_neighbours(const core::TrajectoryDb &db, TeacherWorkloads &workl
     ranked.assign(db.size(), {});
     core::parallel_for(db.size(), [&](std::size_t e) {
         const auto query = db.trajectory(e);
-        auto neighbours = query::knn(db, query, want + 1, workloads.frechet);
-        std::erase(neighbours, e);
-        neighbours.resize(std::min(neighbours.size(), want));
-        for (const auto j : neighbours)
-            ranked[e].push_back(
-                {static_cast<std::uint32_t>(j),
-                 query::frechet_distance(query, db.trajectory(j), workloads.frechet)});
+        // The search's own distances, on the ranking's millimetre grid: no Fréchet recomputed
+        for (const auto &[j, distance] :
+             query::knn_with_distances(db, query, want + 1, workloads.frechet))
+            if (j != e && ranked[e].size() < want)
+                ranked[e].push_back({static_cast<std::uint32_t>(j), distance});
     });
     std::cout << std::format("teacher: ranked neighbours {:.1f} s\n", core::seconds_since(start));
     if (file.has_parent_path())

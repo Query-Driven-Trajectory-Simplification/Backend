@@ -58,9 +58,10 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectories,
                              const core::TrajectoryView &query, std::size_t k,
                              FrechetVariant variant = FrechetVariant::Continuous);
-// The same continuous neighbours, each with its knn_distance
+// The same neighbours with the distances the search ranked them by: knn_distance for continuous
+// Fréchet, the exact discrete distance otherwise
 std::vector<std::pair<std::size_t, double>>
 knn_with_distances(const core::TrajectoryDb &trajectories, const core::TrajectoryView &query,
-                   std::size_t k);
+                   std::size_t k, FrechetVariant variant = FrechetVariant::Continuous);
 
 } // namespace query
