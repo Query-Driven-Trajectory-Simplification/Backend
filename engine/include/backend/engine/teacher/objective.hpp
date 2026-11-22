@@ -258,6 +258,8 @@ class RangeState {
         std::vector<char> covered; // in boxes(trajectory) order
     };
     Proposal propose(std::size_t i, const core::TrajectoryView &candidate) const;
+    // Exact range J_T change from replacing i with candidate, without building a Proposal
+    double gain(std::size_t i, const core::TrajectoryView &candidate) const;
     // Which of i's boxes the candidate covers; independent of the state
     std::vector<char> coverage(std::size_t i, const core::TrajectoryView &candidate) const;
     Proposal propose(std::size_t i, std::vector<char> covered) const;
@@ -289,6 +291,8 @@ class JoinState {
 
     // Valid until the next apply()
     Proposal propose(std::size_t i, const core::TrajectoryView &candidate) const;
+    // Exact range J_T change from replacing i with candidate, without building a Proposal
+    double gain(std::size_t i, const core::TrajectoryView &candidate) const;
     // Exact join J_T change from replacing i with candidate, without building a Proposal.
     // own_error < 0: computed on demand and cached in own_error.
     double gain(std::size_t i, const core::TrajectoryView &candidate, double &own_error) const;
@@ -337,9 +341,10 @@ class KnnState {
     double propose(std::size_t i, std::span<const double> distances) const;
     // The same change from i becoming candidate, computing a distance only near a query's k-th
     // place. reach bounds d(i's current version, candidate), e.g. both deviation bounds: then
-    // the stored distance alone often places the candidate
+    // the stored distance alone often places the candidate. Exact above beat, otherwise <= beat
     double propose_bounded(std::size_t i, const core::TrajectoryView &candidate,
-                           double reach = std::numeric_limits<double>::infinity()) const;
+                           double reach = std::numeric_limits<double>::infinity(),
+                           double beat = -std::numeric_limits<double>::infinity()) const;
     // Adds trajectory i to the list of every query that one of versions[i] comes within the query's
     // watch radius of, the distance of its watch-th nearest in state
     void watch(std::span<const std::vector<core::TrajectoryView>> versions,

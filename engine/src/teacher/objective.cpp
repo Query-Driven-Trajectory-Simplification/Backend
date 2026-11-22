@@ -769,6 +769,24 @@ RangeState::Proposal RangeState::propose(std::size_t i,
     return propose(i, coverage(i, candidate));
 }
 
+double RangeState::gain(std::size_t i, const core::TrajectoryView &candidate) const {
+    if (!m_scored)
+        return 0.0;
+    const auto memberships = m_objective.boxes(i);
+    double change = 0.0;
+    for (std::size_t k = 0; k < memberships.size(); ++k) {
+        const auto b = memberships[k].box;
+        const bool now = m_covered[i][k];
+        const bool then =
+            query::intersects(candidate, m_objective.workloads().range.queries[b].box);
+        if (now == then)
+            continue;
+        const auto next = m_found[b] - now + then;
+        change += f1(b, next) - f1(b, m_found[b]);
+    }
+    return m_objective.scale(Objective::Range) * change / static_cast<double>(m_scored);
+}
+
 std::vector<char> RangeState::coverage(std::size_t i, const core::TrajectoryView &candidate) const {
     const auto memberships = m_objective.boxes(i);
     std::vector<char> covered;
@@ -1155,16 +1173,32 @@ void KnnState::watch(std::span<const std::vector<core::TrajectoryView>> versions
         }
 }
 
-double KnnState::propose_bounded(std::size_t i, const core::TrajectoryView &candidate,
-                                 double reach) const {
+double KnnState::propose_bounded(std::size_t i, const core::TrajectoryView &candidate, double reach,
+                                 double beat) const {
+    const auto &watchers = m_watchers[i];
+    if (watchers.empty() || m_valid == 0 || m_objective.scale(Objective::Knn) <= 0.0)
+        return 0.0;
     const std::size_t k = m_objective.workloads().k;
     const bool continuous = m_objective.workloads().frechet == query::FrechetVariant::Continuous;
     // Clear of the k-th place by more than the stored distances' error
     constexpr double margin = 2.5 * kKnnDistanceError;
+    const bool prune = std::isfinite(beat);
+    long optimistic = 0;
+    if (prune) {
+        for (const auto &[e, position] : watchers) {
+            const auto inside = hits(e, position, -1.0);
+            const auto outside = hits(e, position, std::numeric_limits<double>::infinity());
+            optimistic +=
+                static_cast<long>(std::max(inside, outside)) - static_cast<long>(m_hits[e]);
+        }
+        if (value(optimistic) < beat - kBoundSlack)
+            return value(optimistic);
+    }
     long change = 0;
-    for (const auto &[e, position] : m_watchers[i]) {
+    for (const auto &[e, position] : watchers) {
         const auto inside = hits(e, position, -1.0);
         const auto outside = hits(e, position, std::numeric_limits<double>::infinity());
+        const long cur = static_cast<long>(m_hits[e]);
         std::size_t now = inside;
         if (inside != outside) {
             // The k-th distance among the others, from the ranking (it has k + 1 entries here):
@@ -1194,7 +1228,13 @@ double KnnState::propose_bounded(std::size_t i, const core::TrajectoryView &cand
                            query::knn_distance(m_objective.db().trajectory(e), candidate,
                                                m_objective.workloads().frechet));
         }
-        change += static_cast<long>(now) - static_cast<long>(m_hits[e]);
+        const long actual = static_cast<long>(now) - cur;
+        change += actual;
+        if (prune) {
+            optimistic += actual - (static_cast<long>(std::max(inside, outside)) - cur);
+            if (value(optimistic) < beat - kBoundSlack)
+                return value(optimistic);
+        }
     }
     return value(change);
 }

@@ -329,7 +329,9 @@ TEST_F(TeacherTest, RangeStateAndIndependentMarginalsMatchTheEvaluator) {
         const auto before =
             evaluator::evaluate_range(core::materialize(db, state), workloads.range.queries).f1;
         const auto proposal = range.propose(i, candidate);
+        EXPECT_NEAR(range.gain(i, candidate), proposal.gain, 1e-12);
         EXPECT_DOUBLE_EQ(range.propose(i, views[i]).gain, 0.0);
+        EXPECT_DOUBLE_EQ(range.gain(i, views[i]), 0.0);
         EXPECT_NEAR(range.metric(), before, 1e-12); // propose does not mutate
 
         // Independent range scores are the gain over i missing every box, with partners fixed.
@@ -991,11 +993,15 @@ TEST_F(TeacherTest, BoundedKnnProposalsMatchFullDistances) {
                     EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view()), full) << i;
                     // With the deviation bounds of the current version and the candidate as reach
                     const teacher::PreparedTrajectory current(db.trajectory(i), state[i]);
-                    EXPECT_DOUBLE_EQ(
-                        knn.propose_bounded(i, candidate.view(),
-                                            objective.deviation(i, current.view()) +
-                                                objective.deviation(i, candidate.view())),
-                        full)
+                    const double reach = objective.deviation(i, current.view()) +
+                                         objective.deviation(i, candidate.view());
+                    EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view(), reach), full) << i;
+                    // With beat pruning: exact at or below full, strictly below beat when full <
+                    // beat
+                    EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view(), reach, full), full)
+                        << i;
+                    EXPECT_LT(knn.propose_bounded(i, candidate.view(), reach, full + 1e-6),
+                              full + 1e-6)
                         << i;
                     changed += full != 0.0;
                 }

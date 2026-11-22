@@ -332,10 +332,11 @@ class Search {
         std::cout << std::format("teacher:   loop setup: prepare {:.1f} s\n", prepare_s);
         m_join.emplace(objective, m_state);
         m_range.emplace(objective, m_state);
-        // Every candidate's separable value, kNN distances, box coverage and join outcomes; none
-        // depend on the others
+        // Every candidate's deviation, separable value, box coverage and join outcomes; none
+        // depend on the others. kNN is scored on the fly with propose_bounded and distances are
+        // computed only for trajectories that switch
+        m_deviation.resize(db.size());
         m_separable.resize(db.size());
-        m_knn_distances.resize(db.size());
         m_coverage.resize(db.size());
         m_outcomes.resize(db.size());
         core::parallel_for(db.size(), [&](std::size_t i) {
@@ -343,14 +344,14 @@ class Search {
                 return;
             for (std::size_t c = 0; c < kCandidates.size(); ++c) {
                 const auto first = m_representative[i][c];
-                m_separable[i][c] =
-                    first == c ? objective.separable(i, m_views[c][i]) : m_separable[i][first];
-                if (first != c)
+                if (first != c) {
+                    m_deviation[i][c] = m_deviation[i][first];
+                    m_separable[i][c] = m_separable[i][first];
                     continue;
-                // The start's distances are already in the tracker
-                m_knn_distances[i][c] = c == m_representative[i][method[i]]
-                                            ? m_knn->stored(i)
-                                            : m_knn->distances(i, m_views[c][i]);
+                }
+                const double dev = objective.deviation(i, m_views[c][i]);
+                m_deviation[i][c] = dev;
+                m_separable[i][c] = objective.separable(i, m_views[c][i], dev);
                 m_coverage[i][c] = m_range->coverage(i, m_views[c][i]);
                 m_outcomes[i][c] = m_join->outcomes(i, m_views[c][i]);
             }
@@ -360,6 +361,13 @@ class Search {
     }
     Search(const Search &) = delete;
     Search &operator=(const Search &) = delete;
+
+    struct Trackers {
+        KnnState &knn;
+        JoinState &join;
+        RangeState &range;
+    };
+    Trackers trackers() { return {*m_knn, *m_join, *m_range}; }
 
     // Once: the trackers are updated in place
     Methods run(std::uint64_t seed) {
@@ -375,6 +383,7 @@ class Search {
             std::size_t switches = 0;
             for (const auto i : m_order) {
                 const double here = m_separable[i][method[i]];
+                const double cur_dev = m_deviation[i][method[i]];
                 std::size_t best = method[i];
                 JoinState::Proposal best_proposal;
                 RangeState::Proposal best_range;
@@ -387,8 +396,11 @@ class Search {
                         continue;
                     auto proposal = join.propose(i, m_outcomes[i][c]);
                     auto range_proposal = range.propose(i, m_coverage[i][c]);
-                    const double gain = m_separable[i][c] - here + proposal.gain +
-                                        range_proposal.gain + knn.propose(i, m_knn_distances[i][c]);
+                    const double base =
+                        m_separable[i][c] - here + proposal.gain + range_proposal.gain;
+                    const double gain =
+                        base + knn.propose_bounded(i, m_views[c][i], cur_dev + m_deviation[i][c],
+                                                   best_gain - base);
                     if (gain > best_gain) {
                         best = c;
                         best_gain = gain;
@@ -403,7 +415,7 @@ class Search {
                 m_state[i] = m_views[best][i];
                 join.apply(best_proposal);
                 range.apply(best_range);
-                knn.apply(i, m_knn_distances[i][best]);
+                knn.apply(i, knn.distances(i, m_views[best][i], true));
             }
             std::cout << std::format("teacher:   pass {}: {} switches, join F1 {:.4f}, knn {:.4f}, "
                                      "{:.1f} s\n",
@@ -420,9 +432,8 @@ class Search {
     std::vector<std::size_t> m_order;
     std::vector<std::vector<PreparedTrajectory>> m_prepared;
     std::array<std::vector<core::TrajectoryView>, kCandidates.size()> m_views;
-    std::vector<std::array<double, kCandidates.size()>> m_separable;
+    std::vector<std::array<double, kCandidates.size()>> m_deviation, m_separable;
     std::vector<std::array<std::size_t, kCandidates.size()>> m_representative;
-    std::vector<std::array<std::vector<double>, kCandidates.size()>> m_knn_distances;
     std::vector<std::array<std::vector<char>, kCandidates.size()>> m_coverage, m_outcomes;
     std::optional<KnnState> m_knn;
     std::vector<core::TrajectoryView> m_state;
@@ -438,6 +449,7 @@ struct Checked {
     Methods methods;
     double value; // exact J_T of methods
     Objective::Terms metrics;
+    bool reverted = false;
 };
 Checked checked_loop(const Objective &objective, const Candidates &candidates, const Methods &start,
                      std::optional<Objective::Terms> before_metrics, Methods looped,
@@ -451,8 +463,8 @@ Checked checked_loop(const Objective &objective, const Candidates &candidates, c
     std::cout << std::format("teacher: {} exact check, J_T {:.6f} -> {:.6f}{}\n", name, before,
                              after, lost ? ", lost: keeping the start" : "");
     if (lost)
-        return {start, before, *before_metrics};
-    return {std::move(looped), after, after_metrics};
+        return {start, before, *before_metrics, true};
+    return {std::move(looped), after, after_metrics, false};
 }
 
 struct Traded {
@@ -467,7 +479,7 @@ struct Traded {
 // is positive. Each round the kNN lists are extended to watch the offered versions
 Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
                      const std::vector<std::size_t> &caps, Makers &makers, KeptSets kept,
-                     double start_value) {
+                     double start_value, Search::Trackers *reused = nullptr) {
     const std::size_t n = db.size();
     std::vector<PreparedTrajectory> owned;
     owned.reserve(n);
@@ -476,15 +488,23 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
     std::vector<core::TrajectoryView> state(n);
     for (std::size_t i = 0; i < n; ++i)
         state[i] = owned[i].view();
-    JoinState join(objective, state);
-    RangeState range(objective, state);
+    std::optional<JoinState> owned_join;
+    std::optional<RangeState> owned_range;
+    std::optional<KnnState> owned_knn;
+    if (!reused) {
+        owned_join.emplace(objective, state);
+        owned_range.emplace(objective, state);
+        owned_knn.emplace(objective, kept, kKnnWatchFactor * objective.workloads().k);
+    }
+    JoinState &join = reused ? reused->join : *owned_join;
+    RangeState &range = reused ? reused->range : *owned_range;
+    KnnState &knn = reused ? reused->knn : *owned_knn;
     std::vector<double> separable(n), state_error(n);
     core::parallel_for(n, [&](std::size_t i) {
-        separable[i] = objective.separable(i, state[i]);
-        state_error[i] = objective.deviation(i, state[i]);
+        const double dev = objective.deviation(i, state[i]);
+        state_error[i] = dev;
+        separable[i] = objective.separable(i, state[i], dev);
     });
-    // Built once: the trades keep it current
-    KnnState knn(objective, kept, kKnnWatchFactor * objective.workloads().k);
 
     struct Pending {
         std::size_t i;
@@ -551,9 +571,13 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
                     const PreparedTrajectory prepared(db.trajectory(i), candidate);
                     const auto view = prepared.view();
                     double dev = objective.deviation(i, view);
-                    double gain = objective.separable(i, view, dev) - separable[i] +
-                                  join.gain(i, view, dev) + range.propose(i, view).gain;
-                    gain += knn.propose_bounded(i, view, state_error[i] + dev);
+                    const double base = objective.separable(i, view, dev) - separable[i] +
+                                        join.gain(i, view, dev) + range.gain(i, view);
+                    const double need = std::isfinite(best.gain)
+                                            ? best.gain - base
+                                            : -std::numeric_limits<double>::infinity();
+                    const double gain =
+                        base + knn.propose_bounded(i, view, state_error[i] + dev, need);
                     if (gain > best.gain)
                         best = {gain, std::move(candidate)};
                 }
@@ -782,15 +806,17 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     if (!needs_loop)
         return collect(outputs, arms);
 
-    const auto checked =
-        checked_loop(objective, candidates, choice, choice_metrics,
-                     Search(db, objective, candidates, choice).run(m_seed), "BUDGET_LOOP");
+    Search search(db, objective, candidates, choice);
+    const auto checked = checked_loop(objective, candidates, choice, choice_metrics,
+                                      search.run(m_seed), "BUDGET_LOOP");
     timed("BUDGET_LOOP");
     if (want_loop)
         keep("BUDGET_LOOP", candidates, checked.methods, checked.metrics);
     if (want_trade) {
-        auto traded = trade_budgets(db, objective, caps, makers,
-                                    assemble(candidates, checked.methods), checked.value);
+        auto trackers = search.trackers();
+        auto traded =
+            trade_budgets(db, objective, caps, makers, assemble(candidates, checked.methods),
+                          checked.value, checked.reverted ? nullptr : &trackers);
         outputs["BUDGET_LOOP_TRADE"] = {"BUDGET_LOOP_TRADE", core::to_simplification(traded.kept),
                                         traded.value, traded.metrics};
         timed("BUDGET_LOOP_TRADE");
