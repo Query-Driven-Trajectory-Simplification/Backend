@@ -268,8 +268,9 @@ struct RankedNeighbor {
     }
 };
 
-std::vector<std::size_t> continuous_knn(const core::TrajectoryDb &trajectory_db,
-                                        const core::TrajectoryView &query, std::size_t k) {
+std::vector<std::pair<std::size_t, double>> continuous_knn(const core::TrajectoryDb &trajectory_db,
+                                                           const core::TrajectoryView &query,
+                                                           std::size_t k) {
     CandidateQueue queue(trajectory_db, query, k);
     std::priority_queue<RankedNeighbor> nearest;
     std::vector<double> prev, curr;
@@ -313,15 +314,23 @@ std::vector<std::size_t> continuous_knn(const core::TrajectoryDb &trajectory_db,
             nearest.push(next);
         }
     }
-    std::vector<std::size_t> result(nearest.size());
+    std::vector<std::pair<std::size_t, double>> result(nearest.size());
     for (std::size_t i = result.size(); i > 0; --i) {
-        result[i - 1] = nearest.top().idx;
+        result[i - 1] = {nearest.top().idx, nearest.top().distance};
         nearest.pop();
     }
     return result;
 }
 
 } // namespace
+
+std::vector<std::pair<std::size_t, double>>
+knn_with_distances(const core::TrajectoryDb &trajectories, const core::TrajectoryView &query,
+                   std::size_t k) {
+    if (k == 0)
+        throw std::invalid_argument("knn: k = 0, no neighbors");
+    return continuous_knn(trajectories, query, k);
+}
 
 double knn_distance(const core::TrajectoryView &a, const core::TrajectoryView &b,
                     FrechetVariant variant) {
@@ -342,8 +351,13 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
     if (k == 0) {
         throw std::invalid_argument("knn: k = 0, no neighbors");
     }
-    return variant == FrechetVariant::Discrete ? discrete_knn(trajectory_db, query_trajectory, k)
-                                               : continuous_knn(trajectory_db, query_trajectory, k);
+    if (variant == FrechetVariant::Discrete)
+        return discrete_knn(trajectory_db, query_trajectory, k);
+    const auto ranked = continuous_knn(trajectory_db, query_trajectory, k);
+    std::vector<std::size_t> result(ranked.size());
+    for (std::size_t i = 0; i < ranked.size(); ++i)
+        result[i] = ranked[i].first;
+    return result;
 }
 
 KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,

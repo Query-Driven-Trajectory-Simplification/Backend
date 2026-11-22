@@ -41,7 +41,8 @@ struct TeacherConfig {
 struct Arm {
     std::string name;
     core::Simplification simplification;
-    double objective = 0.0; // J_T
+    double objective = 0.0;                  // J_T
+    std::optional<Objective::Terms> metrics; // the raw J_T metrics, when computed on the way
 };
 
 // Sees only the database it is given and workloads built from it. Trained for held-out queries

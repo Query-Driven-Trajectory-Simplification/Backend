@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -44,8 +45,10 @@ class PreparedTrajectories {
 };
 
 // Upper bound on the continuous Fréchet distance between a trajectory and a simplification
-// keeping a subsequence of its points. Infinity if kept is not such a subsequence
-double simplification_bound(const core::TrajectoryView &original, const core::TrajectoryView &kept);
+// keeping a subsequence of its points. Infinity if kept is not such a subsequence. segments:
+// the original's edge lengths, if already known
+double simplification_bound(const core::TrajectoryView &original, const core::TrajectoryView &kept,
+                            std::span<const double> segments = {});
 
 inline constexpr std::size_t kTermCount = 6; // kNN, range, where-at, join, shape, margin
 using TermWeights = std::array<double, kTermCount>;
@@ -120,9 +123,9 @@ class Objective {
         friend class Objective;
         std::size_t trajectory = 0;
         core::TrajectoryView candidate{};
-        std::span<const core::TrajectoryView> partners{};
         Terms terms{};
         double join = 0.0;
+        double deviation = 0.0; // simplification_bound of the candidate
     };
     IndependentScore prepare_independent(std::size_t i, const core::TrajectoryView &candidate,
                                          std::span<const core::TrajectoryView> partners,
@@ -130,8 +133,11 @@ class Objective {
     double independent_value(const IndependentScore &score,
                              double beat = -std::numeric_limits<double>::infinity()) const;
 
-    // Exact J_T
+    // Exact J_T, from the kept sets or from their metrics
     double total(const KeptSets &kept) const;
+    double total(const Terms &metrics) const;
+    // simplification_bound of candidate against original i, with i's edge lengths cached
+    double deviation(std::size_t i, const core::TrajectoryView &candidate) const;
 
     // Unscaled metrics
     Terms metrics(const KeptSets &kept) const;
@@ -168,8 +174,11 @@ class Objective {
 
     bool match(const core::TrajectoryView &a, const core::TrajectoryView &b,
                std::size_t term = 0) const;
+    // frechet_within(original j, candidate, radius), first on a coarse copy of j whose deviation
+    // bound decides most tests
+    bool original_within(std::size_t j, const core::TrajectoryView &candidate, double radius) const;
     // match(original of link.other, candidate), skipping the test when the originals' distance
-    // plus the candidate's own error already proves it. own_error < 0: not yet computed
+    // bracket and the candidate's own error already decide it. own_error < 0: not yet computed
     bool held_out_match(std::size_t i, const JoinLink &link, const core::TrajectoryView &candidate,
                         double &own_error) const;
 
@@ -177,10 +186,18 @@ class Objective {
     struct KnnMembership {
         std::uint32_t query;
         double cutoff;
+        // Bracket on the continuous distance from the query to original i; 0, infinity if unknown
+        double lower = 0.0, upper = std::numeric_limits<double>::infinity();
     };
+    // Whether the triangle bound alone decides d(query, candidate) <= cutoff, given a bracket on
+    // d(query, original) and deviation bounding d(original, candidate); nullopt if it does not
+    std::optional<bool> certify(double lower, double upper, double deviation, double cutoff) const;
+    // m_pair_lower and m_pair_upper, once per pair across terms
+    void bracket_pairs();
 
-    // Knn slot left 0
-    Terms raw_separable(std::size_t i, const core::TrajectoryView &candidate) const;
+    // Knn slot left 0. deviation < 0: computed here if needed
+    Terms raw_separable(std::size_t i, const core::TrajectoryView &candidate,
+                        double deviation = -1.0) const;
     double independent_sum(const IndependentScore &score, double knn) const;
     double join_metric(std::span<const core::TrajectoryView> state) const;
     std::vector<double> join_f1s(std::span<const core::TrajectoryView> state) const;
@@ -201,14 +218,22 @@ class Objective {
 
     std::vector<std::uint32_t> m_pair_i, m_pair_j; // pairs used, positives first
     std::vector<std::uint8_t> m_pair_term;
-    std::vector<double> m_pair_upper; // held-out positives: bound on the originals' distance
-    std::vector<double> m_eps;        // threshold of each join term
+    // Per pair, a bracket on the originals' continuous distance; 0, infinity if unknown
+    std::vector<double> m_pair_lower, m_pair_upper;
+    std::vector<double> m_eps; // threshold of each join term
     std::size_t m_positive_count = 0;
     std::vector<std::vector<JoinLink>> m_links; // per trajectory
     std::vector<std::size_t> m_truth;           // positives per slot
     std::vector<std::size_t> m_with_truth;      // per join term, slots with any positive
     std::vector<double> m_join_floor;           // per join term, macro F1 with endpoints only
     std::vector<double> m_join_weight;          // per join term, 1 / (terms * (1 - floor))
+
+    // Continuous Fréchet only: brackets and deviation bounds decide tests, coarse copies screen
+    // the rest
+    bool m_certify = false;
+    std::vector<PreparedTrajectory> m_coarse;    // per trajectory, RDP to about kCoarseM
+    std::vector<double> m_coarse_error;          // its simplification_bound; < 0: not used
+    std::vector<std::vector<double>> m_segments; // per trajectory, its edge lengths
 
     Terms m_floor{};
     Terms m_scale{};                          // weight / (weight sum * (1 - floor))
@@ -296,11 +321,15 @@ class KnnState {
     // From every query watching i, in the order propose and apply expect
     std::vector<double> distances(std::size_t i, const core::TrajectoryView &candidate,
                                   bool parallel = false) const;
+    // i's current distances, as distances() gives them for i's current version
+    std::vector<double> stored(std::size_t i) const;
     // Change in J_T
     double propose(std::size_t i, std::span<const double> distances) const;
     // The same change from i becoming candidate, computing a distance only near a query's k-th
-    // place
-    double propose_bounded(std::size_t i, const core::TrajectoryView &candidate) const;
+    // place. reach bounds d(i's current version, candidate), e.g. both deviation bounds: then
+    // the stored distance alone often places the candidate
+    double propose_bounded(std::size_t i, const core::TrajectoryView &candidate,
+                           double reach = std::numeric_limits<double>::infinity()) const;
     // Adds trajectory i to the list of every query that one of versions[i] comes within the query's
     // watch radius of, the distance of its watch-th nearest in state
     void watch(std::span<const std::vector<core::TrajectoryView>> versions,

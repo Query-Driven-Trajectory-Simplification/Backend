@@ -6,12 +6,14 @@
 #include "backend/engine/query/frechet_helper.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/range_query.hpp"
+#include "backend/engine/selection/rdp.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -74,14 +76,77 @@ double range_marginal(std::size_t others, std::size_t expected, std::size_t scor
 constexpr std::size_t kMaxJoinTerms = 8;
 // Relative margin for certificates, far above the decision predicate's 1e-12 rounding slack
 constexpr double kCertificateMargin = 1e-9;
+// Deviation of the coarse copies that pre-screen tests against originals
+constexpr double kCoarseM = 5.0;
+
+// Largest distance from a vertex of a to the polyline b, squared: a lower bound on the continuous
+// Fréchet distance. Each vertex searches outward from the previous vertex's nearest segment and
+// stops once one is no farther than the running maximum
+double squared_directed_hausdorff(const core::TrajectoryView &a, const core::TrajectoryView &b) {
+    const auto segment = [&](std::size_t i, std::size_t j) {
+        const double ax = b.x[j], ay = b.y[j], dx = b.x[j + 1] - ax, dy = b.y[j + 1] - ay;
+        const double px = a.x[i] - ax, py = a.y[i] - ay;
+        const double length = dx * dx + dy * dy;
+        const double along = px * dx + py * dy;
+        if (length == 0.0 || along <= 0.0)
+            return px * px + py * py;
+        if (along >= length) {
+            const double ex = a.x[i] - b.x[j + 1], ey = a.y[i] - b.y[j + 1];
+            return ex * ex + ey * ey;
+        }
+        const double cross = px * dy - py * dx;
+        return cross * cross / length;
+    };
+    if (a.size() == 0 || b.size() == 0)
+        return std::numeric_limits<double>::infinity();
+    double bound = 0.0;
+    if (b.size() == 1) {
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            const double dx = a.x[i] - b.x[0], dy = a.y[i] - b.y[0];
+            bound = std::max(bound, dx * dx + dy * dy);
+        }
+        return bound;
+    }
+    const std::size_t segments = b.size() - 1;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        double nearest = segment(i, start);
+        std::size_t best = start;
+        for (std::size_t step = 1; nearest > bound && (step <= start || start + step < segments);
+             ++step) {
+            if (step <= start) {
+                const double d = segment(i, start - step);
+                if (d < nearest) {
+                    nearest = d;
+                    best = start - step;
+                }
+            }
+            if (start + step < segments) {
+                const double d = segment(i, start + step);
+                if (d < nearest) {
+                    nearest = d;
+                    best = start + step;
+                }
+            }
+        }
+        bound = std::max(bound, nearest);
+        start = best;
+    }
+    return bound;
+}
 
 } // namespace
 
 // Upper bound on the continuous Fréchet distance between original and a simplification keeping
 // a subsequence of its points: each kept segment walks its original stretch at the same share
 // of arc length. Along each original edge the gap is convex, so its maximum is at a vertex
-double simplification_bound(const core::TrajectoryView &original,
-                            const core::TrajectoryView &kept) {
+double simplification_bound(const core::TrajectoryView &original, const core::TrajectoryView &kept,
+                            std::span<const double> segments) {
+    const auto edge = [&](std::size_t j) {
+        return segments.empty() ? std::hypot(original.x[j + 1] - original.x[j],
+                                             original.y[j + 1] - original.y[j])
+                                : segments[j];
+    };
     const std::size_t n = original.size();
     if (kept.size() < 2 || n < 2)
         return std::numeric_limits<double>::infinity();
@@ -100,13 +165,11 @@ double simplification_bound(const core::TrajectoryView &original,
             return std::numeric_limits<double>::infinity();
         double length = 0.0;
         for (std::size_t j = at; j < end; ++j)
-            length +=
-                std::hypot(original.x[j + 1] - original.x[j], original.y[j + 1] - original.y[j]);
+            length += edge(j);
         double walked = 0.0;
         for (std::size_t j = at; j <= end; ++j) {
             if (j > at)
-                walked += std::hypot(original.x[j] - original.x[j - 1],
-                                     original.y[j] - original.y[j - 1]);
+                walked += edge(j - 1);
             const double u = length > 0 ? walked / length : 0.0;
             const double x = kept.x[k] + u * (kept.x[k + 1] - kept.x[k]);
             const double y = kept.y[k] + u * (kept.y[k + 1] - kept.y[k]);
@@ -121,6 +184,41 @@ namespace {
 
 // Cached kNN distances are upper bounds on a fixed millimetre grid.
 constexpr double kKnnDistanceError = query::kKnnResolutionM;
+// query::frechet_distance bisects the continuous distance to 1 mm from above; twice that brackets
+// the ranked neighbours' distances from below
+constexpr double kRankedDistanceError = 2e-3;
+
+// The shortest RDP prefix of original within max_error, if it at least halves the points
+std::optional<std::vector<std::size_t>> coarse_copy(const core::TrajectoryView &original,
+                                                    double max_error) {
+    if (original.size() < 8)
+        return std::nullopt;
+    const auto order = selection::rdp::sequence(original, original.size());
+    auto prefix = [&](std::size_t b) {
+        std::vector<std::size_t> kept(order.begin(),
+                                      order.begin() + static_cast<std::ptrdiff_t>(b));
+        std::ranges::sort(kept);
+        return kept;
+    };
+    auto within = [&](std::size_t b) {
+        return simplification_bound(original, PreparedTrajectory(original, prefix(b)).view()) <=
+               max_error;
+    };
+    // Doubling, then bisection between the last miss and the first hit
+    const std::size_t most = original.size() / 2;
+    std::size_t lo = 2, hi = 2;
+    while (!within(hi)) {
+        if (hi == most)
+            return std::nullopt;
+        lo = hi;
+        hi = std::min(most, 2 * hi);
+    }
+    while (lo + 1 < hi) {
+        const auto mid = (lo + hi) / 2;
+        (within(mid) ? hi : lo) = mid;
+    }
+    return prefix(hi);
+}
 
 double f1_of(std::size_t hits, std::size_t found, std::size_t expected) {
     return 2.0 * static_cast<double>(hits) / static_cast<double>(found + expected);
@@ -175,6 +273,16 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     }
     m_knn_weight =
         valid ? 1.0 / (static_cast<double>(workloads.k) * static_cast<double>(valid)) : 0.0;
+    // A bracket on each membership's distance, from the ranked neighbours
+    if (workloads.ranked.size() == n)
+        for (std::size_t i = 0; i < n; ++i)
+            for (auto &membership : m_knn[i])
+                for (const auto &neighbour : workloads.ranked[membership.query])
+                    if (neighbour.index == i) {
+                        membership.upper = neighbour.distance;
+                        membership.lower = std::max(0.0, neighbour.distance - kRankedDistanceError);
+                        break;
+                    }
     m_margins.resize(n);
     const std::size_t k = workloads.k;
     if (config.term_weights[Margin] > 0) {
@@ -256,19 +364,31 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     for (std::size_t t = 0; t < m_truth.size(); ++t)
         m_with_truth[t / n] += m_truth[t] > 0;
 
-    // Positives: the originals' discrete Fréchet distance bounds the continuous one
-    m_pair_upper.assign(m_pair_i.size(), std::numeric_limits<double>::infinity());
-    core::parallel_for(m_positive_count, [&](std::size_t p) {
-        const auto k = m_pair_term[p];
-        if (m_workloads.frechet != query::FrechetVariant::Continuous)
-            return;
-        std::vector<double> prev, curr;
-        const double cutoff = m_eps[k] * m_eps[k];
-        const double squared = query::get_squared_frechet_distance(
-            db.trajectory(m_pair_i[p]), db.trajectory(m_pair_j[p]), cutoff, prev, curr);
-        if (squared < cutoff)
-            m_pair_upper[p] = std::sqrt(squared);
+    m_segments.resize(n);
+    core::parallel_for(n, [&](std::size_t i) {
+        const auto t = db.trajectory(i);
+        auto &edges = m_segments[i];
+        edges.resize(t.size() > 0 ? t.size() - 1 : 0);
+        for (std::size_t j = 0; j < edges.size(); ++j)
+            edges[j] = std::hypot(t.x[j + 1] - t.x[j], t.y[j + 1] - t.y[j]);
     });
+
+    // Coarse copies, to pre-screen tests against originals
+    m_coarse.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        m_coarse.emplace_back(db.trajectory(i), std::vector<std::size_t>{});
+    m_coarse_error.assign(n, -1.0);
+    if (m_workloads.frechet == query::FrechetVariant::Continuous)
+        core::parallel_for(n, [&](std::size_t i) {
+            const auto original = db.trajectory(i);
+            if (const auto kept = coarse_copy(original, kCoarseM)) {
+                m_coarse[i].assign(original, *kept);
+                m_coarse_error[i] = simplification_bound(original, m_coarse[i].view());
+            }
+        });
+
+    m_certify = m_workloads.frechet == query::FrechetVariant::Continuous;
+    bracket_pairs();
 
     // Floors: endpoints only, partners included, like the J4 floor. Each join term has its own,
     // so the join metric is 0 there. Terms without true pairs are left out, as J4 skips NaNs
@@ -299,16 +419,80 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     });
 }
 
+void Objective::bracket_pairs() {
+    // Each pair's originals, once per pair across terms: the discrete distance bounds the
+    // continuous one from above (exact below the largest threshold), Hausdorff from below
+    m_pair_lower.assign(m_pair_i.size(), 0.0);
+    m_pair_upper.assign(m_pair_i.size(), std::numeric_limits<double>::infinity());
+    if (!m_certify)
+        return;
+    std::vector<std::uint32_t> order(m_pair_i.size());
+    std::iota(order.begin(), order.end(), 0u);
+    std::ranges::sort(order, [&](std::uint32_t a, std::uint32_t b) {
+        return std::pair{m_pair_i[a], m_pair_j[a]} < std::pair{m_pair_i[b], m_pair_j[b]};
+    });
+    std::vector<std::size_t> starts;
+    for (std::size_t r = 0; r < order.size(); ++r)
+        if (r == 0 || m_pair_i[order[r]] != m_pair_i[order[r - 1]] ||
+            m_pair_j[order[r]] != m_pair_j[order[r - 1]])
+            starts.push_back(r);
+    const double largest = *std::ranges::max_element(m_eps);
+    const double cutoff = largest * largest;
+    core::parallel_for(starts.size(), [&](std::size_t s) {
+        const auto first = order[starts[s]];
+        const auto a = m_db.trajectory(m_pair_i[first]), b = m_db.trajectory(m_pair_j[first]);
+        std::vector<double> prev, curr;
+        const double squared = query::get_squared_frechet_distance(a, b, cutoff, prev, curr);
+        const double upper =
+            squared < cutoff ? std::sqrt(squared) : std::numeric_limits<double>::infinity();
+        const double lower = std::sqrt(std::max(
+            {query::squared_endpoint_lower_bound(a, b), query::squared_box_extent_lower_bound(a, b),
+             squared_directed_hausdorff(a, b), squared_directed_hausdorff(b, a)}));
+        const std::size_t end = s + 1 < starts.size() ? starts[s + 1] : order.size();
+        for (std::size_t r = starts[s]; r < end; ++r) {
+            m_pair_lower[order[r]] = lower;
+            m_pair_upper[order[r]] = upper;
+        }
+    });
+}
+
+std::optional<bool> Objective::certify(double lower, double upper, double deviation,
+                                       double cutoff) const {
+    // |d(query, candidate) - d(query, original)| <= d(original, candidate) <= deviation
+    if (upper + deviation <= cutoff * (1.0 - kCertificateMargin))
+        return true;
+    if (lower - deviation > cutoff * (1.0 + kCertificateMargin))
+        return false;
+    return std::nullopt;
+}
+
 bool Objective::held_out_match(std::size_t i, const JoinLink &link,
                                const core::TrajectoryView &candidate, double &own_error) const {
-    // d(original partner, candidate) <= d(originals) + d(original i, candidate)
-    if (std::isfinite(m_pair_upper[link.pair])) {
+    if (m_certify) {
         if (own_error < 0)
-            own_error = simplification_bound(m_db.trajectory(i), candidate);
-        if (m_pair_upper[link.pair] + own_error <= m_eps[link.term] * (1.0 - kCertificateMargin))
-            return true;
+            own_error = deviation(i, candidate);
+        if (const auto known = certify(m_pair_lower[link.pair], m_pair_upper[link.pair], own_error,
+                                       m_eps[link.term]))
+            return *known;
     }
-    return match(m_db.trajectory(link.other), candidate, link.term);
+    return original_within(link.other, candidate, m_eps[link.term]);
+}
+
+bool Objective::original_within(std::size_t j, const core::TrajectoryView &candidate,
+                                double radius) const {
+    if (m_coarse_error[j] >= 0) {
+        // d(original, coarse) <= error, so the coarse copy decides outside a band of 2 error
+        const auto coarse = m_coarse[j].view();
+        const double error = m_coarse_error[j];
+        if (radius - error > 0 &&
+            query::continuous_frechet_within(coarse, candidate,
+                                             (radius - error) * (1.0 - kCertificateMargin)))
+            return true;
+        if (!query::continuous_frechet_within(coarse, candidate,
+                                              (radius + error) * (1.0 + kCertificateMargin)))
+            return false;
+    }
+    return query::frechet_within(m_db.trajectory(j), candidate, radius, m_workloads.frechet);
 }
 
 bool Objective::match(const core::TrajectoryView &a, const core::TrajectoryView &b,
@@ -316,8 +500,8 @@ bool Objective::match(const core::TrajectoryView &a, const core::TrajectoryView 
     return query::frechet_within(a, b, m_eps[term], m_workloads.frechet);
 }
 
-Objective::Terms Objective::raw_separable(std::size_t i,
-                                          const core::TrajectoryView &candidate) const {
+Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryView &candidate,
+                                          double deviation) const {
     Terms terms{};
     if (!m_probes[i].empty()) {
         double sum = 0;
@@ -333,7 +517,8 @@ Objective::Terms Objective::raw_separable(std::size_t i,
     const bool shape = m_config.term_weights[Shape] > 0;
     const bool margin = m_config.term_weights[Margin] > 0 && !m_margins[i].empty();
     if (shape || margin) {
-        const double deviation = simplification_bound(m_db.trajectory(i), candidate);
+        if (deviation < 0)
+            deviation = this->deviation(i, candidate);
         if (shape)
             terms[Shape] =
                 m_shape_weight * ramp(deviation, m_config.min_shape_m, m_config.max_shape_m);
@@ -386,8 +571,8 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
     IndependentScore score;
     score.trajectory = i;
     score.candidate = candidate;
-    score.partners = partners;
-    score.terms = raw_separable(i, candidate);
+    score.deviation = deviation(i, candidate);
+    score.terms = raw_separable(i, candidate, score.deviation);
     const auto owned_weights =
         range_weights.empty() ? this->range_weights(i, partners) : std::vector<double>{};
     if (range_weights.empty())
@@ -398,7 +583,7 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
         if (query::intersects(candidate, m_workloads.range.queries[m_range[i][k].box].box))
             score.terms[Range] += range_weights[k];
     std::array<std::size_t, kMaxJoinTerms> hits{}, found{};
-    double own_error = -1.0;
+    double own_error = score.deviation;
     for (const auto &link : m_links[i]) {
         // The partner is the original query and i the database side
         const bool matched = held_out_match(i, link, candidate, own_error);
@@ -434,8 +619,9 @@ double Objective::independent_value(const IndependentScore &score, double beat) 
         if (value() + per_hit * static_cast<double>(left) < beat - kBoundSlack)
             break;
         --left;
-        if (query::frechet_within(m_db.trajectory(m.query), score.candidate, m.cutoff,
-                                  m_workloads.frechet))
+        const auto known =
+            m_certify ? certify(m.lower, m.upper, score.deviation, m.cutoff) : std::nullopt;
+        if (known ? *known : original_within(m.query, score.candidate, m.cutoff))
             knn += m_knn_weight;
     }
     return value();
@@ -521,8 +707,13 @@ double Objective::knn_recall(const core::TrajectoryDb &compressed) const {
     return m_knn_weight * static_cast<double>(std::accumulate(hits.begin(), hits.end(), 0ul));
 }
 
-double Objective::total(const KeptSets &kept) const {
-    const auto values = metrics(kept);
+double Objective::deviation(std::size_t i, const core::TrajectoryView &candidate) const {
+    return simplification_bound(m_db.trajectory(i), candidate, m_segments[i]);
+}
+
+double Objective::total(const KeptSets &kept) const { return total(metrics(kept)); }
+
+double Objective::total(const Terms &values) const {
     double sum = 0;
     for (std::size_t k = 0; k < TermCount; ++k)
         sum += m_scale[k] * (values[k] - m_floor[k]);
@@ -755,31 +946,48 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state, std::size_
     m_hits.assign(n, 0);
     m_watchers.resize(n);
     const auto compressed = core::materialize(db, state);
+    const bool continuous = workloads.frechet == query::FrechetVariant::Continuous;
+    const PreparedTrajectories prepared(db, state);
+    const auto views = prepared.views();
+    // Each list with its distances in state; the search already has its own neighbours'
     core::parallel_for(n, [&](std::size_t e) {
         const auto &entry = workloads.knn[e];
         if (!entry.valid)
             return;
         auto &list = m_list[e];
         list.assign(entry.top.begin(), entry.top.end());
-        for (const auto j :
-             query::knn(compressed, db.trajectory(e), std::min(watch + 1, n), workloads.frechet))
-            if (j != e && std::ranges::find(list, j) == list.end())
+        constexpr double unknown = -1.0;
+        auto &distance = m_distance[e];
+        distance.assign(list.size(), unknown);
+        const auto query = db.trajectory(e);
+        const std::size_t count = std::min(watch + 1, n);
+        std::vector<std::pair<std::size_t, double>> found;
+        if (continuous)
+            found = query::knn_with_distances(compressed, query, count);
+        else
+            for (const auto j : query::knn(compressed, query, count, workloads.frechet))
+                found.push_back({j, unknown});
+        for (const auto &[j, d] : found) {
+            if (j == e)
+                continue;
+            const auto at = std::ranges::find(list, j);
+            if (at == list.end()) {
                 list.push_back(static_cast<std::uint32_t>(j));
+                distance.push_back(d);
+            } else {
+                distance[static_cast<std::size_t>(at - list.begin())] = d;
+            }
+        }
+        for (std::size_t p = 0; p < list.size(); ++p)
+            if (distance[p] == unknown)
+                distance[p] = query::knn_distance(query, views[list[p]], workloads.frechet);
     });
     for (std::size_t e = 0; e < n; ++e) {
         m_valid += workloads.knn[e].valid;
-        m_distance[e].assign(m_list[e].size(), 0.0);
         for (std::size_t p = 0; p < m_list[e].size(); ++p)
             m_watchers[m_list[e][p]].push_back(
                 {static_cast<std::uint32_t>(e), static_cast<std::uint32_t>(p)});
     }
-    const PreparedTrajectories prepared(db, state);
-    const auto views = prepared.views();
-    std::vector<std::vector<double>> own(n);
-    core::parallel_for(n, [&](std::size_t i) { own[i] = distances(i, views[i]); });
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t s = 0; s < m_watchers[i].size(); ++s)
-            m_distance[m_watchers[i][s].query][m_watchers[i][s].position] = own[i][s];
     m_rank.resize(n);
     core::parallel_for(n, [&](std::size_t e) {
         if (!m_list[e].empty())
@@ -790,11 +998,10 @@ KnnState::KnnState(const Objective &objective, const KeptSets &state, std::size_
 
 std::vector<double> KnnState::distances(std::size_t i, const core::TrajectoryView &candidate,
                                         bool parallel) const {
-    const auto &db = m_objective.db();
     const auto &watchers = m_watchers[i];
     std::vector<double> result(watchers.size());
     auto one = [&](std::size_t s) {
-        result[s] = query::knn_distance(db.trajectory(watchers[s].query), candidate,
+        result[s] = query::knn_distance(m_objective.db().trajectory(watchers[s].query), candidate,
                                         m_objective.workloads().frechet);
     };
     if (parallel)
@@ -861,7 +1068,6 @@ void KnnState::refresh(std::size_t e) {
 void KnnState::watch(std::span<const std::vector<core::TrajectoryView>> versions,
                      std::span<const core::TrajectoryView> state) {
     const auto &db = m_objective.db();
-    const auto frechet = m_objective.workloads().frechet;
     const std::size_t n = db.size();
     std::vector<double> radius(n, -1.0);
     core::parallel_for(n, [&](std::size_t e) {
@@ -885,9 +1091,10 @@ void KnnState::watch(std::span<const std::vector<core::TrajectoryView>> versions
                 std::ranges::any_of(m_watchers[i], [&](const Watcher &w) { return w.query == e; }))
                 continue;
             for (const auto &version : versions[i])
-                if (query::frechet_within(db.trajectory(e), version, radius[e], frechet)) {
+                if (m_objective.original_within(e, version, radius[e])) {
                     added[i].push_back({static_cast<std::uint32_t>(e),
-                                        query::knn_distance(db.trajectory(e), state[i], frechet)});
+                                        query::knn_distance(db.trajectory(e), state[i],
+                                                            m_objective.workloads().frechet)});
                     break;
                 }
         }
@@ -908,39 +1115,54 @@ void KnnState::watch(std::span<const std::vector<core::TrajectoryView>> versions
         }
 }
 
-double KnnState::propose_bounded(std::size_t i, const core::TrajectoryView &candidate) const {
-    const auto &db = m_objective.db();
-    const auto frechet = m_objective.workloads().frechet;
+double KnnState::propose_bounded(std::size_t i, const core::TrajectoryView &candidate,
+                                 double reach) const {
     const std::size_t k = m_objective.workloads().k;
     // Clear of the k-th place by more than the stored distances' error
     constexpr double margin = 2.5 * kKnnDistanceError;
     long change = 0;
-    std::vector<double> others;
     for (const auto &[e, position] : m_watchers[i]) {
         const auto inside = hits(e, position, -1.0);
         const auto outside = hits(e, position, std::numeric_limits<double>::infinity());
         std::size_t now = inside;
         if (inside != outside) {
-            // The k-th distance among the others: i is in clearly below it, out clearly above
-            others.clear();
-            for (std::size_t p = 0; p < m_list[e].size(); ++p)
-                if (p != position)
-                    others.push_back(m_distance[e][p]);
-            const auto kth =
-                others.begin() + static_cast<std::ptrdiff_t>(std::min(k, others.size()) - 1);
-            std::ranges::nth_element(others, kth);
-            const auto query = db.trajectory(e);
-            if (*kth - margin > 0 &&
-                query::frechet_within(query, candidate, *kth - margin, frechet))
+            // The k-th distance among the others, from the ranking (it has k + 1 entries here):
+            // the (k + 1)-th overall if i is in the top k, else the k-th. i is in clearly below
+            // it, out clearly above
+            const auto &rank = m_rank[e];
+            const bool in_top =
+                std::find(rank.begin(), rank.begin() + static_cast<std::ptrdiff_t>(k),
+                          static_cast<std::uint32_t>(position)) !=
+                rank.begin() + static_cast<std::ptrdiff_t>(k);
+            const double kth = m_distance[e][rank[in_top ? k : k - 1]];
+            // |d(query, candidate) - d(query, current)| <= reach; the stored key is the current
+            // distance rounded up to the grid
+            const double at = m_distance[e][position];
+            if (kth - margin > 0 && at + reach <= (kth - margin) * (1.0 - kCertificateMargin))
                 now = inside;
-            else if (!query::frechet_within(query, candidate, *kth + margin, frechet))
+            else if (at - 2.0 * kKnnDistanceError - reach >
+                     (kth + margin) * (1.0 + kCertificateMargin))
+                now = outside;
+            else if (kth - margin > 0 && m_objective.original_within(e, candidate, kth - margin))
+                now = inside;
+            else if (!m_objective.original_within(e, candidate, kth + margin))
                 now = outside;
             else
-                now = hits(e, position, query::knn_distance(query, candidate, frechet));
+                now = hits(e, position,
+                           query::knn_distance(m_objective.db().trajectory(e), candidate,
+                                               m_objective.workloads().frechet));
         }
         change += static_cast<long>(now) - static_cast<long>(m_hits[e]);
     }
     return value(change);
+}
+
+std::vector<double> KnnState::stored(std::size_t i) const {
+    std::vector<double> result;
+    result.reserve(m_watchers[i].size());
+    for (const auto &watcher : m_watchers[i])
+        result.push_back(m_distance[watcher.query][watcher.position]);
+    return result;
 }
 
 double KnnState::propose(std::size_t i, std::span<const double> distances) const {

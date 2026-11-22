@@ -176,3 +176,20 @@ TEST(Knn, BreaksEqualDistanceTiesByDatabaseIndex) {
     const auto db = make_db(std::vector<Track>(80, {{39.9, 116.3}, {39.91, 116.31}}));
     EXPECT_EQ(query::knn(db, db.trajectory(70), 5), (std::vector<std::size_t>{0, 1, 2, 3, 4}));
 }
+
+TEST(Knn, WithDistancesGivesTheSameNeighboursAndTheirKeys) {
+    std::mt19937_64 rng(31);
+    const auto db = make_db(random_tracks(rng, 200));
+    const auto queries = make_db(random_tracks(rng, 30));
+    for (std::size_t q = 0; q < queries.size(); ++q)
+        for (const std::size_t k : {1u, 5u, 20u}) {
+            const auto plain = query::knn(db, queries.trajectory(q), k);
+            const auto ranked = query::knn_with_distances(db, queries.trajectory(q), k);
+            ASSERT_EQ(ranked.size(), plain.size());
+            for (std::size_t r = 0; r < plain.size(); ++r) {
+                EXPECT_EQ(ranked[r].first, plain[r]);
+                EXPECT_EQ(ranked[r].second,
+                          query::knn_distance(queries.trajectory(q), db.trajectory(plain[r])));
+            }
+        }
+}
