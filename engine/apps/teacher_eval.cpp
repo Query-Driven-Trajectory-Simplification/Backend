@@ -226,6 +226,7 @@ struct Arm {
     std::string name;
     double share;
     KeptSets kept;
+    std::optional<teacher::Objective::Terms> metrics; // the teacher's, if it computed them
 };
 
 // PARTNER: RDP with weight 1 + lambda for trajectories that have a join partner
@@ -244,19 +245,24 @@ std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
                 db, allocation::AllocatorType::SizeProportional, budget, alpha);
         };
         const auto equal = geometric(0.0);
+        arms.push_back({"RDP_GLOBAL",
+                        share,
+                        core::to_kept(selection::rdp::simplify_database(db, budget)),
+                        {}});
+        arms.push_back({"RDP_a0", share, select(db, AlgorithmType::RDP, equal), {}});
         arms.push_back(
-            {"RDP_GLOBAL", share, core::to_kept(selection::rdp::simplify_database(db, budget))});
-        arms.push_back({"RDP_a0", share, select(db, AlgorithmType::RDP, equal)});
-        arms.push_back({"RDP_a025", share, select(db, AlgorithmType::RDP, geometric(kRdpAlpha))});
-        arms.push_back({"SED_a0", share, select(db, AlgorithmType::SED, equal)});
-        arms.push_back({"UNI_a0", share, select(db, AlgorithmType::UNIFORM, equal)});
+            {"RDP_a025", share, select(db, AlgorithmType::RDP, geometric(kRdpAlpha)), {}});
+        arms.push_back({"SED_a0", share, select(db, AlgorithmType::SED, equal), {}});
+        arms.push_back({"UNI_a0", share, select(db, AlgorithmType::UNIFORM, equal), {}});
         for (const double lambda : kPartnerLambdas) {
             std::vector<double> weights(db.size());
             for (std::size_t i = 0; i < db.size(); ++i)
                 weights[i] = 1.0 + (partnered[i] ? lambda : 0.0);
-            arms.push_back({std::format("PARTNER_l{:g}", lambda), share,
+            arms.push_back({std::format("PARTNER_l{:g}", lambda),
+                            share,
                             select(db, AlgorithmType::RDP,
-                                   weighted_budgets(db, weights, budget - 2 * db.size()))});
+                                   weighted_budgets(db, weights, budget - 2 * db.size())),
+                            {}});
         }
     }
     return arms;
@@ -541,7 +547,7 @@ int main(int argc, char **argv) try {
         for (const double share : config.budget_shares) {
             start = std::chrono::steady_clock::now();
             for (auto &arm : model.run(allocation::total_budget(db, share), args.arms))
-                arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
+                arms.push_back({arm.name, share, core::to_kept(arm.simplification), arm.metrics});
             timings << std::format("{},teacher_{:g},{:.2f}\n", seed, share,
                                    core::seconds_since(start));
         }
@@ -550,7 +556,7 @@ int main(int argc, char **argv) try {
                 arms.push_back(std::move(arm));
             for (const double share : config.budget_shares)
                 for (auto &arm : model.single_recipes(allocation::total_budget(db, share)))
-                    arms.push_back({arm.name, share, core::to_kept(arm.simplification)});
+                    arms.push_back({arm.name, share, core::to_kept(arm.simplification), {}});
         }
         for (const auto &arm : arms) {
             validate(arm, db);
@@ -614,7 +620,7 @@ int main(int argc, char **argv) try {
                 evaluator::Evaluator(db, compressed, test, scoring).evaluate().scores;
             const auto normalized = evaluator::normalize_scores(scores, floor);
             // The teacher's own estimate of each metric, next to the test's
-            const auto teacher_metrics = objective.metrics(arm.kept);
+            const auto teacher_metrics = arm.metrics ? *arm.metrics : objective.metrics(arm.kept);
             const auto &teacher_floors = objective.floors();
             auto norm = [&](teacher::Objective::Term t) {
                 return (teacher_metrics[t] - teacher_floors[t]) / (1.0 - teacher_floors[t]);
@@ -632,7 +638,7 @@ int main(int argc, char **argv) try {
                 scores.join.f1, scores.clustering.score, scores.where_at.within_radius,
                 scores.join.micro_f1, scores.knn.kendalls_tau_topk, normalized.knn,
                 normalized.range, normalized.where_at, normalized.join, normalized.clustering,
-                normalized.combined, objective.total(arm.kept),
+                normalized.combined, objective.total(teacher_metrics),
                 scores.clustering.predicted_clusters, core::seconds_since(start),
                 mode_name(config.join.mode), scores.self_join.f1, normalized.self_join,
                 normalized.join_f1, normalized.clustering_score, scores.self_knn.recall_at_k,

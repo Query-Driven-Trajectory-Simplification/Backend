@@ -62,14 +62,13 @@ template <typename Kept> std::size_t first_equal(std::size_t c, Kept &&kept) {
     return first;
 }
 
-// One trajectory's candidates up to cap. A candidate depends only on (i, c, b, cap), so curves
-// and final kept sets agree
+// One trajectory's candidates up to cap, from sequences built once. A candidate depends only on
+// (i, c, b, cap), so curves and final kept sets agree
 class CandidateMaker {
   public:
-    CandidateMaker(const Objective &objective, std::size_t i, std::size_t cap,
-                   bool reuse_sequences = false)
+    CandidateMaker(const Objective &objective, std::size_t i, std::size_t cap)
         : m_original(objective.db().trajectory(i)), m_cap(std::min(cap, m_original.size())),
-          m_objective(objective), m_index(i), m_reuse_sequences(reuse_sequences) {}
+          m_objective(objective), m_index(i) {}
 
     std::vector<std::size_t> make(std::size_t candidate, std::size_t budget) {
         budget = std::min(budget, m_original.size());
@@ -98,7 +97,7 @@ class CandidateMaker {
 
   private:
     std::vector<std::size_t> simplify(AlgorithmType type, std::size_t b) {
-        if (!m_reuse_sequences || type == AlgorithmType::UNIFORM)
+        if (type == AlgorithmType::UNIFORM)
             return selection::simplify_trajectory(m_original, type, b);
         auto &cached = type == AlgorithmType::RDP ? m_rdp : m_sed;
         if (!cached)
@@ -134,23 +133,32 @@ class CandidateMaker {
     std::size_t m_cap;
     const Objective &m_objective;
     std::size_t m_index;
-    bool m_reuse_sequences;
     std::optional<Greedy> m_greedy;
     std::optional<std::vector<std::size_t>> m_rdp, m_sed;
     std::vector<std::size_t> m_fill;
     std::map<std::pair<AlgorithmType, std::size_t>, std::vector<std::size_t>> m_greedy_sequences;
 };
 
+// Per trajectory, built on first use and kept: its sequences serve the curves, the candidates and
+// the trades alike
+using Makers = std::vector<std::optional<CandidateMaker>>;
+
+CandidateMaker &maker_for(Makers &makers, const Objective &objective, std::size_t i,
+                          std::size_t cap) {
+    if (!makers[i])
+        makers[i].emplace(objective, i, cap);
+    return *makers[i];
+}
+
 // All candidates at each trajectory's budget, or only the selected one
 Candidates make_candidates(const Objective &objective, const std::vector<std::size_t> &budgets,
-                           const std::vector<std::size_t> &caps,
+                           const std::vector<std::size_t> &caps, Makers &makers,
                            const Methods *selected = nullptr) {
     Candidates candidates;
     for (auto &kept : candidates)
         kept.resize(budgets.size());
     core::parallel_for(budgets.size(), [&](std::size_t i) {
-        // Greedy needs the classic sequences for its seed and fill
-        CandidateMaker maker(objective, i, caps[i], !selected || (*selected)[i] >= kGreedy);
+        auto &maker = maker_for(makers, objective, i, caps[i]);
         if (selected) {
             const auto c = (*selected)[i];
             candidates[c][i] = maker.make(c, budgets[i]);
@@ -211,14 +219,15 @@ struct Curves {
 };
 
 Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
-                    const KeptSets &partners, const std::vector<std::size_t> &caps, bool rdp_only) {
+                    const KeptSets &partners, const std::vector<std::size_t> &caps, Makers &makers,
+                    bool rdp_only) {
     Curves curves{std::vector<Curve>(db.size()), std::vector<Curve>(db.size())};
     const PreparedTrajectories prepared(db, partners);
     const auto partner_views = prepared.views();
     const RangeState range(objective, partner_views);
     core::parallel_for(db.size(), [&](std::size_t i) {
         const auto range_weights = range.weights(i);
-        CandidateMaker maker(objective, i, caps[i], true);
+        auto &maker = maker_for(makers, objective, i, caps[i]);
         const std::size_t max_b = std::min(caps[i], db.trajectory(i).size());
         auto &best = curves.best[i];
         auto &rdp = curves.rdp[i];
@@ -335,7 +344,10 @@ class Search {
                     first == c ? objective.separable(i, m_views[c][i]) : m_separable[i][first];
                 if (first != c)
                     continue;
-                m_knn_distances[i][c] = m_knn->distances(i, m_views[c][i]);
+                // The start's distances are already in the tracker
+                m_knn_distances[i][c] = c == m_representative[i][method[i]]
+                                            ? m_knn->stored(i)
+                                            : m_knn->distances(i, m_views[c][i]);
                 m_coverage[i][c] = m_range->coverage(i, m_views[c][i]);
                 m_outcomes[i][c] = m_join->outcomes(i, m_views[c][i]);
             }
@@ -439,6 +451,7 @@ Checked checked_loop(const Objective &objective, const Candidates &candidates, c
 struct Traded {
     KeptSets kept;
     double value;
+    std::optional<Objective::Terms> metrics;
 };
 
 // Moves delta points between trajectories while exact J_T rises. Each round scores every
@@ -446,7 +459,8 @@ struct Traded {
 // buyers with the cheapest sellers, and keeps a pair only if its exact gain, rescored when applied,
 // is positive. Each round the kNN lists are extended to watch the offered versions
 Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
-                     const std::vector<std::size_t> &caps, KeptSets kept, double start_value) {
+                     const std::vector<std::size_t> &caps, Makers &makers, KeptSets kept,
+                     double start_value) {
     const std::size_t n = db.size();
     std::vector<PreparedTrajectory> owned;
     owned.reserve(n);
@@ -457,8 +471,11 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         state[i] = owned[i].view();
     JoinState join(objective, state);
     RangeState range(objective, state);
-    std::vector<double> separable(n);
-    core::parallel_for(n, [&](std::size_t i) { separable[i] = objective.separable(i, state[i]); });
+    std::vector<double> separable(n), state_error(n);
+    core::parallel_for(n, [&](std::size_t i) {
+        separable[i] = objective.separable(i, state[i]);
+        state_error[i] = objective.deviation(i, state[i]);
+    });
     // Built once: the trades keep it current
     KnnState knn(objective, kept, kKnnWatchFactor * objective.workloads().k);
 
@@ -493,6 +510,7 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         state[i] = owned[i].view();
         kept[i] = std::move(p.kept);
         separable[i] = p.separable;
+        state_error[i] = objective.deviation(i, state[i]);
     };
 
     struct Offer {
@@ -503,7 +521,6 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
     double value = start_value;
     std::cout << std::format("teacher: trading from J_T {:.6f}\n", value);
     // Sequences depend only on the trajectory and its cap, so are built once for every round
-    std::vector<std::optional<CandidateMaker>> makers(n);
     for (std::size_t round = 1; round <= kMaxTradeRounds; ++round) {
         auto start = std::chrono::steady_clock::now();
         // buy[d][i], sell[d][i]: i's best exact change at b_i + delta and b_i - delta
@@ -515,9 +532,7 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         core::parallel_for(n, [&](std::size_t i) {
             const std::size_t b = kept[i].size();
             const std::size_t top = std::min(caps[i], db.trajectory(i).size());
-            if (!makers[i])
-                makers[i].emplace(objective, i, caps[i], true);
-            auto &maker = *makers[i];
+            auto &maker = maker_for(makers, objective, i, caps[i]);
             auto best_at = [&](std::size_t budget) {
                 Offer best;
                 std::vector<std::vector<std::size_t>> seen;
@@ -530,7 +545,8 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
                     const auto view = prepared.view();
                     double gain = objective.separable(i, view) - separable[i] +
                                   join.propose(i, view).gain + range.propose(i, view).gain;
-                    gain += knn.propose_bounded(i, view);
+                    gain +=
+                        knn.propose_bounded(i, view, state_error[i] + objective.deviation(i, view));
                     if (gain > best.gain)
                         best = {gain, std::move(candidate)};
                 }
@@ -617,10 +633,7 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
             break;
     }
     const auto terms = objective.metrics(kept);
-    double exact = 0;
-    for (std::size_t m = 0; m < Objective::TermCount; ++m)
-        exact +=
-            objective.scale(static_cast<Objective::Term>(m)) * (terms[m] - objective.floors()[m]);
+    const double exact = objective.total(terms);
     // Where-at is rescored on every commit, so only these three can drift
     std::cout << std::format(
         "teacher: trading J_T tracked {:.6f}, exact {:.6f}; tracked/exact kNN {:.6f}/{:.6f}, "
@@ -629,8 +642,8 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         join.metric(), terms[Objective::Join]);
     // The kNN tracker is not exact everywhere, so the trades could in principle lose
     if (exact < start_value)
-        return {start_kept, start_value};
-    return {std::move(kept), exact};
+        return {start_kept, start_value, {}};
+    return {std::move(kept), exact, terms};
 }
 
 std::string wins(const Methods &method) {
@@ -709,9 +722,13 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     auto keep = [&](std::string_view name, const Candidates &from, const Methods &method,
                     std::optional<double> known = {}) {
         auto kept = assemble(from, method);
-        const double j_t = known ? *known : objective.total(kept);
+        std::optional<Objective::Terms> metrics;
+        if (!known)
+            metrics = objective.metrics(kept);
+        const double j_t = known ? *known : objective.total(*metrics);
         std::cout << std::format("teacher {}: {}, J_T {:.4f}\n", name, wins(method), j_t);
-        outputs[std::string(name)] = {std::string(name), core::to_simplification(kept), j_t};
+        outputs[std::string(name)] = {std::string(name), core::to_simplification(kept), j_t,
+                                      metrics};
         return j_t;
     };
     auto start = std::chrono::steady_clock::now();
@@ -731,16 +748,19 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     // Value curves with partners fixed at RDP with equal budgets, so trajectories score
     // independently
     const Methods rdp_methods(db.size(), kRdp);
-    const auto partners = make_candidates(objective, equal_budgets, caps, &rdp_methods);
+    Makers makers(db.size());
+    const auto partners = make_candidates(objective, equal_budgets, caps, makers, &rdp_methods);
     timed("candidates");
-    const auto curves = build_curves(db, objective, partners[kRdp], caps, !needs_candidates);
+    const auto curves =
+        build_curves(db, objective, partners[kRdp], caps, makers, !needs_candidates);
     timed(std::format("value curves up to {} points", cap));
 
     if (want_budget_rdp) {
         double value = 0;
         const auto budgets = allocate(curves.rdp, total_budget, &value);
         report("RDP allocation", value, budgets);
-        keep("BUDGET_RDP", make_candidates(objective, budgets, caps, &rdp_methods), rdp_methods);
+        keep("BUDGET_RDP", make_candidates(objective, budgets, caps, makers, &rdp_methods),
+             rdp_methods);
     }
     if (!needs_candidates)
         return collect(outputs, arms);
@@ -750,7 +770,7 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     report("allocation", value, budgets);
     const auto choice = curve_methods(curves.best, budgets);
     const auto candidates =
-        make_candidates(objective, budgets, caps, needs_loop ? nullptr : &choice);
+        make_candidates(objective, budgets, caps, makers, needs_loop ? nullptr : &choice);
     std::optional<double> choice_value;
     if (want_choice)
         choice_value = keep("BUDGET_CHOICE", candidates, choice);
@@ -764,10 +784,10 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     if (want_loop)
         keep("BUDGET_LOOP", candidates, checked.methods, checked.value);
     if (want_trade) {
-        auto traded = trade_budgets(db, objective, caps, assemble(candidates, checked.methods),
-                                    checked.value);
+        auto traded = trade_budgets(db, objective, caps, makers,
+                                    assemble(candidates, checked.methods), checked.value);
         outputs["BUDGET_LOOP_TRADE"] = {"BUDGET_LOOP_TRADE", core::to_simplification(traded.kept),
-                                        traded.value};
+                                        traded.value, traded.metrics};
         timed("BUDGET_LOOP_TRADE");
     }
     return collect(outputs, arms);
@@ -776,12 +796,13 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
 std::vector<Arm> Teacher::single_recipes(std::size_t total_budget) const {
     const auto budgets = allocation::create_trajectory_budgets(
         m_db, allocation::AllocatorType::SizeProportional, total_budget, 0.0);
-    const auto candidates = make_candidates(m_objective, budgets, budgets);
+    Makers makers(m_db.size());
+    const auto candidates = make_candidates(m_objective, budgets, budgets, makers);
     std::vector<Arm> arms;
     for (std::size_t c = 0; c < kCandidates.size(); ++c) {
         const auto name = std::format("RECIPE_{}", kCandidates[c]);
         arms.push_back(
-            {name, core::to_simplification(candidates[c]), m_objective.total(candidates[c])});
+            {name, core::to_simplification(candidates[c]), m_objective.total(candidates[c]), {}});
         std::cout << std::format("teacher {}: J_T {:.4f}\n", name, arms.back().objective);
     }
     return arms;

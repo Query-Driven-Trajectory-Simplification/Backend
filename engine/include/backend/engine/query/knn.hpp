@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace query {
@@ -57,5 +58,9 @@ KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
 std::vector<std::size_t> knn(const core::TrajectoryDb &trajectories,
                              const core::TrajectoryView &query, std::size_t k,
                              FrechetVariant variant = FrechetVariant::Continuous);
+// The same continuous neighbours, each with its knn_distance
+std::vector<std::pair<std::size_t, double>>
+knn_with_distances(const core::TrajectoryDb &trajectories, const core::TrajectoryView &query,
+                   std::size_t k);
 
 } // namespace query

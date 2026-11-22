@@ -3,6 +3,7 @@
 #include "backend/engine/core/projection.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/evaluator/range.hpp"
+#include "backend/engine/query/frechet_helper.hpp"
 #include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/teacher/greedy.hpp"
 #include "backend/engine/teacher/objective.hpp"
@@ -12,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -696,14 +698,70 @@ TEST_F(TeacherTest, HeldOutJoinScoresOriginalQueriesAgainstCompressedPartners) {
                 (sum / static_cast<double>(counted) - floor) / (1.0 - floor), 1e-12);
 }
 
+TEST_F(TeacherTest, CoarseScreenAgreesWithTheFullTest) {
+    // Dense, smooth trajectories, so each has a coarse copy far shorter than itself
+    std::mt19937_64 rng(12);
+    std::normal_distribution<double> noise(0.0, 0.4);
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> ids;
+    std::vector<std::int64_t> t;
+    std::vector<double> lat, lon;
+    for (std::size_t i = 0; i < 12; ++i) {
+        ids.push_back(static_cast<std::int32_t>(i));
+        const double shift = 25.0 * static_cast<double>(i), wave = 30.0 + 10.0 * (i % 3);
+        for (std::size_t k = 0; k < 200; ++k) {
+            const double x = 5.0 * static_cast<double>(k) + noise(rng);
+            const double y = shift + wave * std::sin(static_cast<double>(k) / 15.0) + noise(rng);
+            const auto ll = core::to_lat_lon(x, y);
+            t.push_back(static_cast<std::int64_t>(k));
+            lat.push_back(ll.lat);
+            lon.push_back(ll.lon);
+        }
+        offsets.push_back(t.size());
+    }
+    const core::TrajectoryDb db(offsets, ids, t, lat, lon);
+    auto config = small_config();
+    config.k = 2;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 5, m_dir);
+    const teacher::Objective objective(db, workloads);
+    std::size_t hits = 0, misses = 0;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const auto original = db.trajectory(i);
+        for (const std::size_t b : {2u, 6u, 20u, 60u}) {
+            const auto kept = selection::rdp::simplify(original, b);
+            const teacher::PreparedTrajectory candidate(original, kept);
+            for (std::size_t j = 0; j < db.size(); ++j) {
+                const double d = query::frechet_distance(db.trajectory(j), candidate.view(),
+                                                         query::FrechetVariant::Continuous);
+                for (const double r : {d - 6.0, d - 0.01, d + 0.01, d + 6.0, d * 0.5, d * 2.0}) {
+                    if (!(r > 0))
+                        continue;
+                    const bool full = query::frechet_within(db.trajectory(j), candidate.view(), r,
+                                                            query::FrechetVariant::Continuous);
+                    EXPECT_EQ(objective.original_within(j, candidate.view(), r), full)
+                        << i << " " << j << " " << b << " " << r;
+                    (full ? hits : misses) += 1;
+                }
+            }
+        }
+    }
+    EXPECT_GT(hits, 0u);
+    EXPECT_GT(misses, 0u);
+}
+
 TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) {
     const auto db = random_db(2, 24, 20);
-    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    const auto plain = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    // Ranked neighbours give the kNN checks distance brackets, so certificates decide most
+    auto ranked = plain;
+    teacher::add_ranked_neighbours(db, ranked, 3, 9, m_dir);
     std::mt19937_64 rng(74);
     std::size_t valid = 0;
-    for (const auto &entry : workloads.knn)
+    for (const auto &entry : plain.knn)
         valid += entry.valid;
-    {
+    for (const teacher::TeacherWorkloads *source : {&plain, &std::as_const(ranked)}) {
+        const auto &workloads = *source;
+        SCOPED_TRACE(source == &ranked ? "ranked" : "plain");
         {
             const teacher::Objective objective(db, workloads);
             std::size_t with_truth = 0;
@@ -912,6 +970,13 @@ TEST_F(TeacherTest, BoundedKnnProposalsMatchFullDistances) {
                 const teacher::PreparedTrajectory candidate(db.trajectory(i), random_kept(i));
                 const double full = knn.propose(i, knn.distances(i, candidate.view()));
                 EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view()), full) << i;
+                // With the deviation bounds of the current version and the candidate as reach
+                const teacher::PreparedTrajectory current(db.trajectory(i), state[i]);
+                EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view(),
+                                                     objective.deviation(i, current.view()) +
+                                                         objective.deviation(i, candidate.view())),
+                                 full)
+                    << i;
                 changed += full != 0.0;
             }
         EXPECT_GT(changed, 0u);

@@ -409,12 +409,28 @@ trajectory can't have a point in a box the original had none in.
   while checking kNN, so a candidate is not rescored just because its bound was promising. The
   prepared score borrows its candidate's coordinates and must be used before they change.
 
-### `match(a, b)` and `held_out_match(i, link, candidate)` — public
+### `match`, `held_out_match`, `original_within` — public
 
 - `match`: `query::frechet_within` with the term's threshold and the workload's Fréchet variant.
-- `held_out_match`: whether original `link.other` finds candidate i. A positive pair whose
-  originals' discrete Fréchet distance plus `simplification_bound(i)` is below the threshold is
-  certified without the test (`certificate_test.cpp`).
+- `held_out_match`: whether original `link.other` finds candidate i. Each pair's originals get a
+  distance bracket once (discrete Fréchet from above, exact below the largest threshold; Hausdorff
+  from below). With dev = `simplification_bound(i)`, upper + dev ≤ ε proves a hit and
+  lower − dev > ε a miss, without the test (`certificate_test.cpp`). kNN checks in the curves do
+  the same with the ranked neighbours' distances.
+- `original_within(j, candidate, r)`: every remaining test of an original against a candidate
+  (join, curve kNN checks, `propose_bounded`, `watch`). Each original has a coarse RDP copy with
+  deviation μ ≤ 5 m (`kCoarseM`), used only if it at least halves the points. The coarse copy
+  within r − μ proves a hit, not within r + μ a miss; only the band between needs the full test.
+- All of these are exact: they decide the same outcomes as the full test (continuous Fréchet
+  only), and `CoarseScreenAgreesWithTheFullTest` checks it.
+- Speed, Geolife seed 42, 24 threads: these screens, one `CandidateMaker` per trajectory shared by
+  curves, candidates and trades, the k-th place read from the ranking in `propose_bounded` (and
+  the stored distance ± both deviation bounds tried first), the greedy where-at score skipping
+  `hypot` outside its ramp, cached edge lengths for the deviation bound, the loop reusing the
+  tracker's distances for each start candidate, and the tracker taking its list distances from
+  `query::knn_with_distances` took the teacher from 206 s to 104 s at 0.25 % and from 444 s to
+  192 s at 1 %, with identical kept sets on seeds 42 and 7 (research notes,
+  `Teacher speedups 2026-11-22`).
 
 ### `join_metric(state)` — private
 
@@ -552,12 +568,14 @@ simplified.
 - **Output:** one `Arm` per requested name, in the requested order. Each keeps exactly
   `total_budget` points, because every candidate keeps exactly its trajectory's budget.
 
-### `make_candidates(objective, budgets, caps, selected)` — internal
+### `make_candidates(objective, budgets, caps, makers, selected)` — internal
 
 - **Why:** each candidate is simplified once, then reused by every step.
-- **Input:** objective, per-trajectory budgets and caps, and optionally selected method indices.
-- **Computation:** in parallel, `CandidateMaker` builds all six recipes, or only the selected
-  recipe for each trajectory. Classic sequences and greedy sequences with the same seed are reused.
+- **Input:** objective, per-trajectory budgets and caps, the shared makers, and optionally
+  selected method indices.
+- **Computation:** in parallel, each trajectory's `CandidateMaker` builds all six recipes, or only
+  the selected one. A maker is created on first use and kept for the whole `run`, so its RDP, SED
+  and greedy sequences are built once and serve the curves, the candidates and the trades.
 - **Output:** `Candidates`.
 
 ### `assemble(candidates, method)` — internal
@@ -644,8 +662,14 @@ trackers; `run` updates them in place, so it runs once.
   of each threshold's macro F1, normalised by its own endpoints-only floor.
 - `ShapeTermRampsTheDeviationBound`, `TwoSidedMarginScoresOutsidersToo`: shape and margin are 1
   with every point, 0 at the floor, separable, and the margin term needs ranked neighbours.
+- `CoarseScreenAgreesWithTheFullTest`: on dense trajectories, `original_within` gives the full
+  Fréchet test's answer at, near and far from the exact distance.
+- `PreparedIndependentScoresMatchFullScoringAndSurvivePruning`: independent scores equal direct
+  scoring, with and without ranked-neighbour brackets for the kNN checks.
+- `BoundedKnnProposalsMatchFullDistances`: `propose_bounded`, with and without a reach, equals
+  the proposal from exact distances.
 
 `engine/tests/teacher/certificate_test.cpp` checks `simplification_bound` never falls below the
 continuous Fréchet distance, alone and added to a discrete pair distance.
 
-`engine/tests/config_test.cpp` has the three teacher config tests.
+`engine/tests/pipeline/config_test.cpp` has the three teacher config tests.
