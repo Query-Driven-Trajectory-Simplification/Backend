@@ -182,8 +182,9 @@ struct neighbor {
     }
 };
 
-std::vector<std::size_t> discrete_knn(const core::TrajectoryDb &trajectory_db,
-                                      const core::TrajectoryView &query_trajectory, std::size_t k) {
+std::vector<std::pair<std::size_t, double>>
+discrete_knn(const core::TrajectoryDb &trajectory_db, const core::TrajectoryView &query_trajectory,
+             std::size_t k) {
     CandidateQueue queue(trajectory_db, query_trajectory, k);
     // Include candidates equal to the upper bound, since we still need k results
     const double initial_cutoff =
@@ -221,12 +222,13 @@ std::vector<std::size_t> discrete_knn(const core::TrajectoryDb &trajectory_db,
         }
     }
 
-    std::vector<std::size_t> neighbor_ids(curr_neighbors.size());
-    for (std::size_t i = neighbor_ids.size(); i > 0; --i) {
-        neighbor_ids[i - 1] = curr_neighbors.top().idx;
+    std::vector<std::pair<std::size_t, double>> result(curr_neighbors.size());
+    for (std::size_t i = result.size(); i > 0; --i) {
+        result[i - 1] = {curr_neighbors.top().idx,
+                         std::sqrt(curr_neighbors.top().squared_frechet_distance)};
         curr_neighbors.pop();
     }
-    return neighbor_ids;
+    return result;
 }
 
 // The first millimetre radius accepted by the continuous decision predicate. Unlike an
@@ -270,10 +272,19 @@ struct RankedNeighbor {
 
 std::vector<std::pair<std::size_t, double>> continuous_knn(const core::TrajectoryDb &trajectory_db,
                                                            const core::TrajectoryView &query,
-                                                           std::size_t k) {
+                                                           std::size_t k,
+                                                           const KnownDistance &known) {
     CandidateQueue queue(trajectory_db, query, k);
     std::priority_queue<RankedNeighbor> nearest;
     std::vector<double> prev, curr;
+    auto offer = [&](const RankedNeighbor &next) {
+        if (nearest.size() < k)
+            nearest.push(next);
+        else if (next < nearest.top()) {
+            nearest.pop();
+            nearest.push(next);
+        }
+    };
     while (!queue.empty()) {
         const Candidate candidate = queue.next();
         // One extra bin absorbs floating-point rounding in bounds and includes all distance ties.
@@ -283,6 +294,14 @@ std::vector<std::pair<std::size_t, double>> continuous_knn(const core::Trajector
         const double squared_limit = limit * limit;
         if (candidate.squared_lower_bound > squared_limit)
             break;
+        // Found from the other side: no Fréchet computation needed
+        if (known) {
+            if (const auto distance = known(candidate.idx)) {
+                if (std::isfinite(*distance) && *distance <= limit)
+                    offer({*distance, candidate.idx});
+                continue;
+            }
+        }
         const auto reference = trajectory_db.trajectory(candidate.idx);
         if (squared_points_to_box_lower_bound(query, reference, squared_limit) > squared_limit)
             continue;
@@ -307,12 +326,7 @@ std::vector<std::pair<std::size_t, double>> continuous_knn(const core::Trajector
                                   candidate.idx};
         if (!std::isfinite(next.distance))
             continue;
-        if (nearest.size() < k)
-            nearest.push(next);
-        else if (next < nearest.top()) {
-            nearest.pop();
-            nearest.push(next);
-        }
+        offer(next);
     }
     std::vector<std::pair<std::size_t, double>> result(nearest.size());
     for (std::size_t i = result.size(); i > 0; --i) {
@@ -323,14 +337,6 @@ std::vector<std::pair<std::size_t, double>> continuous_knn(const core::Trajector
 }
 
 } // namespace
-
-std::vector<std::pair<std::size_t, double>>
-knn_with_distances(const core::TrajectoryDb &trajectories, const core::TrajectoryView &query,
-                   std::size_t k) {
-    if (k == 0)
-        throw std::invalid_argument("knn: k = 0, no neighbors");
-    return continuous_knn(trajectories, query, k);
-}
 
 double knn_distance(const core::TrajectoryView &a, const core::TrajectoryView &b,
                     FrechetVariant variant) {
@@ -351,13 +357,23 @@ std::vector<std::size_t> knn(const core::TrajectoryDb &trajectory_db,
     if (k == 0) {
         throw std::invalid_argument("knn: k = 0, no neighbors");
     }
-    if (variant == FrechetVariant::Discrete)
-        return discrete_knn(trajectory_db, query_trajectory, k);
-    const auto ranked = continuous_knn(trajectory_db, query_trajectory, k);
+    const auto ranked = knn_with_distances(trajectory_db, query_trajectory, k, variant);
     std::vector<std::size_t> result(ranked.size());
     for (std::size_t i = 0; i < ranked.size(); ++i)
         result[i] = ranked[i].first;
     return result;
+}
+
+std::vector<std::pair<std::size_t, double>>
+knn_with_distances(const core::TrajectoryDb &trajectory_db,
+                   const core::TrajectoryView &query_trajectory, std::size_t k,
+                   FrechetVariant variant, const KnownDistance &known) {
+    if (k == 0) {
+        throw std::invalid_argument("knn: k = 0, no neighbors");
+    }
+    return variant == FrechetVariant::Discrete
+               ? discrete_knn(trajectory_db, query_trajectory, k)
+               : continuous_knn(trajectory_db, query_trajectory, k, known);
 }
 
 KnnWorkload generate_knn_queries(const core::TrajectoryDb &original,
