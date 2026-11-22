@@ -20,6 +20,7 @@ namespace {
 
 // Bump when the layout or workload generation changes. V6 uses fixed-grid continuous kNN.
 constexpr std::uint64_t kMagicV6 = 0x5431'4341'4348'4536ull;
+constexpr std::uint64_t kMagicRanked = 0x5431'5241'4e4b'4431ull;
 constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
@@ -220,6 +221,69 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
                              workloads.negatives.size(), workloads.range.queries.size(),
                              workloads.where_at.queries.size());
     return workloads;
+}
+
+void add_ranked_neighbours(const core::TrajectoryDb &db, TeacherWorkloads &workloads,
+                           std::size_t depth, std::uint64_t seed,
+                           const std::filesystem::path &cache_dir) {
+    const std::size_t want = workloads.k + depth;
+    const auto db_fingerprint = fingerprint(db);
+    const auto file = cache_dir / std::format("teacher_ranked_seed{}_d{}.bin", seed, depth);
+    auto &ranked = workloads.ranked;
+    {
+        std::ifstream in(file, std::ios::binary);
+        if (in && get<std::uint64_t>(in) == kMagicRanked && get<std::uint64_t>(in) == seed &&
+            get<std::uint64_t>(in) == db_fingerprint && get<std::uint64_t>(in) == want &&
+            get<std::uint8_t>(in) == static_cast<std::uint8_t>(workloads.frechet)) {
+            ranked.resize(get<std::uint64_t>(in));
+            for (auto &list : ranked) {
+                list.resize(get<std::uint64_t>(in));
+                for (auto &neighbour : list) {
+                    neighbour.index = get<std::uint32_t>(in);
+                    neighbour.distance = get<double>(in);
+                }
+            }
+            if (in && ranked.size() == db.size()) {
+                std::cout << "teacher: ranked neighbours loaded from " << file.string() << '\n';
+                return;
+            }
+        }
+    }
+    const auto start = std::chrono::steady_clock::now();
+    ranked.assign(db.size(), {});
+    core::parallel_for(db.size(), [&](std::size_t e) {
+        const auto query = db.trajectory(e);
+        auto neighbours = query::knn(db, query, want + 1, workloads.frechet);
+        std::erase(neighbours, e);
+        neighbours.resize(std::min(neighbours.size(), want));
+        for (const auto j : neighbours)
+            ranked[e].push_back(
+                {static_cast<std::uint32_t>(j),
+                 query::frechet_distance(query, db.trajectory(j), workloads.frechet)});
+    });
+    std::cout << std::format("teacher: ranked neighbours {:.1f} s\n", core::seconds_since(start));
+    if (file.has_parent_path())
+        std::filesystem::create_directories(file.parent_path());
+    const auto tmp = file.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary);
+        put(out, kMagicRanked);
+        put(out, seed);
+        put(out, db_fingerprint);
+        put<std::uint64_t>(out, want);
+        put<std::uint8_t>(out, static_cast<std::uint8_t>(workloads.frechet));
+        put<std::uint64_t>(out, ranked.size());
+        for (const auto &list : ranked) {
+            put<std::uint64_t>(out, list.size());
+            for (const auto &neighbour : list) {
+                put(out, neighbour.index);
+                put(out, neighbour.distance);
+            }
+        }
+        if (!out)
+            throw std::runtime_error("teacher ranked cache: write failed " + tmp);
+    }
+    std::filesystem::rename(tmp, file);
 }
 
 query::KnnWorkload self_knn_workload(const TeacherWorkloads &workloads, double p) {

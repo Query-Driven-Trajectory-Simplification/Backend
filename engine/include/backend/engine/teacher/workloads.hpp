@@ -17,7 +17,6 @@ namespace teacher {
 inline constexpr std::uint64_t kRangeSeedOffset = 7001;
 inline constexpr std::uint64_t kWhereAtSeedOffset = 7002;
 inline constexpr std::uint64_t kOrderSeedOffset = 7004;
-inline constexpr std::uint64_t kShuffleSeedOffset = 7006;
 
 inline constexpr std::size_t kRangeQueryCount = 128000;
 
@@ -38,6 +37,11 @@ struct KnnEntry {
     double cutoff = 0.0;            // Fréchet distance to the (k + 1)th neighbour
 };
 
+struct RankedNeighbour {
+    std::uint32_t index;
+    double distance;
+};
+
 struct JoinPair {
     std::uint32_t i, j; // i < j
 };
@@ -56,6 +60,9 @@ struct TeacherWorkloads {
     std::vector<JoinPair> positives; // self-join pairs
     std::vector<JoinPair> negatives; // endpoint candidates that are not pairs
     std::vector<ExtraJoin> extra_joins;
+    // Optional, per kNN query: its k + depth nearest others, closest first, the top k included
+    // (add_ranked_neighbours)
+    std::vector<std::vector<RankedNeighbour>> ranked;
     query::RangeWorkload range;
     query::WhereAtWorkload where_at;
 };
@@ -65,6 +72,14 @@ struct TeacherWorkloads {
 TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const WorkloadConfig &config,
                                          std::uint64_t seed,
                                          const std::filesystem::path &cache_dir);
+
+inline constexpr std::size_t kMarginOutside = 5; // outsiders per query the margin term scores
+
+// Each kNN query's k + depth nearest others with their distances, from
+// cache_dir/teacher_ranked_seed<seed>_d<depth>.bin when it matches, otherwise built and saved
+void add_ranked_neighbours(const core::TrajectoryDb &db, TeacherWorkloads &workloads,
+                           std::size_t depth, std::uint64_t seed,
+                           const std::filesystem::path &cache_dir);
 
 // The self-kNN test workload from the cached lists: every valid database query with its k nearest
 // others. They depend on the database alone, so they are what a fresh build would give

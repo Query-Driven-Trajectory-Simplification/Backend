@@ -1,4 +1,5 @@
 #include "backend/engine/pipeline/config.hpp"
+#include "backend/engine/teacher/objective.hpp"
 
 #include <gtest/gtest.h>
 
@@ -259,56 +260,37 @@ TEST(Config, TeacherIsOffByDefault) {
         "teacher_grid.json", R"({"data_path": "d", "join": {"score_eps_m": [100, 300]}})"));
     EXPECT_EQ(pipeline::teacher_workload_config(grid).extra_join_eps_m,
               (std::vector<double>{100.0, 300.0}));
-    EXPECT_FALSE(pipeline::teacher_objective_config(config).held_out_term);
-    EXPECT_TRUE(pipeline::teacher_objective_config(config).ranking_knn);
-    // The teacher's join term follows the join it is scored on
-    EXPECT_FALSE(config.teacher.join);
-    EXPECT_EQ(pipeline::teacher_objective_config(config).join_mode, query::JoinMode::HeldOut);
-    const auto self = pipeline::load_config(
-        write_config("teacher_self.json", R"({"data_path": "d", "join": {"mode": "Self"}})"));
-    EXPECT_EQ(pipeline::teacher_objective_config(self).join_mode, query::JoinMode::Self);
-    // The kNN query is compressed in the in-database setting only, unless set
-    EXPECT_FALSE(pipeline::teacher_objective_config(config).compressed_knn_query);
-    EXPECT_TRUE(pipeline::teacher_objective_config(self).compressed_knn_query);
-    const auto original = pipeline::load_config(write_config(
-        "teacher_original.json",
-        R"({"data_path": "d", "join": {"mode": "Self"}, "teacher": {"knn_query": "Original"}})"));
-    EXPECT_FALSE(pipeline::teacher_objective_config(original).compressed_knn_query);
-    EXPECT_THROW(pipeline::load_config(
-                     write_config("teacher_bad_query.json",
-                                  R"({"data_path": "d", "teacher": {"knn_query": "Sometimes"}})")),
-                 std::invalid_argument);
+    EXPECT_EQ(pipeline::teacher_objective_config(config).term_weights,
+              (teacher::TermWeights{1.0, 1.0, 1.0, 1.0, 0.0, 0.0}));
 }
 
 TEST(Config, ReadsTheTeacherSection) {
     const auto config = pipeline::load_config(write_config("teacher.json", R"({
         "data_path": "d",
-        "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["EQUAL_CHOICE", "EQUAL_LOOP"],
-                    "range_query_count": 1000,
-                    "join": "Self", "extra_join_eps_m": [100, 300], "held_out_term": true,
-                    "ranking_knn": false, "term_weights": [2, 1, 1, 0]}
+        "teacher": {"enabled": true, "cache_dir": "my_cache", "arms": ["BUDGET_RDP", "BUDGET_LOOP"],
+                    "range_query_count": 1000, "extra_join_eps_m": [100, 300],
+                    "term_weights": [2, 1, 1, 0]}
     })"));
-    EXPECT_EQ(pipeline::teacher_objective_config(config).join_mode, query::JoinMode::Self);
-    EXPECT_TRUE(pipeline::teacher_objective_config(config).held_out_term);
-    EXPECT_FALSE(pipeline::teacher_objective_config(config).ranking_knn);
     EXPECT_EQ(pipeline::teacher_objective_config(config).term_weights,
-              (std::array<double, 4>{2.0, 1.0, 1.0, 0.0}));
+              (teacher::TermWeights{2.0, 1.0, 1.0, 0.0, 0.0, 0.0}));
     EXPECT_EQ(pipeline::teacher_workload_config(config).extra_join_eps_m,
               (std::vector<double>{100.0, 300.0}));
     EXPECT_TRUE(config.teacher.enabled);
     EXPECT_EQ(config.teacher.cache_dir, "my_cache");
-    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"EQUAL_CHOICE", "EQUAL_LOOP"}));
+    EXPECT_EQ(config.teacher.arms, (std::vector<std::string>{"BUDGET_RDP", "BUDGET_LOOP"}));
     EXPECT_EQ(config.teacher.range_query_count, 1000u);
 }
 
 TEST(Config, RejectsBadTeacherSections) {
     for (const auto &section :
          {R"({"enabled": true, "arms": ["DP"]})", R"({"enabled": true, "arms": []})",
-          R"({"arms": ["EQUAL_CHOICE_RDP_PARTNERS", "EQUAL_CHOICE_RDP_PARTNERS"]})",
+          R"({"arms": ["BUDGET_LOOP", "BUDGET_LOOP"]})", R"({"arms": ["EQUAL_LOOP"]})",
           R"({"cache_dir": ""})", R"({"range_query_count": 0})", R"({"shape_weight": 0.25})",
           R"({"term_weights": [0, 0, 0, 0]})", R"({"term_weights": [-1, 1, 1, 1]})",
-          R"({"seed": 7})", R"({"join": "Both"})", R"({"extra_join_eps_m": [0]})",
-          R"({"extra_join_eps_m": [-100]})"}) {
+          R"({"term_weights": [1, 1, 1]})", R"({"term_weights": [1, 1, 1, 1, 1, 1, 1]})",
+          R"({"seed": 7})", R"({"join": "Self"})", R"({"held_out_term": true})",
+          R"({"ranking_knn": true})", R"({"knn_query": "Original"})",
+          R"({"extra_join_eps_m": [0]})", R"({"extra_join_eps_m": [-100]})"}) {
         SCOPED_TRACE(section);
         const auto contents = std::string(R"({"data_path": "d", "teacher": )") + section + "}";
         EXPECT_THROW(pipeline::load_config(write_config("bad_teacher.json", contents)),

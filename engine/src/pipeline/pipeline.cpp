@@ -51,11 +51,13 @@ std::unique_ptr<teacher::Teacher> make_teacher(const core::TrajectoryDb &databas
                                                const Config &config) {
     if (!config.teacher.enabled)
         return nullptr;
-    return std::make_unique<teacher::Teacher>(
-        database,
-        teacher::load_or_build_workloads(database, teacher_workload_config(config), config.seed,
-                                         config.teacher.cache_dir),
-        teacher_objective_config(config), config.seed);
+    auto workloads = teacher::load_or_build_workloads(database, teacher_workload_config(config),
+                                                      config.seed, config.teacher.cache_dir);
+    if (config.teacher.term_weights[teacher::Objective::Margin] > 0)
+        teacher::add_ranked_neighbours(database, workloads, teacher::kMarginOutside, config.seed,
+                                       config.teacher.cache_dir);
+    return std::make_unique<teacher::Teacher>(database, std::move(workloads),
+                                              teacher_objective_config(config), config.seed);
 }
 
 } // namespace

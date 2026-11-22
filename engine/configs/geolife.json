@@ -49,8 +49,6 @@
         "cache_dir": "cache",
         "arms": ["BUDGET_CHOICE", "BUDGET_LOOP"],
         "range_query_count": 128000,
-        "held_out_term": false,
-        "ranking_knn": true,
-        "term_weights": [1.0, 1.0, 1.0, 1.0]
+        "term_weights": [1.0, 1.0, 1.0, 1.0, 0.5, 1.0]
     }
 }

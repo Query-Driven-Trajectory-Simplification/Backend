@@ -1,7 +1,7 @@
 """Summarises a teacher_eval run: python3 teacher_stats.py <out dir> [summary.md]
 
 Per share: means and SDs over seeds, paired J4 differences with t intervals, the gate against
-the best cheap baseline, the coordination checks, each step's gain in J_T (training) against J4
+the best cheap baseline, the loop and trade gains, each step's gain in J_T (training) against J4
 and J4-self (test), and the self and held-out joins at join.eps_m and at every threshold in
 thresholds.csv (teacher_eval --eval-eps), with the thresholds the teacher trained on marked.
 
@@ -21,14 +21,11 @@ METRICS = ["J4", "norm_knn", "norm_range", "norm_where_at", "norm_join", "J4_sel
            "norm_self_join_mean", "norm_clustering"]
 # Each step of the teacher, from the arm before it to the arm after it
 STEPS = [("budget search", "RDP_a0", "BUDGET_RDP"),
-         ("recipe choice", "RDP_a0", "EQUAL_CHOICE"),
          ("recipe choice at searched budgets", "BUDGET_RDP", "BUDGET_CHOICE"),
-         ("loop, equal budgets", "EQUAL_CHOICE_RDP_PARTNERS", "EQUAL_LOOP"),
          ("loop", "BUDGET_CHOICE", "BUDGET_LOOP"),
-         ("looking once", "BUDGET_CHOICE", "BUDGET_LOOP_NO_UPDATE"),
-         ("reacting", "BUDGET_LOOP_NO_UPDATE", "BUDGET_LOOP")]
+         ("trades", "BUDGET_LOOP", "BUDGET_LOOP_TRADE")]
 CHEAP = ["RDP_a0", "RDP_a025", "RDP_GLOBAL", "SED_a0", "UNI_a0", "PARTNER_l0.5", "PARTNER_l1"]
-EXTRA = ["J_T", "norm_self_join", "norm_join_main"]
+EXTRA = ["J_T", "J_T4", "norm_self_join", "norm_join_main"]
 JOINS = [("Self", "Normalised self-join F1"), ("HeldOut", "Normalised held-out join F1")]
 
 
@@ -122,25 +119,21 @@ def main():
         if best and "BUDGET_CHOICE" in arms:
             gate = paired(arms["BUDGET_CHOICE"]["J4"], arms[best]["J4"])
             out.append(f"| **BUDGET_CHOICE − {best} (gate: ≥ .03, CI above 0)** | {fmt(gate)} |")
-        if all(a in arms for a in ["RDP_a0", "EQUAL_CHOICE_RDP_PARTNERS", "BUDGET_RDP", "BUDGET_CHOICE"]):
-            j = {a: arms[a]["J4"] for a in ["RDP_a0", "EQUAL_CHOICE_RDP_PARTNERS", "BUDGET_RDP", "BUDGET_CHOICE"]}
-            seeds = set.intersection(*(set(v) for v in j.values()))
-            inter = {s: j["BUDGET_CHOICE"][s] - j["EQUAL_CHOICE_RDP_PARTNERS"][s] - j["BUDGET_RDP"][s] + j["RDP_a0"][s] for s in seeds}
-            out.append(f"| Interaction (BUDGET_CHOICE − EQUAL_CHOICE_RDP_PARTNERS − BUDGET_RDP + RDP_a0) | {fmt(paired(inter, {s: 0.0 for s in seeds}))} |")
-        for a, b in [("BUDGET_LOOP", "BUDGET_CHOICE"), ("BUDGET_LOOP_REALLOCATE", "BUDGET_LOOP"),
-                     ("EQUAL_LOOP", "EQUAL_CHOICE_RDP_PARTNERS"), ("BUDGET_LOOP", "BUDGET_LOOP_SHUFFLED")]:
+        for a, b in [("BUDGET_LOOP", "BUDGET_CHOICE"), ("BUDGET_LOOP_TRADE", "BUDGET_LOOP")]:
             if a in arms and b in arms:
                 out.append(f"| {a} − {b} | {fmt(paired(arms[a]['J4'], arms[b]['J4']))} |")
         out.append("")
-        steps = [st for st in STEPS if st[1] in arms and st[2] in arms and arms[st[1]]["J_T"]]
+        # J_T4 leaves out the query-free shape and margin terms; older runs have only J_T
+        train_key = "J_T4" if any(arms[a].get("J_T4") for a in arms) else "J_T"
+        steps = [st for st in STEPS if st[1] in arms and st[2] in arms and arms[st[1]][train_key]]
         if steps:
-            out.append("Gain of each step in training (J_T) against test (J4, J4-self), "
+            out.append(f"Gain of each step in training ({train_key}) against test (J4, J4-self), "
                        "mean over seeds. Kept = test gain / training gain:\n")
-            out.append("| Step | ΔJ_T | ΔJ4 | kept | ΔJ4_self | kept |")
+            out.append(f"| Step | Δ{train_key} | ΔJ4 | kept | ΔJ4_self | kept |")
             out.append("|---|---:|---:|---:|---:|---:|")
             for name, before, after in steps:
                 row = [f"{name} ({before} → {after})"]
-                train = paired(arms[after]["J_T"], arms[before]["J_T"])
+                train = paired(arms[after][train_key], arms[before][train_key])
                 row.append(fmt(train))
                 for m in ["J4", "J4_self"]:
                     test = paired(arms[after][m], arms[before][m])
