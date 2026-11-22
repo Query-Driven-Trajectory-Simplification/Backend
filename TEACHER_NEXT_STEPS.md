@@ -1,71 +1,52 @@
 # Teacher: status and next steps
 
-Implementation update, 2026-11-20: the range objective and endpoint floor now use macro F1 like
-J4, with exact incremental updates in the loop and F1 marginals for candidate and budget scoring.
-`RDP_GLOBAL`, a database-wide top-down PED baseline, runs alongside the other baselines in
-`teacher_eval` and is enabled in `geolife.json`. It is included in the best-cheap-baseline comparison.
-Continuous kNN now shares a deterministic millimetre-grid ranking between the evaluator and
-tracker; V6 caches rebuild old reference rankings. Limited watch lists remain approximate.
-The numerical findings below predate these changes and need to be checked with fresh runs.
-
-Updated 2026-11-17 on branch `teacher`. The teacher is described in
+Updated 2026-11-22. The teacher is described in
 [engine/src/teacher/README.md](engine/src/teacher/README.md); this file says what is settled and
-what is open.
+what is open. Findings from before 2026-11-22, including the removed arms and the self-trained
+teacher, are in git history.
 
 ## The teacher
 
-`BUDGET_LOOP`: budgets searched on value curves, the best candidate recipe per trajectory, then the
-selection loop, which re-picks each trajectory's recipe against its neighbours' current compressed
-state until nothing switches. kNN is scored as a ranking among the compressed database
-(`teacher.ranking_knn`, the default).
+Trained for held-out queries only: database kNN queries and join queries are originals against
+the simplified database, as in J4. J_T is J4's four terms on the database's own workloads plus two
+query-free terms on each trajectory's Fréchet deviation bound (shape 0.5, margin 1, in
+`engine/configs/geolife.json`).
 
 | Arm | Role |
 |---|---|
-| `EQUAL_CHOICE`, `EQUAL_CHOICE_RDP_PARTNERS`, `EQUAL_LOOP` | the same steps at equal budgets |
-| `BUDGET_RDP` | searched budgets with RDP's points |
-| `BUDGET_CHOICE` | searched budgets and recipe choice, no loop |
-| `BUDGET_LOOP_REALLOCATE` | budgets re-searched after the loop, so they react to neighbours too |
-| `BUDGET_LOOP_NO_UPDATE` | control: one look at the start, no reacting |
-| `BUDGET_LOOP_SHUFFLED` | control: join partners and kNN neighbours relabelled |
+| `BUDGET_RDP` | budgets from value curves, RDP's points |
+| `BUDGET_CHOICE` | budgets and recipe choice per trajectory |
+| `BUDGET_LOOP` | then best response on the tracked J_T |
+| `BUDGET_LOOP_TRADE` | then points traded between trajectories: the teacher |
 | `RECIPE_<recipe>` (baselines in `teacher_eval`) | one recipe for every trajectory |
 
-## Settled (Geolife, 0.25 % unless stated)
+## Settled (Geolife, held-out J4, seeds 42, 7, 99, 123)
 
-- **Budgets per trajectory:** `BUDGET_RDP` 0.553 J4 against `RDP_a0` 0.456, every seed.
-- **Recipe per trajectory:** `EQUAL_CHOICE` beats the best single recipe (`RECIPE_GREEDY_RDP2`) by
-  0.014 to 0.035 J4 at 0.25 % to 1 %, every seed.
-- **Relations, database self join:** trained on the self join, the loop lifts the 150 m self join
-  well above the start; the shuffled control falls far below it. Trained on several thresholds
-  (`teacher.extra_join_eps_m`) the gain holds at thresholds not trained on, at small budgets.
-- **Relations, kNN on held-out queries:** the ranking loop adds 0.01 to 0.05 held-out kNN over the
-  same loop with the per-trajectory score, every seed and budget tested; shuffled neighbours turn
-  it into a loss.
-- **Overall:** `BUDGET_LOOP` J4 0.600 against `RDP_a0` 0.458 at 0.25 %, 0.876 against 0.795 at 1 %
-  (seed 42).
+Research notes: `Teacher pseudo held out selection 2026-11-21`, `Teacher fresh seed confirmation
+2026-11-22` in `~/code/qdts-research/research_notes/`.
+
+| Share | Arm | kNN | join | range | where-at | J4 |
+|---|---|---|---|---|---|---|
+| 0.25 % | RDP_a0 | 0.669 | 0.433 | 0.401 | 0.340 | 0.461 |
+| 0.25 % | BUDGET_LOOP_TRADE | 0.734 | 0.614 | 0.656 | 0.445 | 0.612 |
+| 1 % | RDP_a0 | 0.915 | 0.875 | 0.705 | 0.698 | 0.798 |
+| 1 % | BUDGET_LOOP_TRADE | 0.911 | 0.882 | 0.943 | 0.836 | 0.893 |
+
+- Shape and margin weights were chosen on pseudo-held-out splits of the database (the real query
+  pool never read), then confirmed once on four seeds.
+- At 1 % the teacher trails RDP on held-out kNN by 0.001 to 0.006 per seed; the gap is near-tie
+  swaps (recall with 5 % distance tolerance 0.993 against 0.991).
+- Most of the J4 gain comes from allocation, then recipe choice; the loop and trades add little
+  J4 but win back kNN and join.
 
 ## Open
 
-1. **Held-out kNN and join at larger budgets.** Above 0.25 % the teacher trails `RDP_a0` on
-   held-out kNN, and at 1 % on the held-out join. Its kNN losses carry over to new queries while
-   most of its gains do not.
-2. **Value curves still use the per-trajectory kNN check.** A ranking version against a fixed
-   state that only rescored each query's true neighbours made no difference; one that also rescores
-   intruders is far too slow as is.
-3. **Term weights** (`teacher.term_weights`, `--term-weights`) trade range and where-at for kNN.
-   Seeds 17, 42 and 43 at 0.25 %: with kNN weighted 1×, 2× or 4× `BUDGET_LOOP` beats `RDP_a0` on
-   all four held-out terms on every seed; at 4× held-out kNN is 0.719 against 0.669, for 0.019
-   J4. At 0.5 % (seeds 17 and 43) 4× brings kNN level with `RDP_a0` (0.827 against 0.828) for
-   0.006 J4. At 1 % (seed 42) it barely moves kNN: there the gap comes from the candidates.
-4. **Held-out join thresholds.** `teacher_eval` now scores both joins at every `--eval-eps`
-   threshold. Trained at 150 m only, the held-out join lead at 0.25 % (seeds 42 and 17) peaks at
-   150 m (+0.10 over the best baseline) and falls to −0.01 at 100 m. Trained on 100, 125, 150, 200
-   and 300 m (`teacher.extra_join_eps_m`) it is +0.07 to +0.10 at every threshold from 100 to
-   300 m, including 175 and 250 m, which neither trained on; J4 −0.006. `engine/configs/geolife.json` now trains on these thresholds, and
-   `teacher_eval` scores both joins at 100 to 300 m by default. At 1 % it narrows the gap
-   to the baselines from −0.16 to −0.08 at 100 m and from −0.03 to −0.01 at 300 m, J4 +0.002.
-5. **Budget moves between trajectories scored exactly** with `KnnState` and `JoinState`, beyond
-   what `BUDGET_LOOP_REALLOCATE` does.
-6. **For a paper:** published baselines, a second dataset, the 2 % budget, more seeds.
+1. **The student:** learn the frozen teacher's kept sets or budgets.
+2. **Value curves still use the per-trajectory kNN check** and score the join on i's own slot, not
+   i's effect on its partners' F1.
+3. **For a paper:** published baselines, a second dataset, the 2 % budget, more seeds. The loop
+   controls (shuffled partners, no update) were removed; restore them from git history if a claim
+   about the loop needs them.
 
 ## Evaluation
 
