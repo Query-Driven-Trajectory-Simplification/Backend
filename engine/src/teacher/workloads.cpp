@@ -6,6 +6,7 @@
 #include "backend/engine/query/knn.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -251,15 +252,31 @@ void add_ranked_neighbours(const core::TrajectoryDb &db, TeacherWorkloads &workl
     }
     const auto start = std::chrono::steady_clock::now();
     ranked.assign(db.size(), {});
+    // Fréchet distance is symmetric: once j's list is finished, a query e in it already has
+    // d(e, j), so e's search takes it instead of computing it again
+    std::vector<std::atomic<bool>> done(db.size());
+    std::atomic<std::size_t> reused = 0;
     core::parallel_for(db.size(), [&](std::size_t e) {
         const auto query = db.trajectory(e);
+        const query::KnownDistance known = [&](std::size_t j) -> std::optional<double> {
+            if (j == e || !done[j].load(std::memory_order_acquire))
+                return std::nullopt;
+            for (const auto &neighbour : ranked[j])
+                if (neighbour.index == e) {
+                    reused.fetch_add(1, std::memory_order_relaxed);
+                    return neighbour.distance;
+                }
+            return std::nullopt;
+        };
         // The search's own distances, on the ranking's millimetre grid: no Fréchet recomputed
         for (const auto &[j, distance] :
-             query::knn_with_distances(db, query, want + 1, workloads.frechet))
+             query::knn_with_distances(db, query, want + 1, workloads.frechet, known))
             if (j != e && ranked[e].size() < want)
                 ranked[e].push_back({static_cast<std::uint32_t>(j), distance});
+        done[e].store(true, std::memory_order_release);
     });
-    std::cout << std::format("teacher: ranked neighbours {:.1f} s\n", core::seconds_since(start));
+    std::cout << std::format("teacher: ranked neighbours {:.1f} s, {} distances reused\n",
+                             core::seconds_since(start), reused.load());
     if (file.has_parent_path())
         std::filesystem::create_directories(file.parent_path());
     const auto tmp = file.string() + ".tmp";
