@@ -43,6 +43,10 @@ class PreparedTrajectories {
     std::vector<PreparedTrajectory> m_trajectories;
 };
 
+// Upper bound on the continuous Fréchet distance between a trajectory and a simplification
+// keeping a subsequence of its points. Infinity if kept is not such a subsequence
+double simplification_bound(const core::TrajectoryView &original, const core::TrajectoryView &kept);
+
 inline constexpr std::size_t kTermCount = 4; // kNN, range, where-at, join
 using TermWeights = std::array<double, kTermCount>;
 
@@ -160,6 +164,10 @@ class Objective {
 
     bool match(const core::TrajectoryView &a, const core::TrajectoryView &b,
                std::size_t term = 0) const;
+    // match(original of link.other, candidate), skipping the test when the originals' distance
+    // plus the candidate's own error already proves it. own_error < 0: not yet computed
+    bool held_out_match(std::size_t i, const JoinLink &link, const core::TrajectoryView &candidate,
+                        double &own_error) const;
 
   private:
     struct KnnMembership {
@@ -188,7 +196,8 @@ class Objective {
 
     std::vector<std::uint32_t> m_pair_i, m_pair_j; // pairs used, positives first
     std::vector<std::uint8_t> m_pair_term;
-    std::vector<double> m_eps; // threshold of each join term
+    std::vector<double> m_pair_upper; // held-out positives: bound on the originals' distance
+    std::vector<double> m_eps;        // threshold of each join term
     std::vector<char> m_term_held_out;
     std::size_t m_positive_count = 0;
     std::vector<std::vector<JoinLink>> m_links; // per trajectory
@@ -215,6 +224,9 @@ class RangeState {
         std::vector<char> covered; // in boxes(trajectory) order
     };
     Proposal propose(std::size_t i, const core::TrajectoryView &candidate) const;
+    // Which of i's boxes the candidate covers; independent of the state
+    std::vector<char> coverage(std::size_t i, const core::TrajectoryView &candidate) const;
+    Proposal propose(std::size_t i, std::vector<char> covered) const;
     // A proposal is valid until the next apply()
     void apply(const Proposal &proposal);
     double metric() const;
@@ -243,6 +255,12 @@ class JoinState {
     // Valid until the next apply()
     Proposal propose(std::size_t i, const core::TrajectoryView &candidate,
                      std::span<const core::TrajectoryView> state) const;
+    // Outcomes of i's links, in links(i) order. Held-out links ignore the state; with
+    // held_out_known their outcomes are taken from it instead of retested
+    std::vector<char> outcomes(std::size_t i, const core::TrajectoryView &candidate,
+                               std::span<const core::TrajectoryView> state,
+                               std::span<const char> held_out_known = {}) const;
+    Proposal propose(std::size_t i, std::vector<char> matched) const;
     void apply(const Proposal &proposal);
 
     double metric() const; // as Objective's join metric
@@ -311,8 +329,12 @@ class KnnState {
     struct Watcher {
         std::uint32_t query, position; // position in the query's list
     };
-    // True neighbours in e's top k, with the distance at position replaced
+    // True neighbours in e's top k, with the distance at position replaced. Reads e's ranking
     std::size_t hits(std::size_t e, std::size_t position, double distance) const;
+    // Re-ranks e after its row changed: m_rank[e] and m_hits[e]
+    void refresh(std::size_t e);
+    bool ranks_before(std::size_t e, double distance, std::size_t position,
+                      std::size_t other) const;
     // The same with e's whole row replaced
     std::size_t hits(std::size_t e, std::span<const double> row) const;
     // True neighbours in the top k of order (distance, position)
@@ -328,6 +350,7 @@ class KnnState {
     std::vector<std::vector<std::uint32_t>> m_list; // per query, its true top k first
     std::vector<std::vector<double>> m_distance;    // per query, in list order
     std::vector<std::size_t> m_hits;                // per query
+    std::vector<std::vector<std::uint32_t>> m_rank; // per query, positions of its top k + 1
     std::size_t m_hit_sum = 0;
     std::vector<std::vector<Watcher>> m_watchers; // per trajectory
 };
