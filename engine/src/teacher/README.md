@@ -672,4 +672,4 @@ trackers; `run` updates them in place, so it runs once.
 `engine/tests/teacher/certificate_test.cpp` checks `simplification_bound` never falls below the
 continuous Fréchet distance, alone and added to a discrete pair distance.
 
-`engine/tests/config_test.cpp` has the three teacher config tests.
+`engine/tests/pipeline/config_test.cpp` has the three teacher config tests.

@@ -66,29 +66,29 @@ add_executable(teacher_eval
 target_link_libraries(teacher_eval PRIVATE engine)
 
 add_executable(engine_tests
-    tests/parquet_loader_test.cpp
-    tests/projection_test.cpp
-    tests/split/time_split_test.cpp
+    tests/allocation/size_proportional_test.cpp
+    tests/core/interpolation_test.cpp
+    tests/core/parallel_test.cpp
+    tests/core/projection_test.cpp
+    tests/core/simplification_test.cpp
+    tests/core/subset_test.cpp
+    tests/evaluator/combined_test.cpp
+    tests/evaluator/evaluator_test.cpp
+    tests/io/parquet_loader_test.cpp
+    tests/pipeline/config_test.cpp
+    tests/query/continuous_frechet_test.cpp
+    tests/query/join_test.cpp
+    tests/query/knn_test.cpp
+    tests/query/range_test.cpp
+    tests/query/route_clustering_test.cpp
+    tests/query/where_at_test.cpp
+    tests/selection/rdp_test.cpp
+    tests/selection/sed_test.cpp
+    tests/selection/simplify_database_test.cpp
     tests/split/random_split_test.cpp
-    tests/selectors/rdp_test.cpp
-    tests/selectors/sed_test.cpp
-    tests/size_proportional_test.cpp
-    tests/interpolation_test.cpp
-    tests/where_at_test.cpp
-    tests/evaluator_test.cpp
-    tests/subset_test.cpp
-    tests/simplification_test.cpp
-    tests/selectors/simplify_database_test.cpp
-    tests/range_test.cpp
-    tests/parallel_test.cpp
-    tests/knn_test.cpp
-    tests/config_test.cpp
-    tests/join_test.cpp
-    tests/combined_test.cpp
-    tests/route_clustering_test.cpp
-    tests/continuous_frechet_test.cpp
-    tests/teacher/curves_test.cpp
+    tests/split/time_split_test.cpp
     tests/teacher/certificate_test.cpp
+    tests/teacher/curves_test.cpp
     tests/teacher/teacher_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
