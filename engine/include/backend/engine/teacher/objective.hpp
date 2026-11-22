@@ -94,6 +94,8 @@ struct JoinLink {
 //             (add_ranked_neighbours). Off unless weighted
 // Where-at, shape, margin and the per-trajectory kNN add up over trajectories. Range, join and kNN
 // are tracked under one-at-a-time changes by RangeState, JoinState and KnnState
+class JoinState;
+
 class Objective {
   public:
     enum Term : std::size_t { Knn, Range, WhereAt, Join, Shape, Margin, TermCount };
@@ -105,15 +107,17 @@ class Objective {
 
     // i's scaled where-at, shape and margin, 0 with endpoints only
     double separable(std::size_t i, std::span<const std::size_t> kept) const;
-    double separable(std::size_t i, const core::TrajectoryView &candidate) const;
+    double separable(std::size_t i, const core::TrajectoryView &candidate,
+                     double deviation = -1.0) const;
 
     // Approximate score of i alone: separable, per-trajectory kNN, marginal range F1 against fixed
-    // partners (empty = original), and i's held-out join F1. Exact above beat, otherwise some value
-    // below beat
+    // partners (empty = original), and join (exact partner-slot marginal via join_state when given,
+    // else i's own-slot fallback). Exact above beat, otherwise some value below beat
     double independent_value(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners,
                              double beat = -std::numeric_limits<double>::infinity(),
-                             std::span<const double> range_weights = {}) const;
+                             std::span<const double> range_weights = {},
+                             const JoinState *join_state = nullptr) const;
 
     // A bound followed by scoring without recomputing. Borrows the candidate's coordinates
     struct IndependentScore {
@@ -129,7 +133,8 @@ class Objective {
     };
     IndependentScore prepare_independent(std::size_t i, const core::TrajectoryView &candidate,
                                          std::span<const core::TrajectoryView> partners,
-                                         std::span<const double> range_weights = {}) const;
+                                         std::span<const double> range_weights = {},
+                                         const JoinState *join_state = nullptr) const;
     double independent_value(const IndependentScore &score,
                              double beat = -std::numeric_limits<double>::infinity()) const;
 
@@ -284,6 +289,9 @@ class JoinState {
 
     // Valid until the next apply()
     Proposal propose(std::size_t i, const core::TrajectoryView &candidate) const;
+    // Exact join J_T change from replacing i with candidate, without building a Proposal.
+    // own_error < 0: computed on demand and cached in own_error.
+    double gain(std::size_t i, const core::TrajectoryView &candidate, double &own_error) const;
     // Outcomes of i's links with i as candidate, in links(i) order. They do not depend on the state
     std::vector<char> outcomes(std::size_t i, const core::TrajectoryView &candidate) const;
     Proposal propose(std::size_t i, std::vector<char> matched) const;
@@ -294,6 +302,8 @@ class JoinState {
   private:
     bool counted(std::size_t t, std::size_t found) const;
     double f1(std::size_t t, std::size_t hits, std::size_t found) const;
+    void update_slot(const JoinLink &link, long delta, std::span<double> sum,
+                     std::span<long> n_counted) const;
     // The query's counts: link.other queries i
     std::size_t count(const JoinLink &link) const {
         return m_objective.slot(link.other, link.term);

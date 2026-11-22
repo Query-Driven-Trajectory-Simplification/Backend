@@ -181,15 +181,18 @@ TEST(Knn, WithDistancesGivesTheSameNeighboursAndTheirKeys) {
     std::mt19937_64 rng(31);
     const auto db = make_db(random_tracks(rng, 200));
     const auto queries = make_db(random_tracks(rng, 30));
-    for (std::size_t q = 0; q < queries.size(); ++q)
-        for (const std::size_t k : {1u, 5u, 20u}) {
-            const auto plain = query::knn(db, queries.trajectory(q), k);
-            const auto ranked = query::knn_with_distances(db, queries.trajectory(q), k);
-            ASSERT_EQ(ranked.size(), plain.size());
-            for (std::size_t r = 0; r < plain.size(); ++r) {
-                EXPECT_EQ(ranked[r].first, plain[r]);
-                EXPECT_EQ(ranked[r].second,
-                          query::knn_distance(queries.trajectory(q), db.trajectory(plain[r])));
+    for (const auto variant : {query::FrechetVariant::Continuous, query::FrechetVariant::Discrete})
+        for (std::size_t q = 0; q < queries.size(); ++q)
+            for (const std::size_t k : {1u, 5u, 20u}) {
+                const auto plain = query::knn(db, queries.trajectory(q), k, variant);
+                const auto ranked =
+                    query::knn_with_distances(db, queries.trajectory(q), k, variant);
+                ASSERT_EQ(ranked.size(), plain.size());
+                for (std::size_t r = 0; r < plain.size(); ++r) {
+                    EXPECT_EQ(ranked[r].first, plain[r]);
+                    EXPECT_EQ(ranked[r].second,
+                              query::knn_distance(queries.trajectory(q), db.trajectory(plain[r]),
+                                                  variant));
+                }
             }
-        }
 }

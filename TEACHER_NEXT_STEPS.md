@@ -9,7 +9,7 @@ teacher, are in git history.
 
 Trained for held-out queries only: database kNN queries and join queries are originals against
 the simplified database, as in J4. J_T is J4's four terms on the database's own workloads plus two
-query-free terms on each trajectory's Fréchet deviation bound (shape 0.5, margin 1, in
+query-free terms on each trajectory's Fréchet deviation bound (shape 1, margin 1, in
 `engine/configs/geolife.json`).
 
 | Arm | Role |
@@ -42,8 +42,7 @@ Research notes: `Teacher pseudo held out selection 2026-11-21`, `Teacher fresh s
 ## Open
 
 1. **The student:** learn the frozen teacher's kept sets or budgets.
-2. **Value curves still use the per-trajectory kNN check** and score the join on i's own slot, not
-   i's effect on its partners' F1.
+2. **Value curves still use the per-trajectory kNN check** (join scoring now uses partners' F1 slots via `JoinState::gain`).
 3. **For a paper:** published baselines, a second dataset, the 2 % budget, more seeds. The loop
    controls (shuffled partners, no update) were removed; restore them from git history if a claim
    about the loop needs them.
