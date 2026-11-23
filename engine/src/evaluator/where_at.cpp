@@ -1,5 +1,6 @@
 #include "backend/engine/evaluator/where_at.hpp"
 #include "backend/engine/core/interpolation.hpp"
+#include "backend/engine/core/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -77,11 +78,32 @@ WhereAtScores evaluate_where_at(const core::TrajectoryDb &compressed,
         !std::isfinite(config.max_tolerance_m) || config.max_tolerance_m <= config.min_tolerance_m)
         throw std::invalid_argument("where-at: invalid scoring distances");
 
-    std::vector<TripScore> trips(compressed.size());
+    if (queries.empty())
+        return {};
+
+    // Group probe indices by trajectory in original order so each trajectory accumulates
+    // independently in parallel while preserving exact sequential summation order.
+    std::vector<std::size_t> offsets(compressed.size() + 1, 0);
     for (const auto &probe : queries) {
-        const double error = query_error(compressed, probe);
-        add_error(trips[probe.trajectory_index], error, config);
+        if (probe.trajectory_index >= compressed.size())
+            throw std::invalid_argument("where-at: missing trajectory");
+        ++offsets[probe.trajectory_index + 1];
     }
+    for (std::size_t i = 0; i < compressed.size(); ++i)
+        offsets[i + 1] += offsets[i];
+
+    std::vector<std::size_t> probe_indices(queries.size());
+    std::vector<std::size_t> write_pos(offsets.begin(), offsets.end() - 1);
+    for (std::size_t q = 0; q < queries.size(); ++q)
+        probe_indices[write_pos[queries[q].trajectory_index]++] = q;
+
+    std::vector<TripScore> trips(compressed.size());
+    core::parallel_for(compressed.size(), [&](std::size_t i) {
+        for (std::size_t pos = offsets[i]; pos < offsets[i + 1]; ++pos) {
+            const double error = query_error(compressed, queries[probe_indices[pos]]);
+            add_error(trips[i], error, config);
+        }
+    });
     return average_trip_scores(trips);
 }
 

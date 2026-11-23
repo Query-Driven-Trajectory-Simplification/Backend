@@ -1,4 +1,0 @@
-Allocation stuff.
-Proportional length allocator
-knn in-degree allocator
-etc etc
