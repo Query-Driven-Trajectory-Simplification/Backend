@@ -186,9 +186,11 @@ struct Pick {
 // best bound first so losers skip most kNN checks
 Pick pick(const Objective &objective, std::size_t i,
           std::span<const std::pair<std::size_t, core::TrajectoryView>> options,
-          std::span<const core::TrajectoryView> partners, std::span<const double> range_weights) {
-    const double rdp = objective.independent_value(
-        i, options[0].second, partners, -std::numeric_limits<double>::infinity(), range_weights);
+          std::span<const core::TrajectoryView> partners, std::span<const double> range_weights,
+          const JoinState &join) {
+    const double rdp =
+        objective.independent_value(i, options[0].second, partners,
+                                    -std::numeric_limits<double>::infinity(), range_weights, &join);
     Pick best{options[0].first, rdp, rdp};
     std::vector<Objective::IndependentScore> scores;
     scores.reserve(options.size() - 1);
@@ -196,7 +198,7 @@ Pick pick(const Objective &objective, std::size_t i,
     order.reserve(options.size() - 1);
     for (std::size_t k = 1; k < options.size(); ++k) {
         scores.push_back(
-            objective.prepare_independent(i, options[k].second, partners, range_weights));
+            objective.prepare_independent(i, options[k].second, partners, range_weights, &join));
         order.push_back({scores.back().bound, k});
     }
     std::ranges::sort(order, std::greater{});
@@ -225,6 +227,7 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
     const PreparedTrajectories prepared(db, partners);
     const auto partner_views = prepared.views();
     const RangeState range(objective, partner_views);
+    const JoinState join(objective, partner_views);
     core::parallel_for(db.size(), [&](std::size_t i) {
         const auto range_weights = range.weights(i);
         auto &maker = maker_for(makers, objective, i, caps[i]);
@@ -253,7 +256,7 @@ Curves build_curves(const core::TrajectoryDb &db, const Objective &objective,
                     owned[slot].assign(db.trajectory(i), kept[c]);
                 options.push_back({c, owned[slot].view()});
             }
-            const auto chosen = pick(objective, i, options, partner_views, range_weights);
+            const auto chosen = pick(objective, i, options, partner_views, range_weights, join);
             rdp.value.push_back(chosen.rdp);
             rdp.method.push_back(kRdp);
             best.value.push_back(chosen.value);
@@ -320,8 +323,8 @@ class Search {
         start = std::chrono::steady_clock::now();
         const auto active = [&](std::size_t i) {
             return !objective.boxes(i).empty() || !objective.links(i).empty() ||
-                   m_knn->watched(i) || objective.scale(Objective::Shape) > 0 ||
-                   objective.scale(Objective::Margin) > 0;
+                   !objective.probes(i).empty() || m_knn->watched(i) ||
+                   objective.scale(Objective::Shape) > 0 || objective.scale(Objective::Margin) > 0;
         };
         for (std::size_t i = 0; i < db.size(); ++i)
             if (active(i))
@@ -434,18 +437,22 @@ class Search {
 struct Checked {
     Methods methods;
     double value; // exact J_T of methods
+    Objective::Terms metrics;
 };
 Checked checked_loop(const Objective &objective, const Candidates &candidates, const Methods &start,
-                     std::optional<double> before, Methods looped, std::string_view name) {
-    if (!before)
-        before = objective.total(assemble(candidates, start));
-    const double after = objective.total(assemble(candidates, looped));
-    const bool lost = after < *before;
-    std::cout << std::format("teacher: {} exact check, J_T {:.6f} -> {:.6f}{}\n", name, *before,
+                     std::optional<Objective::Terms> before_metrics, Methods looped,
+                     std::string_view name) {
+    if (!before_metrics)
+        before_metrics = objective.metrics(assemble(candidates, start));
+    const double before = objective.total(*before_metrics);
+    auto after_metrics = objective.metrics(assemble(candidates, looped));
+    const double after = objective.total(after_metrics);
+    const bool lost = after < before;
+    std::cout << std::format("teacher: {} exact check, J_T {:.6f} -> {:.6f}{}\n", name, before,
                              after, lost ? ", lost: keeping the start" : "");
     if (lost)
-        return {start, *before};
-    return {std::move(looped), after};
+        return {start, before, *before_metrics};
+    return {std::move(looped), after, after_metrics};
 }
 
 struct Traded {
@@ -543,10 +550,10 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
                     seen.push_back(candidate);
                     const PreparedTrajectory prepared(db.trajectory(i), candidate);
                     const auto view = prepared.view();
-                    double gain = objective.separable(i, view) - separable[i] +
-                                  join.propose(i, view).gain + range.propose(i, view).gain;
-                    gain +=
-                        knn.propose_bounded(i, view, state_error[i] + objective.deviation(i, view));
+                    double dev = objective.deviation(i, view);
+                    double gain = objective.separable(i, view, dev) - separable[i] +
+                                  join.gain(i, view, dev) + range.propose(i, view).gain;
+                    gain += knn.propose_bounded(i, view, state_error[i] + dev);
                     if (gain > best.gain)
                         best = {gain, std::move(candidate)};
                 }
@@ -718,18 +725,16 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
         caps[i] = std::min(std::max(cap, equal_budgets[i]), db.trajectory(i).size());
 
     std::map<std::string, Arm, std::less<>> outputs;
-    // Returns the arm's exact J_T; known skips recomputing it
+    // Returns the arm's exact terms; known skips recomputing them
     auto keep = [&](std::string_view name, const Candidates &from, const Methods &method,
-                    std::optional<double> known = {}) {
+                    std::optional<Objective::Terms> known = {}) {
         auto kept = assemble(from, method);
-        std::optional<Objective::Terms> metrics;
-        if (!known)
-            metrics = objective.metrics(kept);
-        const double j_t = known ? *known : objective.total(*metrics);
+        const auto metrics = known ? *known : objective.metrics(kept);
+        const double j_t = objective.total(metrics);
         std::cout << std::format("teacher {}: {}, J_T {:.4f}\n", name, wins(method), j_t);
         outputs[std::string(name)] = {std::string(name), core::to_simplification(kept), j_t,
                                       metrics};
-        return j_t;
+        return metrics;
     };
     auto start = std::chrono::steady_clock::now();
     auto timed = [&](std::string_view step) {
@@ -771,18 +776,18 @@ std::vector<Arm> Teacher::run(std::size_t total_budget, std::span<const std::str
     const auto choice = curve_methods(curves.best, budgets);
     const auto candidates =
         make_candidates(objective, budgets, caps, makers, needs_loop ? nullptr : &choice);
-    std::optional<double> choice_value;
+    std::optional<Objective::Terms> choice_metrics;
     if (want_choice)
-        choice_value = keep("BUDGET_CHOICE", candidates, choice);
+        choice_metrics = keep("BUDGET_CHOICE", candidates, choice);
     if (!needs_loop)
         return collect(outputs, arms);
 
     const auto checked =
-        checked_loop(objective, candidates, choice, choice_value,
+        checked_loop(objective, candidates, choice, choice_metrics,
                      Search(db, objective, candidates, choice).run(m_seed), "BUDGET_LOOP");
     timed("BUDGET_LOOP");
     if (want_loop)
-        keep("BUDGET_LOOP", candidates, checked.methods, checked.value);
+        keep("BUDGET_LOOP", candidates, checked.methods, checked.metrics);
     if (want_trade) {
         auto traded = trade_budgets(db, objective, caps, makers,
                                     assemble(candidates, checked.methods), checked.value);
@@ -801,8 +806,9 @@ std::vector<Arm> Teacher::single_recipes(std::size_t total_budget) const {
     std::vector<Arm> arms;
     for (std::size_t c = 0; c < kCandidates.size(); ++c) {
         const auto name = std::format("RECIPE_{}", kCandidates[c]);
+        const auto metrics = m_objective.metrics(candidates[c]);
         arms.push_back(
-            {name, core::to_simplification(candidates[c]), m_objective.total(candidates[c]), {}});
+            {name, core::to_simplification(candidates[c]), m_objective.total(metrics), metrics});
         std::cout << std::format("teacher {}: J_T {:.4f}\n", name, arms.back().objective);
     }
     return arms;

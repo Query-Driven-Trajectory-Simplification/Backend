@@ -249,6 +249,8 @@ TEST_F(TeacherTest, ObjectiveIsZeroAtTheFloorAndTracksJoinExactly) {
             const auto next_view = state[i].size() == 2 ? full_views[i] : floor_views[i];
             const double old_metric = join.metric();
             const auto proposal = join.propose(i, next_view);
+            double own_error = -1.0;
+            EXPECT_NEAR(join.gain(i, next_view, own_error), proposal.gain, 1e-12);
             const auto range_proposal = range.propose(i, next_view);
             // Proposing must not change the state or this proposal
             const auto stay = join.propose(i, views[i]);
@@ -394,6 +396,8 @@ TEST_F(TeacherTest, SeveralJoinTermsAreTrackedExactly) {
             const auto next_view = grow ? full_views[i] : floor_views[i];
             const double before = objective.total(state);
             const auto proposal = join.propose(i, next_view);
+            double own_error = -1.0;
+            EXPECT_NEAR(join.gain(i, next_view, own_error), proposal.gain, 1e-12);
             const auto range_proposal = range.propose(i, next_view);
             const double separable =
                 objective.separable(i, next) - objective.separable(i, state[i]);
@@ -830,6 +834,17 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                         EXPECT_NEAR(objective.independent_value(score), expected, 1e-12);
                         EXPECT_NEAR(objective.independent_value(i, views[i], partners), expected,
                                     1e-12);
+                        if (!original_partners) {
+                            const teacher::JoinState join_state(objective, views);
+                            const auto partner_score = objective.prepare_independent(
+                                i, views[i], partners, weights, &join_state);
+                            const double partner_expected =
+                                objective.separable(i, views[i]) + knn +
+                                objective.scale(teacher::Objective::Range) * range_gain +
+                                join_state.propose(i, views[i]).gain;
+                            EXPECT_NEAR(objective.independent_value(partner_score),
+                                        partner_expected, 1e-12);
+                        }
                     }
                 }
             }
@@ -943,44 +958,65 @@ core::TrajectoryDb near_duplicates(std::uint64_t seed, std::size_t count, std::s
 
 TEST_F(TeacherTest, BoundedKnnProposalsMatchFullDistances) {
     const auto db = near_duplicates(5, 24, 20);
+    for (const auto variant :
+         {query::FrechetVariant::Continuous, query::FrechetVariant::Discrete}) {
+        SCOPED_TRACE(variant == query::FrechetVariant::Continuous ? "continuous" : "discrete");
+        auto config = small_config();
+        config.extra_join_eps_m.clear();
+        config.k = 2;
+        config.frechet = variant;
+        const auto workloads = teacher::load_or_build_workloads(db, config, 3, m_dir);
+        const teacher::Objective objective(db, workloads);
+        std::mt19937_64 rng(8);
+        auto random_kept = [&](std::size_t i) {
+            const std::size_t n = db.trajectory(i).size();
+            std::vector<std::size_t> kept{0};
+            for (std::size_t k = 1; k + 1 < n; ++k)
+                if (rng() % 3 == 0)
+                    kept.push_back(k);
+            kept.push_back(n - 1);
+            return kept;
+        };
+        for (const bool start_full : {true, false}) {
+            teacher::KeptSets state = start_full ? every_point(db) : teacher::KeptSets(db.size());
+            if (!start_full)
+                for (std::size_t i = 0; i < db.size(); ++i)
+                    state[i] = random_kept(i);
+            const teacher::KnnState knn(objective, state, db.size());
+            std::size_t changed = 0;
+            for (std::size_t i = 0; i < db.size(); ++i)
+                for (int trial = 0; trial < 8; ++trial) {
+                    const teacher::PreparedTrajectory candidate(db.trajectory(i), random_kept(i));
+                    const double full = knn.propose(i, knn.distances(i, candidate.view()));
+                    EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view()), full) << i;
+                    // With the deviation bounds of the current version and the candidate as reach
+                    const teacher::PreparedTrajectory current(db.trajectory(i), state[i]);
+                    EXPECT_DOUBLE_EQ(
+                        knn.propose_bounded(i, candidate.view(),
+                                            objective.deviation(i, current.view()) +
+                                                objective.deviation(i, candidate.view())),
+                        full)
+                        << i;
+                    changed += full != 0.0;
+                }
+            EXPECT_GT(changed, 0u);
+        }
+    }
+}
+
+TEST_F(TeacherTest, KnnStateWithNoValidQueriesReturnsZero) {
+    const auto db = near_duplicates(5, 24, 20);
     auto config = small_config();
     config.extra_join_eps_m.clear();
-    config.k = 2;
+    config.k = db.size(); // no trajectory has k + 1 other trajectories, so zero valid kNN queries
     const auto workloads = teacher::load_or_build_workloads(db, config, 3, m_dir);
     const teacher::Objective objective(db, workloads);
-    std::mt19937_64 rng(8);
-    auto random_kept = [&](std::size_t i) {
-        const std::size_t n = db.trajectory(i).size();
-        std::vector<std::size_t> kept{0};
-        for (std::size_t k = 1; k + 1 < n; ++k)
-            if (rng() % 3 == 0)
-                kept.push_back(k);
-        kept.push_back(n - 1);
-        return kept;
-    };
-    for (const bool start_full : {true, false}) {
-        teacher::KeptSets state = start_full ? every_point(db) : teacher::KeptSets(db.size());
-        if (!start_full)
-            for (std::size_t i = 0; i < db.size(); ++i)
-                state[i] = random_kept(i);
-        const teacher::KnnState knn(objective, state, db.size());
-        std::size_t changed = 0;
-        for (std::size_t i = 0; i < db.size(); ++i)
-            for (int trial = 0; trial < 8; ++trial) {
-                const teacher::PreparedTrajectory candidate(db.trajectory(i), random_kept(i));
-                const double full = knn.propose(i, knn.distances(i, candidate.view()));
-                EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view()), full) << i;
-                // With the deviation bounds of the current version and the candidate as reach
-                const teacher::PreparedTrajectory current(db.trajectory(i), state[i]);
-                EXPECT_DOUBLE_EQ(knn.propose_bounded(i, candidate.view(),
-                                                     objective.deviation(i, current.view()) +
-                                                         objective.deviation(i, candidate.view())),
-                                 full)
-                    << i;
-                changed += full != 0.0;
-            }
-        EXPECT_GT(changed, 0u);
-    }
+    const teacher::KnnState knn(objective, every_point(db), db.size());
+    EXPECT_DOUBLE_EQ(knn.metric(), 0.0);
+    EXPECT_DOUBLE_EQ(knn.propose(0, {}), 0.0);
+    const std::array<std::size_t, 2> endpoints{0, db.trajectory(0).size() - 1};
+    const teacher::PreparedTrajectory candidate(db.trajectory(0), endpoints);
+    EXPECT_DOUBLE_EQ(knn.propose_bounded(0, candidate.view(), 0.0), 0.0);
 }
 
 TEST_F(TeacherTest, WatchingVersionsMakesKnnProposalsExact) {

@@ -297,7 +297,7 @@ use J4's metric definitions on database queries; the value curves use a per-traj
 instead. Improvements on training workloads must still be checked against held-out J4.
 
 Six terms, each normalised `(metric − floor) / (1 − floor)`, then averaged with
-`term_weights` (Geolife: 1, 1, 1, 1, 0.5, 1):
+`term_weights` (Geolife: 1, 1, 1, 1, 1, 1):
 
 | Term | Per trajectory i, simplified | Mirrors |
 |---|---|---|
@@ -396,12 +396,13 @@ trajectory can't have a point in a box the original had none in.
 
 - **Why:** the value curves need one number per (trajectory, candidate), computed without knowing
   what the other trajectories will choose.
-- **Input:** trajectory index, a prepared candidate view, and fixed partner views (empty means
-  original partners). Partners only enter the range marginals.
+- **Input:** trajectory index, a prepared candidate view, fixed partner views (empty means
+  original partners), and an optional `JoinState` built on those partners. Partners enter the range
+  marginals and, via `JoinState`, the join marginals.
 - **Computation:** `separable(i, candidate)`, plus the per-trajectory kNN check over i's
-  memberships, plus the marginal range F1 of covering i against the partners, plus i's held-out
-  join F1: count `found` and `hits` over i's links using `held_out_match`, then add
-  `m_scale[Join] · Σ_k m_join_weight[k] · F1_ik / (trajectories with truth in term k)`.
+  memberships, plus the marginal range F1 of covering i against the partners, plus the exact
+  marginal held-out join F1 on i's partners' slots (`JoinState::gain`, with an own-slot fallback
+  when no `JoinState` is supplied).
 - **Output:** an approximate per-trajectory score: range is marginal against fixed partners and
   kNN ignores competitors. The loop corrects both.
 - `prepare_independent` computes the range, where-at and join terms once, together with

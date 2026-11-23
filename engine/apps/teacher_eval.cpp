@@ -556,7 +556,8 @@ int main(int argc, char **argv) try {
                 arms.push_back(std::move(arm));
             for (const double share : config.budget_shares)
                 for (auto &arm : model.single_recipes(allocation::total_budget(db, share)))
-                    arms.push_back({arm.name, share, core::to_kept(arm.simplification), {}});
+                    arms.push_back(
+                        {arm.name, share, core::to_kept(arm.simplification), arm.metrics});
         }
         for (const auto &arm : arms) {
             validate(arm, db);
@@ -668,8 +669,7 @@ int main(int argc, char **argv) try {
                                  norm(teacher::Objective::Range), norm(teacher::Objective::WhereAt),
                                  norm(teacher::Objective::Join), normalized.knn, normalized.range,
                                  normalized.where_at, normalized.join, normalized.self_join,
-                                 teacher_metrics[teacher::Objective::Shape],
-                                 teacher_metrics[teacher::Objective::Margin]);
+                                 norm(teacher::Objective::Shape), norm(teacher::Objective::Margin));
             if (args.knn_check) {
                 const double db_knn = objective.knn_recall(compressed);
                 knn_check << std::format("{},{},{},{},{},{},{},{},{}\n", seed, arm.share, arm.name,
