@@ -401,8 +401,7 @@ trajectory can't have a point in a box the original had none in.
   marginals and, via `JoinState`, the join marginals.
 - **Computation:** `separable(i, candidate)`, plus the per-trajectory kNN check over i's
   memberships, plus the marginal range F1 of covering i against the partners, plus the exact
-  marginal held-out join F1 on i's partners' slots (`JoinState::gain`, with an own-slot fallback
-  when no `JoinState` is supplied).
+  marginal held-out join F1 on i's partners' slots (`JoinState::gain`) when `JoinState` is given.
 - **Output:** an approximate per-trajectory score: range is marginal against fixed partners and
   kNN ignores competitors. The loop corrects both.
 - `prepare_independent` computes the range, where-at and join terms once, together with

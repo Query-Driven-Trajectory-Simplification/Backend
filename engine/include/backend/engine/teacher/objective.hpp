@@ -111,8 +111,8 @@ class Objective {
                      double deviation = -1.0) const;
 
     // Approximate score of i alone: separable, per-trajectory kNN, marginal range F1 against fixed
-    // partners (empty = original), and join (exact partner-slot marginal via join_state when given,
-    // else i's own-slot fallback). Exact above beat, otherwise some value below beat
+    // partners (empty = original), and partner-slot join marginal when join_state is given.
+    // Exact above beat, otherwise some value below beat
     double independent_value(std::size_t i, const core::TrajectoryView &candidate,
                              std::span<const core::TrajectoryView> partners,
                              double beat = -std::numeric_limits<double>::infinity(),
@@ -214,8 +214,12 @@ class Objective {
     std::vector<std::vector<KnnMembership>> m_knn;
     double m_knn_weight = 0; // 1 / (k * valid queries)
     std::vector<std::vector<RangeMembership>> m_range;
-    std::size_t m_scored_boxes = 0;                   // boxes with a nonempty reference
+    std::size_t m_scored_boxes = 0; // boxes with a nonempty reference
+    struct Probe {
+        double t, x, y;
+    };
     std::vector<std::vector<std::uint32_t>> m_probes; // where-at query indices per trajectory
+    std::vector<std::vector<Probe>> m_sorted_probes;  // same probes, sorted by t for linear scan
     double m_where_at_weight = 0;                     // 1 / trajectories with probes
     double m_shape_weight = 0;                        // 1 / trajectories
     std::vector<std::vector<double>> m_margins;       // per trajectory, one per kNN membership
@@ -291,8 +295,6 @@ class JoinState {
 
     // Valid until the next apply()
     Proposal propose(std::size_t i, const core::TrajectoryView &candidate) const;
-    // Exact range J_T change from replacing i with candidate, without building a Proposal
-    double gain(std::size_t i, const core::TrajectoryView &candidate) const;
     // Exact join J_T change from replacing i with candidate, without building a Proposal.
     // own_error < 0: computed on demand and cached in own_error.
     double gain(std::size_t i, const core::TrajectoryView &candidate, double &own_error) const;
