@@ -9,24 +9,37 @@ import rl4_shims
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--rl4", default=rl4_shims.UPSTREAM,
-                    help="the authors' RL4QDTS code (default third_party/RL4QDTS)")
-    ap.add_argument("--db", required=True, help="folder written by export_rl4.py")
-    ap.add_argument("--label", choices=["data", "gau"], required=True)
-    ap.add_argument("--inb", required=True, help="Agent-Point weights (.h5)")
-    ap.add_argument("--oub", required=True, help="Agent-Cube weights (.h5)")
-    ap.add_argument("--shares", type=float, nargs="+", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--seed", type=int)
-    ap.add_argument("--name", help="method name in the output files (default RL4_<label>)")
+    ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    ap.add_argument("--db", required=True,
+                    help="folder written by export_rl4.py --ids database_ids.csv (all of the database)")
+    ap.add_argument("--inb", required=True, help="Agent-Point weights (.h5), e.g. <train out>/best_INB.h5")
+    ap.add_argument("--oub", required=True, help="Agent-Cube weights (.h5), e.g. <train out>/best_OUB.h5")
+    ap.add_argument("--out", required=True, help="folder for the kept points (the config's external.dir)")
     ap.add_argument("--fixed", action="store_true",
                     help="use np.tanh; the authors' tanh turns large inputs into NaN "
                          "(the agent then always picks action 0)")
-    ap.add_argument("--numpy", action="store_true", help=argparse.SUPPRESS)  # old flag, now always
+    ap.add_argument("--name", help="method name in the output files, as in the config's "
+                                   "external.methods (default RL4_<label>)")
+    ap.add_argument("--config", default=os.path.join(os.path.dirname(rl4_shims.HERE), "engine",
+                                                     "configs", "geolife.json"),
+                    help="engine config whose budget_shares are used")
+    ap.add_argument("--shares", type=float, nargs="+",
+                    help="budget shares instead of the config's budget_shares")
+    ap.add_argument("--label", choices=["data", "gau"], default="data",
+                    help="'gau' only for the authors' shipped model_gau_* weights")
     ap.add_argument("--no-cube-agent", action="store_true", help="ablation: no Agent-Cube")
     ap.add_argument("--no-point-agent", action="store_true", help="ablation: no Agent-Point")
+    # Rarely needed: the code folder, and a seed that only adds _s<N> to the names (output is
+    # reproducible without it)
+    ap.add_argument("--rl4", default=rl4_shims.UPSTREAM, help=argparse.SUPPRESS)
+    ap.add_argument("--seed", type=int, help=argparse.SUPPRESS)
+    ap.add_argument("--numpy", action="store_true", help=argparse.SUPPRESS)  # old flag, now always
     args = ap.parse_args()
+    if args.shares is None:
+        import json
+        with open(args.config) as f:
+            args.shares = json.load(f)["budget_shares"]
+        print(f"budget shares from {args.config}: {args.shares}")
 
     rl4_shims.install(os.path.abspath(args.rl4))
     import random

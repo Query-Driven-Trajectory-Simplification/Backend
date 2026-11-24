@@ -7,7 +7,7 @@ Differences from the authors' script (the first three only with --fixed; without
 - First reward: the reward is the F1 *change* since the previous query (paper, Eq. 10). The authors
   start from pre = 0, so the first reward of every round is the whole F1 of the initial database
   (endpoints only), ~100x a normal reward.
-- Last window: transitions after the last full window of --query-count steps get their reward too.
+- Last window: transitions after the last full window of --reward-every steps get their reward too.
   The authors drop them, so e.g. Agent-Point's terminal transition is never stored.
 - Range queries: with --range-queries, the rewards and validation use our range queries and F1
   (the engine's practice workload, see rl4_queries.py) instead of the authors' grid cells. Each
@@ -37,35 +37,38 @@ import rl4_shims
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--rl4", default=rl4_shims.UPSTREAM,
-                    help="the authors' RL4QDTS code (default third_party/RL4QDTS)")
-    ap.add_argument("--db", required=True, help="folder written by export_rl4.py (use --shuffle-seed)")
+    ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    ap.add_argument("--db", required=True,
+                    help="folder written by export_rl4.py --ids database_ids.csv --shuffle-seed N")
+    ap.add_argument("--out", required=True, help="folder for checkpoints and the log")
     queries = ap.add_mutually_exclusive_group(required=True)
     queries.add_argument("--range-queries",
                          help="our practice range queries (range_practice.parquet from the engine's "
                               "rl4_export, the same run whose database_ids.csv --db was exported from)")
     queries.add_argument("--their-queries", action="store_true",
                          help="the authors' range queries (grid cells) instead of ours")
-    ap.add_argument("--train-queries", type=int, default=50,
-                    help="with --range-queries: queries per training chunk (the authors use 50)")
-    ap.add_argument("--val-queries", type=int, default=100,
-                    help="with --range-queries: validation queries (the authors use 100)")
-    ap.add_argument("--out", required=True, help="folder for checkpoints and the log")
-    ap.add_argument("--train", type=int, default=1500, help="trajectories 0..train-1 are for training")
-    ap.add_argument("--val", type=int, help="validation trajectories after --train (default: the rest)")
-    ap.add_argument("--chunk", type=int, default=500, help="trajectories per training epoch")
-    ap.add_argument("--epochs", type=int, default=12)
-    ap.add_argument("--rounds", type=int, default=5, help="rounds per epoch, a checkpoint after each")
-    ap.add_argument("--ratio", type=float, default=0.0025, help="training budget, share of points")
-    ap.add_argument("--query-count", type=int, default=50, help="steps between rewards")
-    ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--fixed", action="store_true",
                     help="fix the stop action, the first reward and the last window (see CHANGES.md)")
-    ap.add_argument("--keep-stop-bug", action="store_true",
-                    help="with --fixed, still never store the stop action (ablation)")
-    ap.add_argument("--keep-reward-bugs", action="store_true",
-                    help="with --fixed, still use the absolute first F1 and skip the last window (ablation)")
+    ap.add_argument("--seed", type=int, default=1, help="agents' initial weights and exploration")
+    # The authors' sizes: 12 epochs of 500 new trajectories each, 1,000 for validation
+    ap.add_argument("--train", type=int, default=6000, help="trajectories 0..train-1 are for training")
+    ap.add_argument("--val", type=int, default=1000, help="validation trajectories after --train")
+    ap.add_argument("--chunk", type=int, default=500, help="training trajectories per epoch")
+    ap.add_argument("--epochs", type=int, default=12,
+                    help="one chunk per epoch; train/chunk epochs see every training trajectory once")
+    ap.add_argument("--rounds", type=int, default=5, help="rounds per epoch, a checkpoint after each")
+    ap.add_argument("--train-queries", type=int, default=200,
+                    help="with --range-queries: queries per training chunk")
+    ap.add_argument("--val-queries", type=int, default=500,
+                    help="with --range-queries: queries for validation")
+    ap.add_argument("--ratio", type=float, default=0.0025,
+                    help="training budget, share of interior points (our smallest budget share)")
+    ap.add_argument("--reward-every", type=int, default=50,
+                    help="points added between two rewards (the authors' query_count)")
+    # Rarely needed: the code folder and single-fix ablations (see CHANGES.md)
+    ap.add_argument("--rl4", default=rl4_shims.UPSTREAM, help=argparse.SUPPRESS)
+    ap.add_argument("--keep-stop-bug", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--keep-reward-bugs", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if not args.fixed:
         args.keep_stop_bug = args.keep_reward_bugs = True
@@ -86,9 +89,9 @@ def main():
     with open(os.path.join(args.db, "index.csv")) as f:
         trajectory_ids = [int(r["trajectory_id"]) for r in csv.DictReader(f)]
     n = len(trajectory_ids)
-    val_end = n if args.val is None else min(n, args.train + args.val)
-    if not 0 < args.train < val_end:
-        sys.exit(f"--train {args.train} leaves no validation data ({n} trajectories)")
+    if args.train <= 0 or args.val <= 0 or args.train + args.val > n:
+        sys.exit(f"--train {args.train} + --val {args.val} must fit in the {n} trajectories of --db")
+    val_end = args.train + args.val
     os.makedirs(args.out, exist_ok=True)
 
     practice = None
@@ -156,6 +159,13 @@ def main():
         return env.submit_query(rtree_ref_val, val_query), levels
 
     chunks = [(s, min(s + args.chunk, args.train)) for s in range(0, args.train, args.chunk)]
+    used = sum(e - s for s, e in chunks[:args.epochs])
+    print(f"training: trajectories 0..{args.train - 1} in {len(chunks)} chunks of {args.chunk}; "
+          f"{args.epochs} epochs use {used} of them"
+          + ("" if args.epochs >= len(chunks) else
+             f" (--epochs {len(chunks)} would use all)")
+          + f"; {n - val_end} of the {n} trajectories in --db are outside --train and --val",
+          flush=True)
     log_path = os.path.join(args.out, "train_log.csv")
     with open(log_path, "w", newline="") as f:
         csv.writer(f).writerow(["epoch", "round", "first_traj", "last_traj", "val_f1",
@@ -230,7 +240,7 @@ def main():
                     trans_inb.append([obs_inb[-2], act_inb[-1], obs_inb[-1], done])
                 act_inb.append(action)
 
-                if step % args.query_count == 0 or (done and not args.keep_reward_bugs):
+                if step % args.reward_every == 0 or (done and not args.keep_reward_bugs):
                     reward = env_sel.submit_query(rtree_ref_tra, train_query)
                     for tr in trans_inb:
                         RL_INB.remember(tr[0], tr[1], reward, tr[2], tr[3])
@@ -239,7 +249,7 @@ def main():
                             RL_OUB.remember(tr[0], tr[1], reward, tr[2], tr[3])
                     trans_inb.clear()
                     trans_oub_tmp.clear()
-                if step % args.query_count == 0 or done:
+                if step % args.reward_every == 0 or done:
                     if len(RL_INB.memory) > batch_size:
                         RL_INB.replay(batch_size)
                     if len(RL_OUB.memory) > batch_size:
