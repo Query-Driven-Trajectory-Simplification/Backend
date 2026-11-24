@@ -21,6 +21,7 @@ add_library(engine
     src/pipeline/test_workloads.cpp
     src/selection/rdp.cpp
     src/selection/bottom_up.cpp
+    src/selection/distance_functions.cpp
     src/selection/sed.cpp
     src/selection/uniform.cpp
     src/selection/selector.cpp

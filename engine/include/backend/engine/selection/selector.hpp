@@ -8,7 +8,7 @@
 
 namespace selection {
 
-// SED, BOTTOM_UP_PED and BOTTOM_UP_DAD: bottom-up min-max with that error (bottom_up.hpp)
+// SED, BOTTOM_UP_PED and BOTTOM_UP_DAD = buttom up min-max distance
 enum class AlgorithmType { RDP, SED, UNIFORM, RDP_GLOBAL, BOTTOM_UP_PED, BOTTOM_UP_DAD };
 
 std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &, AlgorithmType,
