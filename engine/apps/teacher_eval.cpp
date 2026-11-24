@@ -474,7 +474,7 @@ int main(int argc, char **argv) try {
     auto results = open_csv(
         args.out / "results.csv",
         "seed,share,arm,budget,knn_recall,range_f1,where_at_avg_hit,join_f1,clustering,"
-        "where_at_within_100,join_micro_f1,knn_tau,norm_knn,norm_range,norm_where_at,norm_join,"
+        "where_at_within_radius,join_micro_f1,knn_tau,norm_knn,norm_range,norm_where_at,norm_join,"
         "norm_clustering,J4,J_T,predicted_clusters,"
         "eval_s,join_mode,self_join_f1,norm_self_join,norm_join_main,"
         "norm_clustering_main,self_knn_recall,norm_self_knn,norm_self_join_mean,J4_self,J_T4");
