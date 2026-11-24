@@ -75,7 +75,7 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | `seed` | Seed for all random sampling |
 | `budget_shares` | Share of interior points to retain after reserving every endpoint: `B = 2T + round(share × (P − 2T))`. Report `B/P` for total retention |
 | `split` | `type` (`Random` or `Time`) and `query_percentage` held out for queries |
-| `algorithms` | Simplification algorithms to run: `RDP`, `SED`, `UNIFORM`, `RDP_GLOBAL`. The global variant allocates the total budget by PED and runs once per share, independently of `allocation_alphas` |
+| `algorithms` | Simplification algorithms to run: `RDP`, `SED`, `UNIFORM`, `RDP_GLOBAL`, `BOTTOM_UP_PED`, `BOTTOM_UP_DAD`. The global variant allocates the total budget by PED and runs once per share, independently of `allocation_alphas` |
 | `knn` | `k` and `query_count` (`0` = every trajectory in the query split) |
 | `range` | Box size (m), time window (s) and sampling limits for range queries |
 | `where_at` | Probes per trajectory and max time gap (s) between points to probe |
@@ -88,6 +88,12 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 `RDP_GLOBAL` is database-wide top-down PED: reserve endpoints, then repeatedly split the
 segment with the largest perpendicular error anywhere in the database. It uses no query
 workloads and receives exactly the same total point budget as the teacher.
+
+`RDP` is per-trajectory top-down PED. `SED`, `BOTTOM_UP_PED` and `BOTTOM_UP_DAD` are bottom-up
+min-max with that error (`selection/bottom_up.hpp`): start from every point and repeatedly drop
+the point whose removal adds the least error. PED is the distance to the line through the kept
+neighbours and DAD the largest heading change, both as MLSimp's evaluation code defines them, so
+the classic baselines Top-Down(E/W, PED) and Bottom-Up(E, PED/SED/DAD) are all covered.
 
 Continuous kNN uses the same fixed millimetre-grid ranking in the evaluator and teacher tracker,
 with ties resolved by database index. Teacher workload caches from earlier ranking versions are

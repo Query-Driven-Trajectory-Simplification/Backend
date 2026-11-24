@@ -24,7 +24,8 @@ STEPS = [("budget search", "RDP_a0", "BUDGET_RDP"),
          ("recipe choice at searched budgets", "BUDGET_RDP", "BUDGET_CHOICE"),
          ("loop", "BUDGET_CHOICE", "BUDGET_LOOP"),
          ("trades", "BUDGET_LOOP", "BUDGET_LOOP_TRADE")]
-CHEAP = ["RDP_a0", "RDP_a025", "RDP_GLOBAL", "SED_a0", "UNI_a0", "PARTNER_l0.5", "PARTNER_l1"]
+CHEAP = ["RDP_a0", "RDP_a025", "RDP_GLOBAL", "SED_a0", "UNI_a0", "BU_PED_a0", "BU_DAD_a0",
+         "RDP_a1", "SED_a1", "BU_PED_a1", "BU_DAD_a1", "PARTNER_l0.5", "PARTNER_l1"]
 EXTRA = ["J_T", "J_T4", "norm_self_join", "norm_join_main"]
 JOINS = [("Self", "Normalised self-join F1"), ("HeldOut", "Normalised held-out join F1")]
 

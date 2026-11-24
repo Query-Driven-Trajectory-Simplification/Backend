@@ -8,7 +8,8 @@
 
 namespace selection {
 
-enum class AlgorithmType { RDP, SED, UNIFORM, RDP_GLOBAL };
+// SED, BOTTOM_UP_PED and BOTTOM_UP_DAD: bottom-up min-max with that error (bottom_up.hpp)
+enum class AlgorithmType { RDP, SED, UNIFORM, RDP_GLOBAL, BOTTOM_UP_PED, BOTTOM_UP_DAD };
 
 std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &, AlgorithmType,
                                              std::size_t);
