@@ -6,21 +6,22 @@
 #include "backend/engine/query/knn.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <format>
 #include <fstream>
 #include <iostream>
-#include <random>
 #include <stdexcept>
 
 namespace teacher {
 
 namespace {
 
-// Bump when the layout or workload generation changes. V4 fingerprints every point
-constexpr std::uint64_t kMagicV4 = 0x5431'4341'4348'4534ull;
+// Bump when the layout or workload generation changes. V6 uses fixed-grid continuous kNN.
+constexpr std::uint64_t kMagicV6 = 0x5431'4341'4348'4536ull;
+constexpr std::uint64_t kMagicRanked = 0x5431'5241'4e4b'4432ull;
 constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
@@ -80,26 +81,16 @@ std::vector<KnnEntry> build_knn(const core::TrajectoryDb &db, const WorkloadConf
     return result;
 }
 
-void split_seen(std::vector<JoinPair> &pairs, std::uint64_t seed) {
-    std::mt19937_64 rng(seed);
-    std::shuffle(pairs.begin(), pairs.end(), rng);
-    for (std::size_t k = 0; k < pairs.size(); ++k)
-        pairs[k].seen = k < pairs.size() / 2;
-    std::ranges::sort(pairs, [](const JoinPair &a, const JoinPair &b) {
-        return a.i < b.i || (a.i == b.i && a.j < b.j);
-    });
-}
-
 // Positives and negatives from one self-join
 void collect_pairs(const core::TrajectoryDb &db, double eps_m, query::FrechetVariant frechet,
-                   bool seen, std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
+                   std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
     const auto join = query::generate_self_join(db, eps_m, frechet);
     positives.clear();
     negatives.clear();
     for (const auto &entry : join.entries)
         for (const auto j : entry.candidates) {
             const JoinPair pair{static_cast<std::uint32_t>(entry.query_index),
-                                static_cast<std::uint32_t>(j), seen};
+                                static_cast<std::uint32_t>(j)};
             if (std::ranges::binary_search(entry.reference, j))
                 positives.push_back(pair);
             else
@@ -107,20 +98,11 @@ void collect_pairs(const core::TrajectoryDb &db, double eps_m, query::FrechetVar
         }
 }
 
-// The pairs at join_eps_m, each list split into seen and unseen halves
-void build_pairs(const core::TrajectoryDb &db, const WorkloadConfig &config, std::uint64_t seed,
-                 std::vector<JoinPair> &positives, std::vector<JoinPair> &negatives) {
-    collect_pairs(db, config.join_eps_m, config.frechet, false, positives, negatives);
-    split_seen(positives, seed + kPairSplitSeedOffset);
-    split_seen(negatives, seed + kNegativeSeedOffset);
-}
-
 void write_pairs(std::ofstream &out, const std::vector<JoinPair> &pairs) {
     put<std::uint64_t>(out, pairs.size());
     for (const auto &pair : pairs) {
         put(out, pair.i);
         put(out, pair.j);
-        put<std::uint8_t>(out, pair.seen);
     }
 }
 
@@ -129,7 +111,6 @@ void read_pairs(std::ifstream &in, std::vector<JoinPair> &pairs) {
     for (auto &pair : pairs) {
         pair.i = get<std::uint32_t>(in);
         pair.j = get<std::uint32_t>(in);
-        pair.seen = get<std::uint8_t>(in) != 0;
     }
 }
 
@@ -140,7 +121,7 @@ void save(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t d
     const auto tmp = file.string() + ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary);
-        put(out, kMagicV4);
+        put(out, kMagicV6);
         put(out, seed);
         put(out, db_fingerprint);
         put<std::uint64_t>(out, workloads.k);
@@ -166,7 +147,7 @@ bool load(const std::filesystem::path &file, std::uint64_t seed, std::uint64_t d
     std::ifstream in(file, std::ios::binary);
     if (!in)
         return false;
-    if (get<std::uint64_t>(in) != kMagicV4 || get<std::uint64_t>(in) != seed ||
+    if (get<std::uint64_t>(in) != kMagicV6 || get<std::uint64_t>(in) != seed ||
         get<std::uint64_t>(in) != db_fingerprint)
         return false;
     const auto k = get<std::uint64_t>(in);
@@ -214,7 +195,8 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
         workloads.knn = build_knn(db, config);
         std::cout << std::format("teacher: kNN {:.1f} s\n", core::seconds_since(start));
         start = std::chrono::steady_clock::now();
-        build_pairs(db, config, seed, workloads.positives, workloads.negatives);
+        collect_pairs(db, config.join_eps_m, config.frechet, workloads.positives,
+                      workloads.negatives);
         std::cout << std::format("teacher: self-join pairs {:.1f} s\n", core::seconds_since(start));
         save(file, seed, db_fingerprint, workloads);
         std::cout << "teacher: cache saved to " << file.string() << '\n';
@@ -225,7 +207,7 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
         query::generate_where_at_queries(db, config.where_at, seed + kWhereAtSeedOffset);
     for (const double eps : config.extra_join_eps_m) {
         ExtraJoin extra{.eps_m = eps, .positives = {}, .negatives = {}};
-        collect_pairs(db, eps, config.frechet, true, extra.positives, extra.negatives);
+        collect_pairs(db, eps, config.frechet, extra.positives, extra.negatives);
         std::cout << std::format("teacher: extra join at {} m, {} pairs, {} negatives\n", eps,
                                  extra.positives.size(), extra.negatives.size());
         workloads.extra_joins.push_back(std::move(extra));
@@ -240,6 +222,97 @@ TeacherWorkloads load_or_build_workloads(const core::TrajectoryDb &db, const Wor
                              workloads.negatives.size(), workloads.range.queries.size(),
                              workloads.where_at.queries.size());
     return workloads;
+}
+
+void add_ranked_neighbours(const core::TrajectoryDb &db, TeacherWorkloads &workloads,
+                           std::size_t depth, std::uint64_t seed,
+                           const std::filesystem::path &cache_dir) {
+    const std::size_t want = workloads.k + depth;
+    const auto db_fingerprint = fingerprint(db);
+    const auto file = cache_dir / std::format("teacher_ranked_seed{}_d{}.bin", seed, depth);
+    auto &ranked = workloads.ranked;
+    {
+        std::ifstream in(file, std::ios::binary);
+        if (in && get<std::uint64_t>(in) == kMagicRanked && get<std::uint64_t>(in) == seed &&
+            get<std::uint64_t>(in) == db_fingerprint && get<std::uint64_t>(in) == want &&
+            get<std::uint8_t>(in) == static_cast<std::uint8_t>(workloads.frechet)) {
+            ranked.resize(get<std::uint64_t>(in));
+            for (auto &list : ranked) {
+                list.resize(get<std::uint64_t>(in));
+                for (auto &neighbour : list) {
+                    neighbour.index = get<std::uint32_t>(in);
+                    neighbour.distance = get<double>(in);
+                }
+            }
+            if (in && ranked.size() == db.size()) {
+                std::cout << "teacher: ranked neighbours loaded from " << file.string() << '\n';
+                return;
+            }
+        }
+    }
+    const auto start = std::chrono::steady_clock::now();
+    ranked.assign(db.size(), {});
+    // Fréchet distance is symmetric: once j's list is finished, a query e in it already has
+    // d(e, j), so e's search takes it instead of computing it again
+    std::vector<std::atomic<bool>> done(db.size());
+    std::atomic<std::size_t> reused = 0;
+    core::parallel_for(db.size(), [&](std::size_t e) {
+        const auto query = db.trajectory(e);
+        const query::KnownDistance known = [&](std::size_t j) -> std::optional<double> {
+            if (j == e || !done[j].load(std::memory_order_acquire))
+                return std::nullopt;
+            for (const auto &neighbour : ranked[j])
+                if (neighbour.index == e) {
+                    reused.fetch_add(1, std::memory_order_relaxed);
+                    return neighbour.distance;
+                }
+            return std::nullopt;
+        };
+        // The search's own distances, on the ranking's millimetre grid: no Fréchet recomputed
+        for (const auto &[j, distance] :
+             query::knn_with_distances(db, query, want + 1, workloads.frechet, known))
+            if (j != e && ranked[e].size() < want)
+                ranked[e].push_back({static_cast<std::uint32_t>(j), distance});
+        done[e].store(true, std::memory_order_release);
+    });
+    std::cout << std::format("teacher: ranked neighbours {:.1f} s, {} distances reused\n",
+                             core::seconds_since(start), reused.load());
+    if (file.has_parent_path())
+        std::filesystem::create_directories(file.parent_path());
+    const auto tmp = file.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary);
+        put(out, kMagicRanked);
+        put(out, seed);
+        put(out, db_fingerprint);
+        put<std::uint64_t>(out, want);
+        put<std::uint8_t>(out, static_cast<std::uint8_t>(workloads.frechet));
+        put<std::uint64_t>(out, ranked.size());
+        for (const auto &list : ranked) {
+            put<std::uint64_t>(out, list.size());
+            for (const auto &neighbour : list) {
+                put(out, neighbour.index);
+                put(out, neighbour.distance);
+            }
+        }
+        if (!out)
+            throw std::runtime_error("teacher ranked cache: write failed " + tmp);
+    }
+    std::filesystem::rename(tmp, file);
+}
+
+query::KnnWorkload self_knn_workload(const TeacherWorkloads &workloads, double p) {
+    query::KnnWorkload result{.queries = core::TrajectoryDb({0}, {}, {}, {}, {}),
+                              .entries = {},
+                              .k = workloads.k,
+                              .p = p,
+                              .frechet = workloads.frechet,
+                              .self = true};
+    for (std::size_t e = 0; e < workloads.knn.size(); ++e)
+        if (workloads.knn[e].valid)
+            result.entries.push_back({e, std::vector<std::size_t>(workloads.knn[e].top.begin(),
+                                                                  workloads.knn[e].top.end())});
+    return result;
 }
 
 } // namespace teacher

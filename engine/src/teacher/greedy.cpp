@@ -76,10 +76,10 @@ std::vector<std::size_t> Greedy::sequence(std::size_t limit, std::span<const std
     const std::size_t n = trajectory.size();
     const std::size_t budget = std::min(limit, n);
 
-    auto ramp = [&](double error) {
-        return std::clamp((m_max_tolerance - error) / (m_max_tolerance - m_min_tolerance), 0.0,
-                          1.0);
-    };
+    // Squared errors that put a probe clearly past either end of the ramp, by a margin far above
+    // the rounding of dx * dx + dy * dy
+    const double far = m_max_tolerance * m_max_tolerance * (1.0 + 1e-12);
+    const double near = m_min_tolerance * m_min_tolerance * (1.0 - 1e-12);
     // Where-at score of probe p on the segment from kept point a to kept point c
     auto score_on = [&](std::size_t p, std::size_t from, std::size_t to) {
         const double t_from = static_cast<double>(trajectory.t[from]),
@@ -88,7 +88,14 @@ std::vector<std::size_t> Greedy::sequence(std::size_t limit, std::span<const std
             t_to > t_from ? std::clamp((m_probe_t[p] - t_from) / (t_to - t_from), 0.0, 1.0) : 0.0;
         const double x = trajectory.x[from] + fraction * (trajectory.x[to] - trajectory.x[from]);
         const double y = trajectory.y[from] + fraction * (trajectory.y[to] - trajectory.y[from]);
-        return ramp(std::hypot(x - m_probe_x[p], y - m_probe_y[p]));
+        const double dx = x - m_probe_x[p], dy = y - m_probe_y[p];
+        // Clearly outside the ramp it is 0 or 1 exactly, without the square root
+        const double squared = dx * dx + dy * dy;
+        if (squared >= far)
+            return 0.0;
+        if (squared <= near)
+            return 1.0;
+        return ramp(std::hypot(dx, dy), m_min_tolerance, m_max_tolerance);
     };
     // Probes from t_a up to t_c, the last segment including its end
     auto probes_between = [&](std::size_t from, std::size_t to) {

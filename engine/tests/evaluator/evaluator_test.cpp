@@ -215,3 +215,18 @@ TEST(Evaluator, SharedJoinMatchesIndependentClusteringAndFallsBackForDifferentWo
         EXPECT_EQ(join.entries[0].reference, (std::vector<std::size_t>{2}));
     }
 }
+
+TEST(KnnScores, SelfQueriesUseTheCompressedQueryAndExcludeIt) {
+    const core::TrajectoryDb db({0, 2, 4, 6, 8}, {10, 20, 30, 40}, {0, 10, 0, 10, 0, 10, 0, 10},
+                                std::vector<double>(8, 39.95),
+                                {116.35, 116.35, 116.36, 116.36, 116.37, 116.37, 116.38, 116.38});
+    // Each trajectory's nearest other is its neighbour in longitude
+    query::KnnWorkload workload{
+        core::TrajectoryDb({0}, {}, {}, {}, {}), {{0, {1}}, {1, {0}}, {3, {2}}}, 1};
+    workload.self = true;
+    const auto scores = evaluator::evaluate_knn(db, workload);
+    EXPECT_DOUBLE_EQ(scores.scores.recall_at_k, 1.0);
+    ASSERT_EQ(scores.answers.size(), 3u);
+    EXPECT_EQ(scores.answers[0].query_trajectory_id, 10);
+    EXPECT_EQ(scores.answers[0].neighbors, std::vector<std::int32_t>{20});
+}

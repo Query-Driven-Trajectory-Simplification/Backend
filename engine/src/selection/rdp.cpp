@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <queue>
 #include <span>
+#include <stdexcept>
 
 namespace selection::rdp {
 
@@ -34,10 +35,8 @@ struct Split {
     bool operator<(const Split &other) const { return error < other.error; }
 };
 
-void push_split(std::priority_queue<Split> &heap, std::span<const double> x,
-                std::span<const double> y, std::size_t first, std::size_t last) {
-    if (last - first < 2)
-        return;
+Split split_at(std::span<const double> x, std::span<const double> y, std::size_t first,
+               std::size_t last) {
     Split split{-1.0, first + 1, first, last};
     for (std::size_t k = first + 1; k < last; ++k) {
         const double d = squared_segment_distance(x[k], y[k], x[first], y[first], x[last], y[last]);
@@ -46,7 +45,13 @@ void push_split(std::priority_queue<Split> &heap, std::span<const double> x,
             split.index = k;
         }
     }
-    heap.push(split);
+    return split;
+}
+
+void push_split(std::priority_queue<Split> &heap, std::span<const double> x,
+                std::span<const double> y, std::size_t first, std::size_t last) {
+    if (last - first >= 2)
+        heap.push(split_at(x, y, first, last));
 }
 
 } // namespace
@@ -83,6 +88,48 @@ std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
     auto indices = sequence(trajectory, points_to_keep);
     std::ranges::sort(indices);
     return indices;
+}
+
+core::Simplification simplify_database(const core::TrajectoryDb &db, std::size_t total_budget) {
+    auto kept = core::endpoints_only(db);
+    std::size_t count = 0;
+    for (const auto &indices : kept)
+        count += indices.size();
+    if (total_budget < count || total_budget > db.num_points())
+        throw std::invalid_argument("global RDP: budget must be between endpoints and all points");
+
+    struct GlobalSplit {
+        Split split;
+        std::size_t trajectory;
+        bool operator<(const GlobalSplit &other) const {
+            if (split.error != other.split.error)
+                return split.error < other.split.error;
+            if (trajectory != other.trajectory)
+                return trajectory > other.trajectory;
+            return split.first > other.split.first;
+        }
+    };
+    std::priority_queue<GlobalSplit> heap;
+    auto push = [&](std::size_t i, std::size_t first, std::size_t last) {
+        if (last - first >= 2) {
+            const auto trajectory = db.trajectory(i);
+            heap.push({split_at(trajectory.x, trajectory.y, first, last), i});
+        }
+    };
+    for (std::size_t i = 0; i < db.size(); ++i)
+        if (db.trajectory(i).size() >= 3)
+            push(i, 0, db.trajectory(i).size() - 1);
+    while (count < total_budget) {
+        const auto [split, i] = heap.top();
+        heap.pop();
+        kept[i].push_back(split.index);
+        ++count;
+        push(i, split.first, split.index);
+        push(i, split.index, split.last);
+    }
+    for (auto &indices : kept)
+        std::ranges::sort(indices);
+    return core::to_simplification(kept);
 }
 
 } // namespace selection::rdp

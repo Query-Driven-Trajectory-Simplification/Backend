@@ -12,6 +12,8 @@ namespace evaluator {
 // database) are diagnostics only.
 // join and clustering average over their threshold grids, each against its own floor;
 // join_f1 and clustering_score keep the main threshold alone.
+// combined_self (J4-self) scores the in-database setting: self kNN, the same range and where-at,
+// and the self join over its grid (self_join_mean). NaN unless all four are present.
 struct NormalizedScores {
     static constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 
@@ -30,8 +32,11 @@ struct NormalizedScores {
     double join = missing;
     double clustering = missing;
     double self_join = missing;
+    double self_knn = missing;
+    double self_join_mean = missing;
 
     double combined = missing;
+    double combined_self = missing;
 };
 
 // NaN if an input is NaN or the floor is already 1

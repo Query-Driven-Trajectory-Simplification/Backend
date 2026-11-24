@@ -17,27 +17,12 @@
 
 namespace teacher {
 
-// "Loop" is best response against the neighbours' current state until nothing switches.
-//   EQUAL_CHOICE              equal budgets, best candidate each, partners original
-//   EQUAL_CHOICE_RDP_PARTNERS the same, partners RDP
-//   EQUAL_LOOP                the loop from EQUAL_CHOICE_RDP_PARTNERS
-//   BUDGET_RDP                budgets from value curves, RDP
-//   BUDGET_CHOICE             budgets from value curves, best candidate each
-//   BUDGET_LOOP               the loop from BUDGET_CHOICE: the teacher
-//   BUDGET_LOOP_REALLOCATE    then curves, budgets and loop again while J_T rises. With only
-//                             held-out join terms the curves ignore partners, so this only reruns
-//                             the loop in a new visit order
-//   BUDGET_LOOP_SHUFFLED      control: loop on relabelled partners and neighbours
-//   BUDGET_LOOP_NO_UPDATE     control: one pass against the starting state
-inline constexpr std::array<std::string_view, 9> kArms{"EQUAL_CHOICE",
-                                                       "EQUAL_CHOICE_RDP_PARTNERS",
-                                                       "EQUAL_LOOP",
-                                                       "BUDGET_RDP",
-                                                       "BUDGET_CHOICE",
-                                                       "BUDGET_LOOP",
-                                                       "BUDGET_LOOP_REALLOCATE",
-                                                       "BUDGET_LOOP_SHUFFLED",
-                                                       "BUDGET_LOOP_NO_UPDATE"};
+//   BUDGET_RDP         budgets from value curves, RDP
+//   BUDGET_CHOICE      budgets from value curves, best candidate each
+//   BUDGET_LOOP        then best response against the others' current state until nothing switches
+//   BUDGET_LOOP_TRADE  then moves points between trajectories while exact J_T rises: the teacher
+inline constexpr std::array<std::string_view, 4> kArms{"BUDGET_RDP", "BUDGET_CHOICE", "BUDGET_LOOP",
+                                                       "BUDGET_LOOP_TRADE"};
 
 bool is_arm(std::string_view name);
 // Throws std::invalid_argument on an unknown or repeated arm
@@ -48,22 +33,19 @@ struct TeacherConfig {
     std::filesystem::path cache_dir = "cache";
     std::vector<std::string> arms{"BUDGET_CHOICE", "BUDGET_LOOP"};
     std::size_t range_query_count = kRangeQueryCount;
-    bool all_join_pairs = true; // false: only the seen half of the join pairs
-    // Unset: join.mode
-    std::optional<query::JoinMode> join;
-    std::vector<double> extra_join_eps_m;
-    bool held_out_term = false;
-    bool ranking_knn = true;
-    TermWeights term_weights{1.0, 1.0, 1.0, 1.0};
+    // Unset: join.score_eps_m, the thresholds J4 averages over
+    std::optional<std::vector<double>> extra_join_eps_m;
+    TermWeights term_weights{1.0, 1.0, 1.0, 1.0, 0.0, 0.0};
 };
 
 struct Arm {
     std::string name;
     core::Simplification simplification;
-    double objective = 0.0; // J_T
+    double objective = 0.0;                  // J_T
+    std::optional<Objective::Terms> metrics; // the raw J_T metrics, when computed on the way
 };
 
-// Sees only the database it is given and workloads built from it
+// Sees only the database it is given and workloads built from it. Trained for held-out queries
 class Teacher {
   public:
     Teacher(const core::TrajectoryDb &db, TeacherWorkloads workloads, const ObjectiveConfig &config,

@@ -160,3 +160,20 @@ TEST(NormalizeScores, WhereAtUsesAverageHitAndItsOwnEndpointFloor) {
     EXPECT_DOUBLE_EQ(normalized.where_at_within_radius, 0.5);
     EXPECT_DOUBLE_EQ(normalized.combined, 0.25);
 }
+
+TEST(NormalizeScores, SelfCombinedNeedsAllFourInternalScores) {
+    auto scores = all_scores(0.6);
+    auto floor = all_scores(0.2);
+    EXPECT_TRUE(std::isnan(evaluator::normalize_scores(scores, floor).combined_self));
+    scores.self_knn.recall_at_k = 0.6;
+    floor.self_knn.recall_at_k = 0.2;
+    scores.self_join.f1 = 1.0;
+    floor.self_join.f1 = 0.2;
+    scores.self_join_grid = {{.f1 = 0.2}};
+    floor.self_join_grid = {{.f1 = 0.2}};
+    const auto normalized = evaluator::normalize_scores(scores, floor);
+    EXPECT_DOUBLE_EQ(normalized.self_knn, 0.5);
+    EXPECT_DOUBLE_EQ(normalized.self_join_mean, 0.5); // 1 at the main threshold, 0 on the grid
+    EXPECT_DOUBLE_EQ(normalized.combined_self, 0.5);
+    EXPECT_DOUBLE_EQ(normalized.combined, 0.5);
+}
