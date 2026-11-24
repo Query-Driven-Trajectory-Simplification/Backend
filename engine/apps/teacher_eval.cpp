@@ -17,6 +17,7 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/route_clustering.hpp"
+#include "backend/engine/selection/bottom_up.hpp"
 #include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
@@ -248,6 +249,11 @@ std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
         arms.push_back({"RDP_GLOBAL",
                         share,
                         core::to_kept(selection::rdp::simplify_database(db, budget)),
+                        {}});
+        arms.push_back({"BU_PED_GLOBAL",
+                        share,
+                        core::to_kept(selection::bottom_up::simplify_database(
+                            db, budget, selection::bottom_up::Measure::Ped)),
                         {}});
         arms.push_back({"RDP_a0", share, select(db, AlgorithmType::RDP, equal), {}});
         arms.push_back(

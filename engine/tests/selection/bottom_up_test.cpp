@@ -6,6 +6,7 @@
 #include <limits>
 #include <numbers>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 #include "backend/engine/core/trajectory_db.hpp"
@@ -54,6 +55,77 @@ double error(const core::TrajectoryView &trajectory, const Indices &kept, Measur
         worst = std::max(
             worst, selection::bottom_up::span_error(trajectory, kept[s], kept[s + 1], measure));
     return worst;
+}
+
+core::TrajectoryDb random_db(std::mt19937_64 &rng, const std::vector<std::size_t> &sizes) {
+    std::uniform_real_distribution<double> offset(-0.01, 0.01);
+    std::uniform_int_distribution<std::int64_t> gap(1, 5);
+    std::vector<std::uint64_t> offsets{0};
+    std::vector<std::int32_t> ids;
+    std::vector<std::int64_t> t;
+    std::vector<double> lat;
+    std::vector<double> lon;
+    for (std::size_t i = 0; i < sizes.size(); ++i) {
+        ids.push_back(static_cast<std::int32_t>(i));
+        std::int64_t time = 0;
+        for (std::size_t k = 0; k < sizes[i]; ++k) {
+            t.push_back(time);
+            time += gap(rng);
+            lat.push_back(39.95 + offset(rng));
+            lon.push_back(116.35 + offset(rng));
+        }
+        offsets.push_back(t.size());
+    }
+    return {std::move(offsets), std::move(ids), std::move(t), std::move(lat), std::move(lon)};
+}
+
+std::vector<Indices> brute_force_global(const core::TrajectoryDb &db, std::size_t budget,
+                                        Measure measure) {
+    std::vector<std::vector<char>> kept(db.size());
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        kept[i].assign(db.trajectory(i).size(), 1);
+        count += kept[i].size();
+    }
+    while (count > budget) {
+        double best = std::numeric_limits<double>::infinity();
+        std::size_t best_i = 0, best_k = 0;
+        for (std::size_t i = 0; i < db.size(); ++i) {
+            const auto view = db.trajectory(i);
+            for (std::size_t k = 1; k + 1 < view.size(); ++k) {
+                if (!kept[i][k])
+                    continue;
+                std::size_t prev = k - 1, next = k + 1;
+                while (!kept[i][prev])
+                    --prev;
+                while (!kept[i][next])
+                    ++next;
+                const double cost = selection::bottom_up::span_error(view, prev, next, measure);
+                if (cost < best) {
+                    best = cost;
+                    best_i = i;
+                    best_k = k;
+                }
+            }
+        }
+        kept[best_i][best_k] = 0;
+        --count;
+    }
+    std::vector<Indices> result(db.size());
+    for (std::size_t i = 0; i < db.size(); ++i)
+        for (std::size_t k = 0; k < kept[i].size(); ++k)
+            if (kept[i][k])
+                result[i].push_back(k);
+    return result;
+}
+
+std::vector<Indices> as_indices(const core::Simplification &simplification) {
+    std::vector<Indices> result(simplification.size());
+    for (std::size_t i = 0; i < simplification.size(); ++i) {
+        const auto kept = simplification.trajectory(i);
+        result[i].assign(kept.begin(), kept.end());
+    }
+    return result;
 }
 
 } // namespace
@@ -205,5 +277,54 @@ TEST(BottomUp, RejectsEmptySpans) {
     EXPECT_THROW(selection::bottom_up::span_error(traj.view(), 1, 1, Measure::Ped),
                  std::invalid_argument);
     EXPECT_THROW(selection::bottom_up::span_error(traj.view(), 0, 3, Measure::Dad),
+                 std::invalid_argument);
+}
+
+TEST(BottomUp, GlobalMatchesOneHeapOverTheWholeDatabase) {
+    std::mt19937_64 rng(21);
+    const auto db = random_db(rng, {12, 3, 20, 2, 15, 9});
+    std::size_t endpoints = 0;
+    for (std::size_t i = 0; i < db.size(); ++i)
+        endpoints += std::min<std::size_t>(db.trajectory(i).size(), 2);
+    for (const auto measure : {Measure::Sed, Measure::Dad})
+        for (std::size_t budget = endpoints; budget <= db.num_points(); budget += 5)
+            EXPECT_EQ(as_indices(selection::bottom_up::simplify_database(db, budget, measure)),
+                      brute_force_global(db, budget, measure))
+                << budget;
+}
+
+TEST(BottomUp, GlobalKeepsEachTrajectorysOwnBottomUpAndTheBudget) {
+    std::mt19937_64 rng(22);
+    const auto db = random_db(rng, {12, 3, 20, 2, 15, 9});
+    std::size_t endpoints = 0;
+    for (std::size_t i = 0; i < db.size(); ++i)
+        endpoints += std::min<std::size_t>(db.trajectory(i).size(), 2);
+    for (const auto measure : kMeasures)
+        for (std::size_t budget = endpoints; budget <= db.num_points(); budget += 3) {
+            const auto kept =
+                as_indices(selection::bottom_up::simplify_database(db, budget, measure));
+            std::size_t total = 0;
+            for (std::size_t i = 0; i < db.size(); ++i) {
+                total += kept[i].size();
+                EXPECT_EQ(kept[i],
+                          selection::bottom_up::simplify(db.trajectory(i), kept[i].size(), measure))
+                    << budget << " " << i;
+            }
+            EXPECT_EQ(total, budget);
+        }
+}
+
+TEST(BottomUp, GlobalKeepsEndpointsAtTheLowestBudgetAndEverythingAtTheHighest) {
+    std::mt19937_64 rng(4);
+    const auto db = random_db(rng, {10, 2, 7});
+    const auto low = as_indices(selection::bottom_up::simplify_database(db, 6, Measure::Ped));
+    EXPECT_EQ(low, (std::vector<Indices>{{0, 9}, {0, 1}, {0, 6}}));
+    const auto all =
+        as_indices(selection::bottom_up::simplify_database(db, db.num_points(), Measure::Ped));
+    for (std::size_t i = 0; i < db.size(); ++i)
+        EXPECT_EQ(all[i].size(), db.trajectory(i).size());
+    EXPECT_THROW(selection::bottom_up::simplify_database(db, 5, Measure::Ped),
+                 std::invalid_argument);
+    EXPECT_THROW(selection::bottom_up::simplify_database(db, db.num_points() + 1, Measure::Ped),
                  std::invalid_argument);
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backend/engine/core/simplification.hpp"
 #include "backend/engine/core/trajectory_db.hpp"
 
 #include <cstddef>
@@ -22,5 +23,8 @@ std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
 
 std::vector<std::size_t> sequence(const core::TrajectoryView &trajectory, std::size_t limit,
                                   Measure measure);
+
+core::Simplification simplify_database(const core::TrajectoryDb &db, std::size_t total_budget,
+                                       Measure measure);
 
 } // namespace selection::bottom_up

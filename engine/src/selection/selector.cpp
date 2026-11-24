@@ -27,6 +27,8 @@ std::vector<std::size_t> simplify_trajectory(const core::TrajectoryView &traject
         return bottom_up::simplify(trajectory, points_to_keep, bottom_up::Measure::Dad);
     case AlgorithmType::RDP_GLOBAL:
         throw std::invalid_argument("RDP_GLOBAL needs a database-wide total budget");
+    case AlgorithmType::BOTTOM_UP_PED_GLOBAL:
+        throw std::invalid_argument("BOTTOM_UP_PED_GLOBAL needs a database-wide total budget");
     }
 
     throw std::invalid_argument("simplify_trajectory: unknown algorithm");

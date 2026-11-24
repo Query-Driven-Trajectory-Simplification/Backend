@@ -5,6 +5,7 @@
 #include "backend/engine/io/workload_export.hpp"
 #include "backend/engine/pipeline/scorer.hpp"
 #include "backend/engine/pipeline/test_workloads.hpp"
+#include "backend/engine/selection/bottom_up.hpp"
 #include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
@@ -91,11 +92,19 @@ void run(const Config &config) {
                          std::format("RDP_GLOBAL_{:g}pct", share * 100),
                          selection::rdp::simplify_database(database, budget));
 
+        if (std::ranges::find(config.algorithms, selection::AlgorithmType::BOTTOM_UP_PED_GLOBAL) !=
+            config.algorithms.end())
+            scorer.score(std::format("{}% BOTTOM_UP_PED_GLOBAL", share * 100),
+                         std::format("BOTTOM_UP_PED_GLOBAL_{:g}pct", share * 100),
+                         selection::bottom_up::simplify_database(
+                             database, budget, selection::bottom_up::Measure::Ped));
+
         for (const double alpha : config.allocation_alphas) {
             const auto budgets = allocation::create_trajectory_budgets(
                 database, allocation::AllocatorType::SizeProportional, budget, alpha);
             for (const auto algorithm : config.algorithms) {
-                if (algorithm == selection::AlgorithmType::RDP_GLOBAL)
+                if (algorithm == selection::AlgorithmType::RDP_GLOBAL ||
+                    algorithm == selection::AlgorithmType::BOTTOM_UP_PED_GLOBAL)
                     continue;
                 scorer.score(std::format("{}% {} alpha={}", share * 100,
                                          magic_enum::enum_name(algorithm), alpha),

@@ -157,7 +157,8 @@ beat.
 The classic error-driven baselines are also written: bottom-up PED and DAD (`BU_PED_a0`,
 `BU_DAD_a0`), and RDP, SED and both bottom-up measures at each trajectory's share of its own points
 (`RDP_a1`, `SED_a1`, `BU_PED_a1`, `BU_DAD_a1`), the budget the published per-trajectory baselines
-use.
+use. `BU_PED_GLOBAL` is database-wide bottom-up PED, the bottom-up counterpart of `RDP_GLOBAL`,
+with the same total budget.
 
 ### The loop
 **In one sentence:** go through the trajectories one at a time, and let each switch to whichever

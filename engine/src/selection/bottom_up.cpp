@@ -1,4 +1,5 @@
 #include "backend/engine/selection/bottom_up.hpp"
+#include "backend/engine/core/parallel.hpp"
 #include "backend/engine/selection/distance_functions.hpp"
 
 #include <algorithm>
@@ -43,7 +44,8 @@ std::vector<double> headings_for(const core::TrajectoryView &trajectory, Measure
 
 std::vector<std::size_t> simplify_impl(const core::TrajectoryView &trajectory,
                                        std::size_t points_to_keep,
-                                       std::vector<std::size_t> *removed, Measure measure) {
+                                       std::vector<std::size_t> *removed,
+                                       std::vector<double> *removed_costs, Measure measure) {
     const std::size_t n = trajectory.size();
 
     if (points_to_keep >= n || n <= 2) {
@@ -84,6 +86,8 @@ std::vector<std::size_t> simplify_impl(const core::TrajectoryView &trajectory,
         kept_points--;
         if (removed)
             removed->push_back(top.index);
+        if (removed_costs)
+            removed_costs->push_back(top.cost);
 
         for (const std::size_t curr : {prev, next}) {
             if (curr == 0 || curr == n - 1)
@@ -117,7 +121,7 @@ double span_error(const core::TrajectoryView &trajectory, std::size_t first, std
 
 std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
                                   std::size_t points_to_keep, Measure measure) {
-    return simplify_impl(trajectory, points_to_keep, nullptr, measure);
+    return simplify_impl(trajectory, points_to_keep, nullptr, nullptr, measure);
 }
 
 std::vector<std::size_t> sequence(const core::TrajectoryView &trajectory, std::size_t limit,
@@ -128,11 +132,68 @@ std::vector<std::size_t> sequence(const core::TrajectoryView &trajectory, std::s
     limit = std::clamp(limit, std::size_t{2}, n);
     std::vector<std::size_t> removed;
     removed.reserve(n - 2);
-    auto indices = simplify_impl(trajectory, 2, &removed, measure);
+    auto indices = simplify_impl(trajectory, 2, &removed, nullptr, measure);
     indices.reserve(limit);
     // Reverse removal order: the last removed point is the first to restore above budget two.
     indices.insert(indices.end(), removed.rbegin(), removed.rbegin() + (limit - 2));
     return indices;
+}
+
+core::Simplification simplify_database(const core::TrajectoryDb &db, std::size_t total_budget,
+                                       Measure measure) {
+    const std::size_t n = db.size();
+    std::size_t endpoints = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        endpoints += std::min<std::size_t>(db.trajectory(i).size(), 2);
+    if (total_budget < endpoints || total_budget > db.num_points())
+        throw std::invalid_argument(
+            "global bottom-up: budget must be between endpoints and all points");
+
+    std::vector<std::vector<std::size_t>> removed(n);
+    std::vector<std::vector<double>> costs(n);
+    core::parallel_for(n, [&](std::size_t i) {
+        simplify_impl(db.trajectory(i), 2, &removed[i], &costs[i], measure);
+    });
+
+    struct Next {
+        double cost;
+        std::size_t trajectory;
+        std::size_t position;
+
+        bool operator<(const Next &other) const {
+            if (cost != other.cost)
+                return cost > other.cost;
+            return trajectory > other.trajectory;
+        }
+    };
+    std::priority_queue<Next> heap;
+    for (std::size_t i = 0; i < n; ++i)
+        if (!costs[i].empty())
+            heap.push({costs[i][0], i, 0});
+
+    std::vector<std::size_t> taken(n, 0);
+    std::size_t kept = db.num_points();
+    while (kept > total_budget) {
+        const Next top = heap.top();
+        heap.pop();
+        ++taken[top.trajectory];
+        --kept;
+        if (top.position + 1 < costs[top.trajectory].size())
+            heap.push({costs[top.trajectory][top.position + 1], top.trajectory, top.position + 1});
+    }
+
+    core::Simplification simplification;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::vector<char> keep(db.trajectory(i).size(), 1);
+        for (std::size_t k = 0; k < taken[i]; ++k)
+            keep[removed[i][k]] = 0;
+        std::vector<std::size_t> indices;
+        for (std::size_t k = 0; k < keep.size(); ++k)
+            if (keep[k])
+                indices.push_back(k);
+        simplification.add_trajectory(indices);
+    }
+    return simplification;
 }
 
 } // namespace selection::bottom_up
