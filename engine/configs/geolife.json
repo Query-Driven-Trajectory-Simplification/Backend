@@ -16,7 +16,7 @@
     },
     "range": {
         "query_count": 20000,
-        "box_size_m": 2000.0,
+        "box_size_m": 1000.0,
         "window_seconds": 604800,
         "min_results": 5,
         "full_accept_at": 20,
@@ -27,15 +27,15 @@
         "max_gap_seconds": 60.0
     },
     "where_at_scoring": {
-        "hit_radius_m": 100.0,
+        "hit_radius_m": 50.0,
         "min_tolerance_m": 25.0,
-        "max_tolerance_m": 500.0
+        "max_tolerance_m": 200.0
     },
     "join": {
         "mode": "HeldOut",
         "query_count": 0,
         "eps_m": 150.0,
-        "score_eps_m": [100.0, 200.0, 300.0],
+        "score_eps_m": [50.0, 100.0, 200.0],
         "self_join": true
     },
     "clustering": {
@@ -48,7 +48,7 @@
         "enabled": false,
         "cache_dir": "cache",
         "arms": ["BUDGET_CHOICE", "BUDGET_LOOP", "BUDGET_LOOP_TRADE"],
-        "range_query_count": 128000,
+        "range_query_count": 256000,
         "term_weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     }
 }
