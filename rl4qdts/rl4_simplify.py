@@ -10,7 +10,8 @@ import rl4_shims
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--rl4", required=True, help="RL4QDTS code folder (baselines/RL4QDTS)")
+    ap.add_argument("--rl4", default=rl4_shims.UPSTREAM,
+                    help="the authors' RL4QDTS code (default third_party/RL4QDTS)")
     ap.add_argument("--db", required=True, help="folder written by export_rl4.py")
     ap.add_argument("--label", choices=["data", "gau"], required=True)
     ap.add_argument("--inb", required=True, help="Agent-Point weights (.h5)")
@@ -19,8 +20,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--name", help="method name in the output files (default RL4_<label>)")
-    ap.add_argument("--legacy", action="store_true",
-                    help="the authors' numerics: their tanh, which turns large inputs into NaN "
+    ap.add_argument("--fixed", action="store_true",
+                    help="use np.tanh; the authors' tanh turns large inputs into NaN "
                          "(the agent then always picks action 0)")
     ap.add_argument("--numpy", action="store_true", help=argparse.SUPPRESS)  # old flag, now always
     ap.add_argument("--no-cube-agent", action="store_true", help="ablation: no Agent-Cube")
@@ -32,11 +33,11 @@ def main():
     import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
-    import rl_brain
+    import rl4_agents
     from rl_env import TrajComp, TrajSam
-    from rl_brain import AGENT_Sel, AGENT_Sam
+    from rl4_agents import AGENT_Sel, AGENT_Sam
 
-    rl_brain.LEGACY_TANH = args.legacy
+    rl4_agents.FIXED_TANH = args.fixed
     random.seed(0)  # as simplification.py
     K, LEN = 2, 2  # as simplification.py
     level_start = 9 if args.label == "data" else 10  # as simplification.py

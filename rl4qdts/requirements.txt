@@ -1,0 +1,5 @@
+numpy==2.2.6  # numpy 2.5 rejects int() on a 1-element array, which RL4's rl_env.py does
+rtree==1.4.1
+sortedcontainers==2.4.0
+h5py==3.16.0
+pyarrow==26.0.1

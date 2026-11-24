@@ -1,4 +1,4 @@
-"""Runs one of RL4's own scripts (training, simplification, range query) from the RL4 folder"""
+"""Runs one of RL4's own scripts (training, simplification, range query) from third_party/RL4QDTS"""
 import os
 import runpy
 import sys

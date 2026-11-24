@@ -1,6 +1,6 @@
 """Trains RL4's agents on our exported data: rl_main_by_data.py's training loop, resized to our database
 
-Differences from the authors' script (--legacy turns the first three off, giving the authors' loop):
+Differences from the authors' script (the first three only with --fixed; without it, the authors' loop):
 - Stop action: Agent-Cube's stop decision (action 8; action 9 in the paper) is stored as a terminal
   transition, so it is trained like the other 8 actions. The authors' loop breaks out before storing
   it, so its weights never leave their random init.
@@ -34,7 +34,8 @@ import rl4_shims
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--rl4", required=True, help="RL4QDTS code folder (baselines/RL4QDTS)")
+    ap.add_argument("--rl4", default=rl4_shims.UPSTREAM,
+                    help="the authors' RL4QDTS code (default third_party/RL4QDTS)")
     ap.add_argument("--db", required=True, help="folder written by export_rl4.py (use --shuffle-seed)")
     ap.add_argument("--out", required=True, help="folder for checkpoints and the log")
     ap.add_argument("--train", type=int, default=1500, help="trajectories 0..train-1 are for training")
@@ -45,19 +46,21 @@ def main():
     ap.add_argument("--ratio", type=float, default=0.0025, help="training budget, share of points")
     ap.add_argument("--query-count", type=int, default=50, help="steps between rewards")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--keep-stop-bug", action="store_true", help="authors' loop: stop is never stored")
+    ap.add_argument("--fixed", action="store_true",
+                    help="fix the stop action, the first reward and the last window (see CHANGES.md)")
+    ap.add_argument("--keep-stop-bug", action="store_true",
+                    help="with --fixed, still never store the stop action (ablation)")
     ap.add_argument("--keep-reward-bugs", action="store_true",
-                    help="authors' loop: first reward is the absolute F1, last window gets no reward")
-    ap.add_argument("--legacy", action="store_true", help="= --keep-stop-bug --keep-reward-bugs")
+                    help="with --fixed, still use the absolute first F1 and skip the last window (ablation)")
     args = ap.parse_args()
-    if args.legacy:
+    if not args.fixed:
         args.keep_stop_bug = args.keep_reward_bugs = True
 
     rl4_shims.install(os.path.abspath(args.rl4))
     import numpy as np
     import data_utils as F
     from rl_env import TrajComp, TrajSam
-    from rl_brain import AGENT_Sel, AGENT_Sam
+    from rl4_agents import AGENT_Sel, AGENT_Sam
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -83,7 +86,8 @@ def main():
     val_distri, _, _ = F.get_distribution_feature_data(val_set)
     _, q1, q2 = F.get_query_workload_data(val_distri)
     val_query = q1 + q2
-    print(f"validation: trajectories {args.train}..{val_end - 1}, {val_env.DB_size} points")
+    print(f"validation: trajectories {args.train}..{val_end - 1}, {val_env.DB_size} points; "
+          f"{'fixed' if args.fixed else 'published'} training loop")
 
     def validate():
         """rl_main_by_data.py run_dqn(); also returns the levels of the chosen cubes"""

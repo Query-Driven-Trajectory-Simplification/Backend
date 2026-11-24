@@ -2,6 +2,7 @@ import numpy as np
 import random
 from collections import deque
 
+# Replaces the authors' rl_brain.py (rl4_shims.install() registers this module as rl_brain).
 # The two DQN agents of RL4QDTS. The original built them with Keras; this is the same network,
 # loss and optimiser written in numpy (a network this small is ~100x faster without a framework):
 #   state -> Dense(25) -> tanh -> Dense(action_size), Huber loss (delta 1) averaged over the
@@ -12,7 +13,7 @@ from collections import deque
 #for reproducible
 np.random.seed(1)
 
-LEGACY_TANH = False  # True: fast_online_act uses the original tanh, which returns NaN for |x| > ~710
+FIXED_TANH = False  # True: fast_online_act uses np.tanh; the original returns NaN for |x| > ~710
 
 
 class QNetwork:
@@ -124,9 +125,9 @@ class _Agent:
         return s
 
     def tanh(self, x):
-        if LEGACY_TANH:
-            return (np.exp(x) - np.exp(-x)) / (np.exp(x) + np.exp(-x))
-        return np.tanh(x)
+        if FIXED_TANH:
+            return np.tanh(x)
+        return (np.exp(x) - np.exp(-x)) / (np.exp(x) + np.exp(-x))
 
     def get_weights(self):
         self.w1, self.b1, self.w2, self.b2 = self.model.get_weights()
