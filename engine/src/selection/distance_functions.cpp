@@ -18,6 +18,18 @@ double heading(double dx, double dy) {
 
 } // namespace
 
+double squared_segment_distance(double px, double py, double ax, double ay, double bx, double by) {
+    const double dx = bx - ax;
+    const double dy = by - ay;
+    const double len_sq = dx * dx + dy * dy;
+    double s = 0.0;
+    if (len_sq > 0.0)
+        s = std::clamp(((px - ax) * dx + (py - ay) * dy) / len_sq, 0.0, 1.0);
+    const double ex = px - (ax + s * dx);
+    const double ey = py - (ay + s * dy);
+    return ex * ex + ey * ey;
+}
+
 double max_sed_squared(const core::TrajectoryView &trajectory, std::size_t first,
                        std::size_t last) {
     const std::span<const std::int64_t> ts = trajectory.t;
@@ -45,19 +57,11 @@ double max_ped_squared(const core::TrajectoryView &trajectory, std::size_t first
                        std::size_t last) {
     const std::span<const double> xs = trajectory.x;
     const std::span<const double> ys = trajectory.y;
-    const double x0 = xs[first];
-    const double y0 = ys[first];
-    const double seg_dx = xs[last] - x0;
-    const double seg_dy = ys[last] - y0;
-    const double length_sq = seg_dx * seg_dx + seg_dy * seg_dy;
-    if (length_sq == 0.0)
-        return 0.0;
-    double cross_sq = 0.0;
-    for (std::size_t k = first + 1; k < last; ++k) {
-        const double cross = seg_dx * (ys[k] - y0) - seg_dy * (xs[k] - x0);
-        cross_sq = std::max(cross_sq, cross * cross);
-    }
-    return cross_sq / length_sq;
+    double error = 0.0;
+    for (std::size_t k = first + 1; k < last; ++k)
+        error = std::max(error, squared_segment_distance(xs[k], ys[k], xs[first], ys[first],
+                                                         xs[last], ys[last]));
+    return error;
 }
 
 std::vector<double> segment_headings(const core::TrajectoryView &trajectory) {

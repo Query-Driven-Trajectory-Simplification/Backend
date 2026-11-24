@@ -7,6 +7,8 @@
 
 namespace selection::distance {
 
+double squared_segment_distance(double px, double py, double ax, double ay, double bx, double by);
+
 double max_sed_squared(const core::TrajectoryView &trajectory, std::size_t first, std::size_t last);
 
 double max_ped_squared(const core::TrajectoryView &trajectory, std::size_t first, std::size_t last);

@@ -91,9 +91,10 @@ workloads and receives exactly the same total point budget as the teacher.
 
 `RDP` is per-trajectory top-down PED. `SED`, `BOTTOM_UP_PED` and `BOTTOM_UP_DAD` are bottom-up
 min-max with that error (`selection/bottom_up.hpp`): start from every point and repeatedly drop
-the point whose removal adds the least error. PED is the distance to the line through the kept
-neighbours and DAD the largest heading change, both as MLSimp's evaluation code defines them, so
-the classic baselines Top-Down(E/W, PED) and Bottom-Up(E, PED/SED/DAD) are all covered.
+the point whose removal adds the least error. PED is the distance to the segment between the kept
+neighbours, the same distance `RDP` and `RDP_GLOBAL` use, and DAD the largest heading change, as
+MLSimp's evaluation code defines it, so the classic baselines Top-Down(E/W, PED) and
+Bottom-Up(E, PED/SED/DAD) are all covered.
 
 Continuous kNN uses the same fixed millimetre-grid ranking in the evaluator and teacher tracker,
 with ties resolved by database index. Teacher workload caches from earlier ranking versions are

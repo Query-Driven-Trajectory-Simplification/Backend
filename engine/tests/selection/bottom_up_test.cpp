@@ -10,6 +10,7 @@
 
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/selection/bottom_up.hpp"
+#include "backend/engine/selection/distance_functions.hpp"
 #include "backend/engine/selection/sed.hpp"
 
 namespace {
@@ -72,15 +73,30 @@ TEST(BottomUp, SedMeasureIsTheSedSimplifier) {
     }
 }
 
-TEST(BottomUp, PedIsThePerpendicularDistanceToTheLine) {
+TEST(BottomUp, PedIsTheDistanceToTheSegment) {
     const Trajectory bump({0, 5, 10}, {0, 3, 0});
     EXPECT_DOUBLE_EQ(selection::bottom_up::span_error(bump.view(), 0, 2, Measure::Ped), 3.0);
-    // The line, not the segment: a point beyond the end is measured perpendicular to the line
     const Trajectory beyond({0, 14, 10}, {0, 2, 0});
-    EXPECT_DOUBLE_EQ(selection::bottom_up::span_error(beyond.view(), 0, 2, Measure::Ped), 2.0);
-    // Coinciding ends give 0, as in MLSimp's ped_op
+    EXPECT_DOUBLE_EQ(selection::bottom_up::span_error(beyond.view(), 0, 2, Measure::Ped),
+                     std::sqrt(20.0));
     const Trajectory loop({0, 5, 0}, {0, 5, 0});
-    EXPECT_DOUBLE_EQ(selection::bottom_up::span_error(loop.view(), 0, 2, Measure::Ped), 0.0);
+    EXPECT_DOUBLE_EQ(selection::bottom_up::span_error(loop.view(), 0, 2, Measure::Ped),
+                     std::sqrt(50.0));
+}
+
+TEST(BottomUp, PedMatchesTheRdpDistance) {
+    std::mt19937_64 rng(13);
+    for (int trial = 0; trial < 20; ++trial) {
+        const auto traj = random_walk(rng, 30);
+        const auto view = traj.view();
+        double worst = 0.0;
+        for (std::size_t k = 1; k < 29; ++k)
+            worst = std::max(
+                worst, selection::distance::squared_segment_distance(
+                           view.x[k], view.y[k], view.x[0], view.y[0], view.x[29], view.y[29]));
+        EXPECT_DOUBLE_EQ(selection::bottom_up::span_error(view, 0, 29, Measure::Ped),
+                         std::sqrt(worst));
+    }
 }
 
 TEST(BottomUp, DadIsTheLargestHeadingChange) {

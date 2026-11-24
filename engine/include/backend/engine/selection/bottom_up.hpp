@@ -9,7 +9,7 @@ namespace selection::bottom_up {
 
 enum class Measure {
     Sed, // synchronized Euclidean distance: the point against the segment position at its time
-    Ped, // perpendicular distance to the line through the kept neighbours, 0 if they coincide
+    Ped, // distance to the segment between the kept neighbours, as in RDP
     Dad, // direction-aware distance: largest angle between an original segment's heading and
          // the kept segment's heading, in radians
 };

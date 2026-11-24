@@ -1,4 +1,5 @@
 #include "backend/engine/selection/rdp.hpp"
+#include "backend/engine/selection/distance_functions.hpp"
 
 #include <algorithm>
 #include <queue>
@@ -14,18 +15,6 @@ namespace {
 // The implementation uses max-prio queue with fixed point budget instead of standard epsilon error
 // like in vid.
 
-double squared_segment_distance(double px, double py, double ax, double ay, double bx, double by) {
-    const double dx = bx - ax;
-    const double dy = by - ay;
-    const double len_sq = dx * dx + dy * dy;
-    double s = 0.0;
-    if (len_sq > 0.0)
-        s = std::clamp(((px - ax) * dx + (py - ay) * dy) / len_sq, 0.0, 1.0);
-    const double ex = px - (ax + s * dx);
-    const double ey = py - (ay + s * dy);
-    return ex * ex + ey * ey;
-}
-
 struct Split {
     double error;
     std::size_t index;
@@ -39,7 +28,8 @@ Split split_at(std::span<const double> x, std::span<const double> y, std::size_t
                std::size_t last) {
     Split split{-1.0, first + 1, first, last};
     for (std::size_t k = first + 1; k < last; ++k) {
-        const double d = squared_segment_distance(x[k], y[k], x[first], y[first], x[last], y[last]);
+        const double d =
+            distance::squared_segment_distance(x[k], y[k], x[first], y[first], x[last], y[last]);
         if (d > split.error) {
             split.error = d;
             split.index = k;
