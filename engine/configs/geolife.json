@@ -50,5 +50,9 @@
         "arms": ["BUDGET_CHOICE", "BUDGET_LOOP", "BUDGET_LOOP_TRADE"],
         "range_query_count": 256000,
         "term_weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    },
+    "external": {
+        "dir": "data/rl4/kept",
+        "methods": ["RL4_fixed"]
     }
 }
