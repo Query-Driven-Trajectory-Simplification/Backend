@@ -173,6 +173,35 @@ void write_clusters_parquet(std::span<const std::vector<std::int32_t>> clusters,
 
 } // namespace
 
+void export_range_boxes(const std::filesystem::path &path, const core::TrajectoryDb &database,
+                        std::span<const query::RangeQuery> queries) {
+    arrow::DoubleBuilder x_mins, x_maxs, y_mins, y_maxs;
+    arrow::Int64Builder t_mins, t_maxs;
+    arrow::ListBuilder references(arrow::default_memory_pool(),
+                                  std::make_shared<arrow::Int32Builder>());
+    auto &reference_ids = static_cast<arrow::Int32Builder &>(*references.value_builder());
+    for (const auto &[box, reference] : queries) {
+        check_arrow(x_mins.Append(box.x_min));
+        check_arrow(x_maxs.Append(box.x_max));
+        check_arrow(y_mins.Append(box.y_min));
+        check_arrow(y_maxs.Append(box.y_max));
+        check_arrow(t_mins.Append(box.t_min));
+        check_arrow(t_maxs.Append(box.t_max));
+        check_arrow(references.Append());
+        check_arrow(reference_ids.AppendValues(trajectory_ids(database, reference)));
+    }
+    const auto schema = arrow::schema(
+        {arrow::field("x_min", arrow::float64()), arrow::field("x_max", arrow::float64()),
+         arrow::field("y_min", arrow::float64()), arrow::field("y_max", arrow::float64()),
+         arrow::field("t_min", arrow::int64()), arrow::field("t_max", arrow::int64()),
+         arrow::field("reference", arrow::list(arrow::int32()))});
+    write_parquet(arrow::Table::Make(schema, {unwrap(x_mins.Finish()), unwrap(x_maxs.Finish()),
+                                              unwrap(y_mins.Finish()), unwrap(y_maxs.Finish()),
+                                              unwrap(t_mins.Finish()), unwrap(t_maxs.Finish()),
+                                              unwrap(references.Finish())}),
+                  path);
+}
+
 void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb &database,
                       std::span<const query::RangeQuery> range, const query::KnnWorkload &knn,
                       const query::JoinWorkload &join,

@@ -1,5 +1,6 @@
 """Exports our data in RL4's format, with timestamps shifted -8 h to match RL4 by default"""
 import argparse
+import json
 import os
 
 import numpy as np
@@ -46,6 +47,9 @@ def main():
                 for la, lo, ti in zip(lat[s:e].tolist(), lon[s:e].tolist(), t[s:e].tolist()):
                     out.write(f"{la!r} {lo!r} {ti}\n")
             index.write(f"{file_no},{traj_id},{e - s}\n")
+    # rl4_train.py shifts our range queries' time windows by the same amount
+    with open(os.path.join(args.out_dir, "export.json"), "w") as f:
+        json.dump({"shift_hours": args.shift_hours}, f)
     print(f"wrote {len(order)} trajectories to {args.out_dir} (time shift {args.shift_hours} h)")
 
 

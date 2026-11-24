@@ -66,6 +66,12 @@ add_executable(teacher_eval
 
 target_link_libraries(teacher_eval PRIVATE engine)
 
+add_executable(rl4_export
+    apps/rl4_export.cpp
+)
+
+target_link_libraries(rl4_export PRIVATE engine)
+
 add_executable(engine_tests
     tests/allocation/size_proportional_test.cpp
     tests/core/interpolation_test.cpp
@@ -77,6 +83,7 @@ add_executable(engine_tests
     tests/evaluator/evaluator_test.cpp
     tests/io/parquet_loader_test.cpp
     tests/io/simplification_loader_test.cpp
+    tests/io/workload_export_test.cpp
     tests/pipeline/config_test.cpp
     tests/query/continuous_frechet_test.cpp
     tests/query/join_test.cpp

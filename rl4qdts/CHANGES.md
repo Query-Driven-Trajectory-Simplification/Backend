@@ -7,6 +7,7 @@
   - `rl4_agents.py` replaces their `rl_brain.py`. It is registered as `rl_brain`, so their scripts get it too.
   - `rl4_patches.py` replaces single functions in their `data_utils.py` and `rl_env.py`.
   - `rl4_train.py` replaces their `rl_main_by_data.py` for our data.
+  - `rl4_queries.py` swaps their range queries for ours during training.
 
 As in MLSimp, `--fixed` turns on the changes that alter results; without it you get the authors'
 behaviour. The rest apply always and don't change results.
@@ -31,6 +32,11 @@ With `--fixed` (`--keep-stop-bug` and `--keep-reward-bugs` turn single fixes off
 - **Stop action:** Agent-Cube's stop decision is stored and trained.
 - **First reward:** rewards are F1 changes from the start (paper, Eq. 10).
 - **Last window:** the last window of steps is rewarded.
+
+With `--range-queries` (the alternative, `--their-queries`, keeps the authors' queries):
+
+- **Our range queries:** rewards and validation use the engine's practice range workload (`rl4_export`, `rl4_queries.py`) instead of the authors' grid cells. Boxes are sized by the config's `range` section (`box_size_m` in our local metres, `window_seconds`) and centred on data points, as in our evaluation. RL4's R-trees store points in the same metres, the box windows are moved by `export_rl4.py`'s time shift, and the score is our F1 (`evaluator/range.cpp`). Each training chunk gets `--train-queries` (default 50) of the queries that find one of its trajectories; validation gets `--val-queries` (default 100). Training never sees the test workload, which the engine scores RL4 on.
+- **Check:** at startup each chosen query must find exactly the engine's trajectories, or training stops. On 400 trajectories, all 66,505 queries touching them matched.
 
 Always:
 

@@ -3,9 +3,11 @@
 Runs [RL4QDTS](https://github.com/zhengwang125/Query-TS) (Wang et al., ICDE 2024) on our database and
 scores the result with our own evaluation, next to the other methods.
 
-The engine writes the database's trajectory ids, `export_rl4.py` exports those trajectories in RL4's
-format, `rl4_simplify.py` runs a trained model, and the engine reads the kept points back as an
-external method. `CHANGES.md` lists every way we differ from the authors' code.
+The engine's `rl4_export` writes the database's trajectory ids and our practice range queries,
+`export_rl4.py` exports those trajectories in RL4's format, `rl4_train.py` trains on our range
+queries, `rl4_simplify.py` runs a trained model, and the engine reads the kept points back as an
+external method and scores them on its test workloads. `CHANGES.md` lists every way we differ from
+the authors' code.
 
 ## Layout
 
@@ -29,12 +31,13 @@ stand in for them.
 ## Run
 
 ```bash
-# 1. The engine writes data/output/geolife/database_ids.csv (export_results in the config)
-./build/engine/run.exe engine/configs/geolife.json
+# 1. The database's trajectory ids and our practice range queries, for the config's seed
+#    (--seed N for another; it must match the seed the engine scores with)
+./build/engine/rl4_export.exe engine/configs/geolife.json data/rl4/engine
 
 # 2. Export those trajectories, in that order
 rl4qdts/.venv/Scripts/python rl4qdts/export_rl4.py data/geolife.parquet data/rl4/db \
-  --ids data/output/geolife/database_ids.csv
+  --ids data/rl4/engine/database_ids.csv
 
 # 3. Simplify with the authors' trained models (or your own, see Training)
 rl4qdts/.venv/Scripts/python rl4qdts/rl4_simplify.py --db data/rl4/db --label data \
@@ -57,10 +60,15 @@ Give the two variants different `--name`s if you score both. `--no-cube-agent` a
 ## Training
 
 ```bash
-rl4qdts/.venv/Scripts/python rl4qdts/export_rl4.py data/geolife.parquet data/rl4/train --shuffle-seed 1
-rl4qdts/.venv/Scripts/python rl4qdts/rl4_train.py --db data/rl4/train --out data/rl4/model --seed 1
+rl4qdts/.venv/Scripts/python rl4qdts/export_rl4.py data/geolife.parquet data/rl4/train \
+  --ids data/rl4/engine/database_ids.csv --shuffle-seed 1
+rl4qdts/.venv/Scripts/python rl4qdts/rl4_train.py --db data/rl4/train --out data/rl4/model --seed 1 \
+  --range-queries data/rl4/engine/range_practice.parquet
 ```
 
+It trains on our practice range queries, never on the test workload the engine scores with. The
+database must come from the same `rl4_export` run; training checks that every query finds the
+engine's trajectories and stops if not. `--their-queries` trains on the authors' queries instead.
 This is the authors' training loop; add `--fixed` for the corrected one (see `CHANGES.md`). Then
 simplify with `--inb data/rl4/model/best_INB.h5 --oub data/rl4/model/best_OUB.h5`.
 `rl4_train.py --help` lists the sizes and budgets.

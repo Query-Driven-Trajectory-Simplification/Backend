@@ -9,6 +9,9 @@ Differences from the authors' script (the first three only with --fixed; without
   (endpoints only), ~100x a normal reward.
 - Last window: transitions after the last full window of --query-count steps get their reward too.
   The authors drop them, so e.g. Agent-Point's terminal transition is never stored.
+- Range queries: with --range-queries, the rewards and validation use our range queries and F1
+  (the engine's practice workload, see rl4_queries.py) instead of the authors' grid cells. Each
+  chunk gets --train-queries of the queries that find one of its trajectories, the same every epoch.
 - Database sizes, training budget, rounds and seeds are arguments.
   Training cycles through --chunk sized slices of the first --train trajectories, as the authors
   cycle through 500-trajectory slices; the trajectories after that are the validation set.
@@ -22,6 +25,7 @@ validation F1). Simplify with: rl4_simplify.py --inb <out>/best_INB.h5 --oub <ou
 import argparse
 import collections
 import csv
+import json
 import os
 import random
 import shutil
@@ -37,6 +41,16 @@ def main():
     ap.add_argument("--rl4", default=rl4_shims.UPSTREAM,
                     help="the authors' RL4QDTS code (default third_party/RL4QDTS)")
     ap.add_argument("--db", required=True, help="folder written by export_rl4.py (use --shuffle-seed)")
+    queries = ap.add_mutually_exclusive_group(required=True)
+    queries.add_argument("--range-queries",
+                         help="our practice range queries (range_practice.parquet from the engine's "
+                              "rl4_export, the same run whose database_ids.csv --db was exported from)")
+    queries.add_argument("--their-queries", action="store_true",
+                         help="the authors' range queries (grid cells) instead of ours")
+    ap.add_argument("--train-queries", type=int, default=50,
+                    help="with --range-queries: queries per training chunk (the authors use 50)")
+    ap.add_argument("--val-queries", type=int, default=100,
+                    help="with --range-queries: validation queries (the authors use 100)")
     ap.add_argument("--out", required=True, help="folder for checkpoints and the log")
     ap.add_argument("--train", type=int, default=1500, help="trajectories 0..train-1 are for training")
     ap.add_argument("--val", type=int, help="validation trajectories after --train (default: the rest)")
@@ -70,11 +84,31 @@ def main():
 
     path = os.path.join(args.db, "")
     with open(os.path.join(args.db, "index.csv")) as f:
-        n = sum(1 for _ in csv.DictReader(f))
+        trajectory_ids = [int(r["trajectory_id"]) for r in csv.DictReader(f)]
+    n = len(trajectory_ids)
     val_end = n if args.val is None else min(n, args.train + args.val)
     if not 0 < args.train < val_end:
         sys.exit(f"--train {args.train} leaves no validation data ({n} trajectories)")
     os.makedirs(args.out, exist_ok=True)
+
+    practice = None
+    if args.range_queries:
+        import rl4_queries
+        try:
+            with open(os.path.join(args.db, "export.json")) as f:
+                shift_hours = json.load(f)["shift_hours"]
+        except FileNotFoundError:
+            sys.exit(f"{args.db} has no export.json: export it again with export_rl4.py")
+        practice = rl4_queries.PracticeQueries(args.range_queries, trajectory_ids, shift_hours * 3600)
+        rl4_queries.use_our_range_queries(F)
+        chunk_queries = {}  # first trajectory of a chunk -> its queries, the same every epoch
+
+        def our_queries(s, e, count, traj_set):
+            queries = practice.select(s, e, count, np.random.default_rng([args.seed, s]))
+            if not queries:
+                sys.exit(f"no practice range query finds a trajectory among {s}..{e - 1}")
+            rl4_queries.check(F, traj_set, queries)
+            return queries
 
     RL_INB = AGENT_Sel(K * LEN, K, seed=args.seed)
     RL_OUB = AGENT_Sam(2 * 8, 9, seed=args.seed + 1000)
@@ -82,12 +116,18 @@ def main():
     # --- validation data, built once ---
     val_env = TrajComp(path, args.train, val_end, K, LEN)
     val_set = val_env.ori_traj_set
-    rtree_ref_val, _ = F.build_Rtree(val_set)
     val_distri, _, _ = F.get_distribution_feature_data(val_set)
-    _, q1, q2 = F.get_query_workload_data(val_distri)
-    val_query = q1 + q2
+    if practice:
+        rtree_ref_val = None  # our queries carry their reference
+        val_query = our_queries(args.train, val_end, args.val_queries, val_set)
+        source = f"our range queries ({len(val_query)} for validation, of {len(practice)})"
+    else:
+        rtree_ref_val, _ = F.build_Rtree(val_set)
+        _, q1, q2 = F.get_query_workload_data(val_distri)
+        val_query = q1 + q2
+        source = "the authors' range queries"
     print(f"validation: trajectories {args.train}..{val_end - 1}, {val_env.DB_size} points; "
-          f"{'fixed' if args.fixed else 'published'} training loop")
+          f"{'fixed' if args.fixed else 'published'} training loop; {source}")
 
     def validate():
         """rl_main_by_data.py run_dqn(); also returns the levels of the chosen cubes"""
@@ -130,8 +170,13 @@ def main():
         env_sel = TrajComp(path, cs, ce, K, LEN)
         tra_set = env_sel.ori_traj_set
         tra_distri, _, _ = F.get_distribution_feature_data(tra_set)
-        _, train_query, _ = F.get_query_workload_data(tra_distri)
-        rtree_ref_tra, _ = F.build_Rtree(tra_set)
+        if practice:
+            if cs not in chunk_queries:
+                chunk_queries[cs] = our_queries(cs, ce, args.train_queries, tra_set)
+            train_query, rtree_ref_tra = chunk_queries[cs], None
+        else:
+            _, train_query, _ = F.get_query_workload_data(tra_distri)
+            rtree_ref_tra, _ = F.build_Rtree(tra_set)
         buffer_train_size = int(args.ratio * env_sel.DB_size) + 2 * (ce - cs)
 
         for rnd in range(args.rounds):

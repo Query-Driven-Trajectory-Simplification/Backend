@@ -21,6 +21,11 @@ void export_workloads(const std::filesystem::path &dir, const core::TrajectoryDb
 // Exports to RL4QDTS
 void export_database_ids(const std::filesystem::path &dir, const core::TrajectoryDb &database);
 
+// Exports to RL4QDTS: one row per query with its box (local metres, Unix seconds) and the
+// trajectory ids it finds in the database
+void export_range_boxes(const std::filesystem::path &path, const core::TrajectoryDb &database,
+                        std::span<const query::RangeQuery> queries);
+
 void export_results(const std::filesystem::path &dir, std::string_view name,
                     const evaluator::EvaluationResult &evaluation, bool clustering);
 
