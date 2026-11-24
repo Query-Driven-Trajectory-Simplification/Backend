@@ -81,8 +81,6 @@ WhereAtScores evaluate_where_at(const core::TrajectoryDb &compressed,
     if (queries.empty())
         return {};
 
-    // Group probe indices by trajectory in original order so each trajectory accumulates
-    // independently in parallel while preserving exact sequential summation order.
     std::vector<std::size_t> offsets(compressed.size() + 1, 0);
     for (const auto &probe : queries) {
         if (probe.trajectory_index >= compressed.size())

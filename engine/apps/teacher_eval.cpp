@@ -45,7 +45,7 @@ namespace {
 using core::KeptSets;
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 // Between the training thresholds, so the teacher never saw them
-constexpr std::array kEvalEps{125.0, 175.0, 250.0};
+constexpr std::array kEvalEps{75.0, 125.0, 175.0};
 constexpr double kRdpAlpha = 0.25; // RDP_a025
 constexpr std::array kPartnerLambdas{0.5, 1.0};
 // Unset options keep the config's value; arms default to all teacher arms
