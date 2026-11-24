@@ -14,7 +14,6 @@ enum class Measure {
          // the kept segment's heading, in radians
 };
 
-
 double span_error(const core::TrajectoryView &trajectory, std::size_t first, std::size_t last,
                   Measure measure);
 
