@@ -1,6 +1,5 @@
 #include "backend/engine/teacher/objective.hpp"
 
-#include "backend/engine/core/interpolation.hpp"
 #include "backend/engine/core/parallel.hpp"
 #include "backend/engine/core/simplification.hpp"
 #include "backend/engine/query/frechet_helper.hpp"
@@ -149,7 +148,7 @@ double simplification_bound(const core::TrajectoryView &original, const core::Tr
     const std::size_t n = original.size();
     if (kept.size() < 2 || n < 2)
         return std::numeric_limits<double>::infinity();
-    double bound = 0.0;
+    double bound_sq = 0.0;
     std::size_t at = 0;
     for (std::size_t k = 0; k + 1 < kept.size(); ++k) {
         // Kept points are copies of original points, in order
@@ -166,17 +165,19 @@ double simplification_bound(const core::TrajectoryView &original, const core::Tr
         for (std::size_t j = at; j < end; ++j)
             length += edge(j);
         double walked = 0.0;
+        const double kx = kept.x[k], ky = kept.y[k];
+        const double kdx = kept.x[k + 1] - kx, kdy = kept.y[k + 1] - ky;
         for (std::size_t j = at; j <= end; ++j) {
             if (j > at)
                 walked += edge(j - 1);
             const double u = length > 0 ? walked / length : 0.0;
-            const double x = kept.x[k] + u * (kept.x[k + 1] - kept.x[k]);
-            const double y = kept.y[k] + u * (kept.y[k + 1] - kept.y[k]);
-            bound = std::max(bound, std::hypot(original.x[j] - x, original.y[j] - y));
+            const double dx = original.x[j] - (kx + u * kdx);
+            const double dy = original.y[j] - (ky + u * kdy);
+            bound_sq = std::max(bound_sq, dx * dx + dy * dy);
         }
         at = end;
     }
-    return bound;
+    return std::sqrt(bound_sq);
 }
 
 namespace {
@@ -315,11 +316,21 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
                                   range_marginal(ref.size() - 1, ref.size(), m_scored_boxes)});
     }
 
-    // Where-at: probes per trajectory
+    // Where-at: probes per trajectory, plus a time-sorted copy for linear scoring
     m_probes.resize(n);
     for (std::size_t k = 0; k < workloads.where_at.queries.size(); ++k)
         m_probes[workloads.where_at.queries[k].trajectory_index].push_back(
             static_cast<std::uint32_t>(k));
+    m_sorted_probes.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        auto &sorted = m_sorted_probes[i];
+        sorted.reserve(m_probes[i].size());
+        for (const auto k : m_probes[i]) {
+            const auto &probe = workloads.where_at.queries[k];
+            sorted.push_back({probe.t, probe.reference.x, probe.reference.y});
+        }
+        std::ranges::sort(sorted, {}, &Probe::t);
+    }
     const auto with_probes =
         std::ranges::count_if(m_probes, [](auto &probes) { return !probes.empty(); });
     m_where_at_weight = with_probes ? 1.0 / static_cast<double>(with_probes) : 0.0;
@@ -502,15 +513,40 @@ bool Objective::match(const core::TrajectoryView &a, const core::TrajectoryView 
 Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryView &candidate,
                                           double deviation) const {
     Terms terms{};
-    if (!m_probes[i].empty()) {
-        double sum = 0;
-        for (const auto k : m_probes[i]) {
-            const auto &probe = m_workloads.where_at.queries[k];
-            const double error =
-                core::distance(core::position_at(candidate, probe.t), probe.reference);
-            sum += ramp(error, m_config.min_tolerance_m, m_config.max_tolerance_m);
+    if (!m_sorted_probes[i].empty()) {
+        const double far = m_config.max_tolerance_m * m_config.max_tolerance_m * (1.0 + 1e-12);
+        const double near = m_config.min_tolerance_m * m_config.min_tolerance_m * (1.0 - 1e-12);
+        const std::size_t last = candidate.size() - 1;
+        const double t_first = static_cast<double>(candidate.t[0]);
+        const double t_last = static_cast<double>(candidate.t[last]);
+        std::size_t after = 1;
+        double sum = 0.0;
+        for (const auto &probe : m_sorted_probes[i]) {
+            double x, y;
+            if (probe.t <= t_first || last == 0) {
+                x = candidate.x[0];
+                y = candidate.y[0];
+            } else if (probe.t >= t_last) {
+                x = candidate.x[last];
+                y = candidate.y[last];
+            } else {
+                while (after < last && static_cast<double>(candidate.t[after]) <= probe.t)
+                    ++after;
+                const std::size_t before = after - 1;
+                const double t_before = static_cast<double>(candidate.t[before]);
+                const double t_after = static_cast<double>(candidate.t[after]);
+                const double fraction = (probe.t - t_before) / (t_after - t_before);
+                x = candidate.x[before] + fraction * (candidate.x[after] - candidate.x[before]);
+                y = candidate.y[before] + fraction * (candidate.y[after] - candidate.y[before]);
+            }
+            const double dx = x - probe.x, dy = y - probe.y;
+            const double sq = dx * dx + dy * dy;
+            if (sq <= near)
+                sum += 1.0;
+            else if (sq < far)
+                sum += ramp(std::sqrt(sq), m_config.min_tolerance_m, m_config.max_tolerance_m);
         }
-        terms[WhereAt] = m_where_at_weight * sum / static_cast<double>(m_probes[i].size());
+        terms[WhereAt] = m_where_at_weight * sum / static_cast<double>(m_sorted_probes[i].size());
     }
 
     const bool shape = m_config.term_weights[Shape] > 0;
@@ -587,26 +623,9 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
             if (query::intersects(candidate, m_workloads.range.queries[m_range[i][k].box].box))
                 score.terms[Range] += range_weights[k];
     }
-    if (m_scale[Join] > 0) {
-        if (join_state) {
-            double own_error = score.deviation;
-            score.join = join_state->gain(i, candidate, own_error);
-        } else {
-            std::array<std::size_t, kMaxJoinTerms> hits{}, found{};
-            double own_error = score.deviation;
-            for (const auto &link : m_links[i]) {
-                // The partner is the original query and i the database side
-                const bool matched = held_out_match(i, link, candidate, own_error);
-                found[link.term] += matched;
-                hits[link.term] += matched && link.positive;
-            }
-            double join = 0;
-            for (std::size_t k = 0; k < m_eps.size(); ++k)
-                if (found[k] + m_truth[slot(i, k)] != 0 && m_with_truth[k] != 0)
-                    join += m_join_weight[k] * f1_of(hits[k], found[k], m_truth[slot(i, k)]) /
-                            static_cast<double>(m_with_truth[k]);
-            score.join = m_scale[Join] * join;
-        }
+    if (m_scale[Join] > 0 && join_state) {
+        double own_error = score.deviation;
+        score.join = join_state->gain(i, candidate, own_error);
     }
     score.bound = independent_sum(score, 0.0) +
                   m_scale[Knn] * m_knn_weight * static_cast<double>(m_knn[i].size());
@@ -653,27 +672,24 @@ double Objective::join_metric(std::span<const core::TrajectoryView> state) const
 }
 
 std::vector<double> Objective::join_f1s(std::span<const core::TrajectoryView> state) const {
-    // matched[p]: original i queries compressed j, counted for i. reverse[p]: the other way
-    std::vector<char> matched(m_pair_i.size()), reverse(m_pair_i.size());
-    core::parallel_for(m_pair_i.size(), [&](std::size_t p) {
-        const auto i = m_pair_i[p], j = m_pair_j[p];
-        const auto k = m_pair_term[p];
-        matched[p] = match(m_db.trajectory(i), state[j], k);
-        reverse[p] = match(m_db.trajectory(j), state[i], k);
+    // Each direction from its compressed side, using pair brackets and coarse copies
+    std::vector<std::vector<char>> outcome(state.size());
+    core::parallel_for(state.size(), [&](std::size_t i) {
+        const auto &links = m_links[i];
+        outcome[i].reserve(links.size());
+        double own_error = -1.0;
+        for (const auto &link : links)
+            outcome[i].push_back(held_out_match(i, link, state[i], own_error));
     });
     std::vector<std::size_t> hits(m_truth.size(), 0), found(m_truth.size(), 0);
-    for (std::size_t p = 0; p < m_pair_i.size(); ++p) {
-        const bool positive = p < m_positive_count;
-        const auto slot_i = slot(m_pair_i[p], m_pair_term[p]);
-        const auto slot_j = slot(m_pair_j[p], m_pair_term[p]);
-        if (matched[p]) {
-            ++found[slot_i];
-            hits[slot_i] += positive;
-        }
-        if (reverse[p]) {
-            ++found[slot_j];
-            hits[slot_j] += positive;
-        }
+    for (std::size_t i = 0; i < state.size(); ++i) {
+        const auto &links = m_links[i];
+        for (std::size_t k = 0; k < links.size(); ++k)
+            if (outcome[i][k]) {
+                const auto t = slot(links[k].other, links[k].term);
+                ++found[t];
+                hits[t] += links[k].positive;
+            }
     }
     std::vector<double> f1s(m_eps.size(), 0.0);
     std::vector<std::size_t> counted(m_eps.size(), 0);
@@ -804,6 +820,8 @@ RangeState::Proposal RangeState::propose(std::size_t i, std::vector<char> covere
         throw std::invalid_argument("range proposal: one outcome per box needed");
     double change = 0.0;
     for (std::size_t k = 0; k < memberships.size(); ++k) {
+        if (m_covered[i][k] == proposal.covered[k])
+            continue;
         const auto b = memberships[k].box;
         const auto next = m_found[b] - m_covered[i][k] + proposal.covered[k];
         change += f1(b, next) - f1(b, m_found[b]);
@@ -1137,16 +1155,40 @@ void KnnState::watch(std::span<const std::vector<core::TrajectoryView>> versions
         std::ranges::nth_element(distances, at);
         radius[e] = *at;
     });
-    // A version keeps i's endpoints, so the endpoint bound rules out most queries for all of them
+    // A version keeps i's endpoints, so the squared endpoint bound rules out most queries for all
+    // of them without touching TrajectoryDb or taking square roots
+    struct Endpoints {
+        double x0, y0, x1, y1, radius_sq;
+    };
+    std::vector<Endpoints> queries(n);
+    for (std::size_t e = 0; e < n; ++e) {
+        if (radius[e] < 0) {
+            queries[e] = {0.0, 0.0, 0.0, 0.0, -1.0};
+            continue;
+        }
+        const auto q = db.trajectory(e);
+        const std::size_t last = q.size() - 1;
+        queries[e] = {q.x[0], q.y[0], q.x[last], q.y[last], radius[e] * radius[e] * (1.0 + 1e-12)};
+    }
     std::vector<std::vector<std::pair<std::uint32_t, double>>> added(n);
     core::parallel_for(n, [&](std::size_t i) {
         if (versions[i].empty())
             return;
         const auto original = db.trajectory(i);
+        const std::size_t last = original.size() - 1;
+        const double ix0 = original.x[0], iy0 = original.y[0];
+        const double ix1 = original.x[last], iy1 = original.y[last];
         for (std::size_t e = 0; e < n; ++e) {
-            if (radius[e] < 0 || e == i ||
-                query::endpoint_lower_bound(db.trajectory(e), original) > radius[e] ||
-                std::ranges::any_of(m_watchers[i], [&](const Watcher &w) { return w.query == e; }))
+            const auto &q = queries[e];
+            if (q.radius_sq < 0 || e == i)
+                continue;
+            const double dx0 = q.x0 - ix0, dy0 = q.y0 - iy0;
+            if (dx0 * dx0 + dy0 * dy0 > q.radius_sq)
+                continue;
+            const double dx1 = q.x1 - ix1, dy1 = q.y1 - iy1;
+            if (dx1 * dx1 + dy1 * dy1 > q.radius_sq)
+                continue;
+            if (std::ranges::any_of(m_watchers[i], [&](const Watcher &w) { return w.query == e; }))
                 continue;
             for (const auto &version : versions[i])
                 if (m_objective.original_within(e, version, radius[e])) {

@@ -770,9 +770,9 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
         SCOPED_TRACE(source == &ranked ? "ranked" : "plain");
         {
             const teacher::Objective objective(db, workloads);
-            std::size_t with_truth = 0;
-            for (std::size_t i = 0; i < db.size(); ++i)
-                with_truth += objective.truth(i) != 0;
+            const teacher::PreparedTrajectories prepared_orig(db, every_point(db));
+            const auto orig_views = prepared_orig.views();
+            const teacher::JoinState orig_join(objective, orig_views);
             for (int trial = 0; trial < 4; ++trial) {
                 auto kept = endpoints(db);
                 if (trial == 1)
@@ -786,18 +786,12 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                     }
                 const teacher::PreparedTrajectories prepared(db, kept);
                 const auto views = prepared.views();
+                const teacher::JoinState state_join(objective, views);
                 for (const bool original_partners : {false, true}) {
                     const std::span<const core::TrajectoryView> partners =
                         original_partners ? std::span<const core::TrajectoryView>{} : views;
+                    const auto &join_state = original_partners ? orig_join : state_join;
                     for (std::size_t i = 0; i < db.size(); ++i) {
-                        std::size_t hits = 0, found = 0;
-                        for (const auto &link : objective.links(i)) {
-                            // i is the database side of an original partner's query
-                            const bool matched =
-                                objective.match(db.trajectory(link.other), views[i]);
-                            found += matched;
-                            hits += matched && link.positive;
-                        }
                         // Per-trajectory kNN: each query with i in its top k, i within its cutoff
                         double knn = 0.0;
                         for (const auto &entry : workloads.knn)
@@ -807,15 +801,6 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                                                       views[i], entry.cutoff, workloads.frechet))
                                 knn += objective.scale(teacher::Objective::Knn) /
                                        static_cast<double>(workloads.k * valid);
-                        const double f1 = found + objective.truth(i)
-                                              ? 2.0 * static_cast<double>(hits) /
-                                                    static_cast<double>(found + objective.truth(i))
-                                              : 0.0;
-                        const double join = with_truth
-                                                ? objective.scale(teacher::Objective::Join) * f1 /
-                                                      (static_cast<double>(with_truth) *
-                                                       (1.0 - objective.join_floor(0)))
-                                                : 0.0;
                         double range_gain = 0.0;
                         const auto weights = objective.range_weights(i, partners);
                         const auto boxes = objective.boxes(i);
@@ -825,8 +810,10 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                                 range_gain += weights[b];
                         const double expected =
                             objective.separable(i, views[i]) + knn +
-                            objective.scale(teacher::Objective::Range) * range_gain + join;
-                        const auto score = objective.prepare_independent(i, views[i], partners);
+                            objective.scale(teacher::Objective::Range) * range_gain +
+                            join_state.propose(i, views[i]).gain;
+                        const auto score = objective.prepare_independent(i, views[i], partners,
+                                                                         weights, &join_state);
                         EXPECT_GE(score.bound + 1e-12, expected);
                         EXPECT_NEAR(objective.independent_value(score, expected - 1e-6), expected,
                                     1e-12);
@@ -834,19 +821,11 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                                       score, std::numeric_limits<double>::infinity()),
                                   expected + 1e-12);
                         EXPECT_NEAR(objective.independent_value(score), expected, 1e-12);
-                        EXPECT_NEAR(objective.independent_value(i, views[i], partners), expected,
-                                    1e-12);
-                        if (!original_partners) {
-                            const teacher::JoinState join_state(objective, views);
-                            const auto partner_score = objective.prepare_independent(
-                                i, views[i], partners, weights, &join_state);
-                            const double partner_expected =
-                                objective.separable(i, views[i]) + knn +
-                                objective.scale(teacher::Objective::Range) * range_gain +
-                                join_state.propose(i, views[i]).gain;
-                            EXPECT_NEAR(objective.independent_value(partner_score),
-                                        partner_expected, 1e-12);
-                        }
+                        EXPECT_NEAR(
+                            objective.independent_value(i, views[i], partners,
+                                                        -std::numeric_limits<double>::infinity(),
+                                                        weights, &join_state),
+                            expected, 1e-12);
                     }
                 }
             }

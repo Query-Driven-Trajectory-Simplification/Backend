@@ -96,14 +96,17 @@ class CandidateMaker {
     }
 
   private:
-    std::vector<std::size_t> simplify(AlgorithmType type, std::size_t b) {
-        if (type == AlgorithmType::UNIFORM)
-            return selection::simplify_trajectory(m_original, type, b);
+    const std::vector<std::size_t> &sequence_of(AlgorithmType type) {
         auto &cached = type == AlgorithmType::RDP ? m_rdp : m_sed;
         if (!cached)
             cached = type == AlgorithmType::RDP ? selection::rdp::sequence(m_original, m_cap)
                                                 : selection::sed::sequence(m_original, m_cap);
-        return prefix(*cached, b);
+        return *cached;
+    }
+    std::vector<std::size_t> simplify(AlgorithmType type, std::size_t b) {
+        if (type == AlgorithmType::UNIFORM)
+            return selection::simplify_trajectory(m_original, type, b);
+        return prefix(sequence_of(type), b);
     }
     static std::vector<std::size_t> prefix(const std::vector<std::size_t> &sequence,
                                            std::size_t b) {
@@ -114,17 +117,16 @@ class CandidateMaker {
     }
     const std::vector<std::size_t> &greedy_sequence(std::size_t seed_size,
                                                     AlgorithmType seed_algorithm) {
-        if (!m_greedy) {
+        if (!m_greedy)
             m_greedy.emplace(m_objective, m_index);
-            // SED's order of importance covers every point up to the cap
-            m_fill = selection::sed::sequence(m_original, m_cap);
-        }
         const auto seed_type = seed_size ? seed_algorithm : AlgorithmType::SED;
         auto &cached = m_greedy_sequences[{seed_type, seed_size}];
         if (cached.empty()) {
+            // seed_size >= 1 is only queried at budget = 2 + 2 * seed_size (+ 1)
+            const std::size_t limit = seed_size ? std::min(m_cap, 2 * seed_size + 3) : m_cap;
             const auto seed = seed_size ? interior(simplify(seed_algorithm, 2 + seed_size))
                                         : std::vector<std::size_t>{};
-            cached = m_greedy->sequence(m_cap, seed, m_fill);
+            cached = m_greedy->sequence(limit, seed, sequence_of(AlgorithmType::SED));
         }
         return cached;
     }
@@ -135,7 +137,6 @@ class CandidateMaker {
     std::size_t m_index;
     std::optional<Greedy> m_greedy;
     std::optional<std::vector<std::size_t>> m_rdp, m_sed;
-    std::vector<std::size_t> m_fill;
     std::map<std::pair<AlgorithmType, std::size_t>, std::vector<std::size_t>> m_greedy_sequences;
 };
 
@@ -510,16 +511,18 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         std::size_t i;
         PreparedTrajectory prepared;
         std::vector<std::size_t> kept;
-        double separable = 0.0, gain = 0.0;
+        double deviation = 0.0, separable = 0.0, gain = 0.0;
         JoinState::Proposal join;
         RangeState::Proposal range;
         std::vector<double> distances;
     };
     auto pending = [&](std::size_t i, std::vector<std::size_t> next) {
-        Pending p{i, PreparedTrajectory(db.trajectory(i), next), std::move(next), 0.0, 0.0, {}, {},
-                  {}};
+        Pending p{
+            i, PreparedTrajectory(db.trajectory(i), next), std::move(next), 0.0, 0.0, 0.0, {}, {},
+            {}};
         const auto view = p.prepared.view();
-        p.separable = objective.separable(i, view);
+        p.deviation = objective.deviation(i, view);
+        p.separable = objective.separable(i, view, p.deviation);
         p.join = join.propose(i, view);
         p.range = range.propose(i, view);
         p.gain = p.separable - separable[i] + p.join.gain + p.range.gain;
@@ -537,7 +540,7 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
         state[i] = owned[i].view();
         kept[i] = std::move(p.kept);
         separable[i] = p.separable;
-        state_error[i] = objective.deviation(i, state[i]);
+        state_error[i] = p.deviation;
     };
 
     struct Offer {
@@ -639,18 +642,51 @@ Traded trade_budgets(const core::TrajectoryDb &db, const Objective &objective,
                 const auto seller = sellers[match].second;
                 used[r] = used[seller] = 1;
                 ++profitable;
-                // Exact: the seller first, then the buyer against the changed state
+                // Exact: the seller first, then the buyer against the changed state. Save the
+                // seller's state so a rejected pair rolls back without recomputing kNN distances
                 auto old_kept = kept[seller];
+                auto old_knn = knn.stored(seller);
+                const double old_separable = separable[seller];
+                const double old_error = state_error[seller];
                 auto first = pending(seller, std::move(sell[d][seller].kept));
                 commit(first);
-                auto second = pending(r, std::move(buy[d][r].kept));
+                // Screen the buyer with propose_bounded first so rejected trades skip knn.distances
+                Pending second{r,
+                               PreparedTrajectory(db.trajectory(r), buy[d][r].kept),
+                               std::move(buy[d][r].kept),
+                               0.0,
+                               0.0,
+                               0.0,
+                               {},
+                               {},
+                               {}};
+                const auto buyer_view = second.prepared.view();
+                second.deviation = objective.deviation(r, buyer_view);
+                second.separable = objective.separable(r, buyer_view, second.deviation);
+                second.join = join.propose(r, buyer_view);
+                second.range = range.propose(r, buyer_view);
+                const double second_base =
+                    second.separable - separable[r] + second.join.gain + second.range.gain;
+                const double second_knn =
+                    knn.propose_bounded(r, buyer_view, state_error[r] + second.deviation,
+                                        kMinImprovement - first.gain - second_base);
+                second.gain = second_base + second_knn;
                 if (first.gain + second.gain > kMinImprovement) {
+                    second.distances = knn.distances(r, buyer_view, true);
                     commit(second);
                     value += first.gain + second.gain;
                     ++accepted;
                 } else {
-                    auto back = pending(seller, std::move(old_kept));
-                    commit(back);
+                    PreparedTrajectory old_prepared(db.trajectory(seller), old_kept);
+                    const auto old_view = old_prepared.view();
+                    join.apply(join.propose(seller, old_view));
+                    range.apply(range.propose(seller, old_view));
+                    knn.apply(seller, old_knn);
+                    owned[seller] = std::move(old_prepared);
+                    state[seller] = owned[seller].view();
+                    kept[seller] = std::move(old_kept);
+                    separable[seller] = old_separable;
+                    state_error[seller] = old_error;
                 }
             }
         }
