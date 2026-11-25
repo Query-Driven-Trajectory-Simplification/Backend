@@ -23,6 +23,7 @@
 #include <numeric>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1185,4 +1186,71 @@ TEST(PreparedTrajectory, OwnsCoordinatesAndRebuildsBoundsAfterCopyMoveAndAssign)
         EXPECT_EQ(updated.bbox.y_min, std::ranges::min(updated.y));
         EXPECT_EQ(updated.bbox.y_max, std::ranges::max(updated.y));
     }
+}
+
+TEST_F(TeacherTest, PairDistancesAreTheOriginalsContinuousDistance) {
+    const auto db = random_db(2, 24, 20);
+    auto config = small_config();
+    config.extra_join_eps_m = {config.join_eps_m * 1.5};
+    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    ASSERT_FALSE(workloads.positives.empty());
+    ASSERT_FALSE(workloads.negatives.empty());
+    const teacher::Objective objective(db, workloads, {.pair_distances = true});
+    std::size_t checked = 0;
+    for (std::size_t i = 0; i < db.size(); ++i)
+        for (const auto &link : objective.links(i)) {
+            const auto a = db.trajectory(i), b = db.trajectory(link.other);
+            const double distance = objective.pair_distance(link.pair);
+            const double eps = objective.join_eps(link.term);
+            ASSERT_TRUE(std::isfinite(distance));
+            // At most 1 mm above the distance: within at it, not 1 mm below it
+            EXPECT_TRUE(query::continuous_frechet_within(a, b, distance));
+            if (distance > 1.001e-3)
+                EXPECT_FALSE(query::continuous_frechet_within(a, b, distance - 1.001e-3));
+            // Consistent with how the pairs were labelled
+            if (link.positive)
+                EXPECT_LE(distance, eps + 1e-3);
+            else
+                EXPECT_GT(distance, eps);
+            EXPECT_DOUBLE_EQ(objective.slack(link), std::abs(distance - eps));
+            ++checked;
+        }
+    EXPECT_GT(checked, 0u);
+}
+
+TEST_F(TeacherTest, DiscretePairDistancesAreExact) {
+    const auto db = random_db(2, 24, 20);
+    auto config = small_config();
+    config.frechet = query::FrechetVariant::Discrete;
+    const auto workloads = teacher::load_or_build_workloads(db, config, 9, m_dir);
+    ASSERT_FALSE(workloads.positives.empty());
+    const teacher::Objective objective(db, workloads, {.pair_distances = true});
+    for (std::size_t i = 0; i < db.size(); ++i)
+        for (const auto &link : objective.links(i))
+            EXPECT_EQ(objective.pair_distance(link.pair),
+                      query::frechet_distance(db.trajectory(i), db.trajectory(link.other)));
+}
+
+TEST_F(TeacherTest, PairDistancesAreOptInAndLeaveTheObjectiveUnchanged) {
+    const auto db = random_db(2, 24, 20);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 9, m_dir);
+    ASSERT_GT(workloads.positives.size(), 0u);
+    const teacher::Objective plain(db, workloads);
+    const teacher::Objective with(db, workloads, {.pair_distances = true});
+    std::size_t i = 0;
+    while (plain.links(i).empty())
+        ++i;
+    EXPECT_THROW((void)plain.pair_distance(plain.links(i)[0].pair), std::logic_error);
+    EXPECT_THROW((void)plain.slack(plain.links(i)[0]), std::logic_error);
+
+    std::mt19937_64 rng(3);
+    auto kept = endpoints(db);
+    for (std::size_t t = 0; t < db.size(); ++t) {
+        for (std::size_t k = 1; k + 1 < db.trajectory(t).size(); ++k)
+            if (rng() % 4 == 0)
+                kept[t].push_back(k);
+        std::ranges::sort(kept[t]);
+    }
+    EXPECT_EQ(plain.metrics(kept), with.metrics(kept));
+    EXPECT_EQ(plain.floors(), with.floors());
 }

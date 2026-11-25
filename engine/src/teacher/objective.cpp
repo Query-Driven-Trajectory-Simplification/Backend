@@ -432,9 +432,13 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
 void Objective::bracket_pairs() {
     // Each pair's originals, once per pair across terms: the discrete distance bounds the
     // continuous one from above (exact below the largest threshold), Hausdorff from below
+    constexpr double inf = std::numeric_limits<double>::infinity();
     m_pair_lower.assign(m_pair_i.size(), 0.0);
-    m_pair_upper.assign(m_pair_i.size(), std::numeric_limits<double>::infinity());
-    if (!m_certify)
+    m_pair_upper.assign(m_pair_i.size(), inf);
+    m_pair_distance.clear();
+    if (m_config.pair_distances)
+        m_pair_distance.assign(m_pair_i.size(), inf);
+    if (!m_certify && !m_config.pair_distances)
         return;
     std::vector<std::uint32_t> order(m_pair_i.size());
     std::iota(order.begin(), order.end(), 0u);
@@ -452,18 +456,64 @@ void Objective::bracket_pairs() {
         const auto first = order[starts[s]];
         const auto a = m_db.trajectory(m_pair_i[first]), b = m_db.trajectory(m_pair_j[first]);
         std::vector<double> prev, curr;
+        const std::size_t end = s + 1 < starts.size() ? starts[s + 1] : order.size();
+        if (!m_certify) {
+            // Discrete: the distance itself, with no cutoff
+            const double distance =
+                std::sqrt(query::get_squared_frechet_distance(a, b, inf, prev, curr));
+            for (std::size_t r = starts[s]; r < end; ++r)
+                m_pair_distance[order[r]] = distance;
+            return;
+        }
         const double squared = query::get_squared_frechet_distance(a, b, cutoff, prev, curr);
-        const double upper =
-            squared < cutoff ? std::sqrt(squared) : std::numeric_limits<double>::infinity();
+        const double upper = squared < cutoff ? std::sqrt(squared) : inf;
         const double lower = std::sqrt(std::max(
             {query::squared_endpoint_lower_bound(a, b), query::squared_box_extent_lower_bound(a, b),
              squared_directed_hausdorff(a, b), squared_directed_hausdorff(b, a)}));
-        const std::size_t end = s + 1 < starts.size() ? starts[s + 1] : order.size();
         for (std::size_t r = starts[s]; r < end; ++r) {
             m_pair_lower[order[r]] = lower;
             m_pair_upper[order[r]] = upper;
         }
+        if (!m_config.pair_distances)
+            return;
+        // The continuous distance searched within the bracket. Above the largest threshold the
+        // discrete distance, now without a cutoff, is still an upper bound
+        const double search_upper =
+            std::isfinite(upper)
+                ? upper
+                : std::sqrt(query::get_squared_frechet_distance(a, b, inf, prev, curr));
+        const double distance = query::continuous_frechet_distance(a, b, lower, search_upper);
+        for (std::size_t r = starts[s]; r < end; ++r)
+            m_pair_distance[order[r]] = distance;
     });
+}
+
+double Objective::pair_distance(std::size_t pair) const {
+    if (m_pair_distance.empty())
+        throw std::logic_error("objective: pair distances need ObjectiveConfig::pair_distances");
+    return m_pair_distance[pair];
+}
+
+double Objective::slack(const JoinLink &link) const {
+    return std::abs(pair_distance(link.pair) - m_eps[link.term]);
+}
+
+double flip_probability(double slack, double deviation, double bandwidth) {
+    if (deviation <= 0.0)
+        return 0.0;
+    if (std::isinf(deviation))
+        return 0.5;
+    // With slack x the outcome flips when the distance moves past x the wrong way:
+    // max(0, deviation - x) / (2 deviation). Averaged over x uniform in [a, b]
+    const double a = std::max(0.0, slack - bandwidth), b = slack + bandwidth;
+    if (b <= a)
+        return std::max(0.0, deviation - slack) / (2.0 * deviation);
+    // Antiderivative of max(0, deviation - x), flat from x = deviation on
+    const auto integral = [deviation](double x) {
+        x = std::min(x, deviation);
+        return deviation * x - 0.5 * x * x;
+    };
+    return (integral(b) - integral(a)) / (2.0 * deviation * (b - a));
 }
 
 std::optional<bool> Objective::certify(double lower, double upper, double deviation,

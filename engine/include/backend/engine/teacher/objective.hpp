@@ -59,12 +59,24 @@ struct ObjectiveConfig {
     double min_shape_m = 25.0; // shape ramp on each trajectory's deviation bound
     double max_shape_m = 500.0;
     TermWeights term_weights{1.0, 1.0, 1.0, 1.0, 0.0, 0.0};
+    // Each join pair's distance between the originals, for pair_distance and slack. Off by
+    // default: it costs a distance search per pair when the objective is built
+    bool pair_distances = false;
 };
 
 // 1 up to min, 0 from max, linear between: the where-at and shape scores
 inline double ramp(double value, double min, double max) {
     return std::clamp((max - value) / (max - min), 0.0, 1.0);
 }
+
+// Chance that a query near a join pair sees the other outcome once the database side is
+// simplified. slack: |d(query, original) - eps| of the pair. deviation: the simplification's
+// deviation bound, so its distance to any query moves by at most that; the move is taken as
+// uniform within +-deviation. bandwidth: a nearby query's slack is taken as uniform within
+// +-bandwidth of this pair's, cut at 0. 0 when deviation is 0, at most 1/2, 1/2 for an infinite
+// deviation. Bandwidth 0 gives the kNN margin term's rule, (deviation - slack) / (2 deviation).
+// Expects slack and bandwidth finite and not negative, deviation not negative
+double flip_probability(double slack, double deviation, double bandwidth);
 
 // Throws std::invalid_argument unless finite, not negative and not all zero. Returns their sum
 double check_term_weights(const TermWeights &weights);
@@ -158,6 +170,12 @@ class Objective {
     std::size_t slots() const { return m_truth.size(); }
     std::size_t join_terms() const { return m_eps.size(); }
     double join_floor(std::size_t term) const { return m_join_floor[term]; }
+    double join_eps(std::size_t term) const { return m_eps[term]; }
+    // Distance between the originals of a pair, in the workloads' Fréchet variant (continuous
+    // within 1 mm). Throws std::logic_error unless ObjectiveConfig::pair_distances was set
+    double pair_distance(std::size_t pair) const;
+    // |pair_distance - eps| of the link's pair at the link's threshold
+    double slack(const JoinLink &link) const;
     // The join metric from each term's macro F1
     double join_value(std::span<const double> f1s) const;
     std::size_t truth(std::size_t slot) const { return m_truth[slot]; }
@@ -197,7 +215,8 @@ class Objective {
     // Whether the triangle bound alone decides d(query, candidate) <= cutoff, given a bracket on
     // d(query, original) and deviation bounding d(original, candidate); nullopt if it does not
     std::optional<bool> certify(double lower, double upper, double deviation, double cutoff) const;
-    // m_pair_lower and m_pair_upper, once per pair across terms
+    // m_pair_lower and m_pair_upper, and m_pair_distance when asked for, once per pair across
+    // terms
     void bracket_pairs();
 
     // Knn slot left 0. deviation < 0: computed here if needed
@@ -229,6 +248,8 @@ class Objective {
     std::vector<std::uint8_t> m_pair_term;
     // Per pair, a bracket on the originals' continuous distance; 0, infinity if unknown
     std::vector<double> m_pair_lower, m_pair_upper;
+    // Per pair, the originals' distance; empty unless ObjectiveConfig::pair_distances
+    std::vector<double> m_pair_distance;
     std::vector<double> m_eps; // threshold of each join term
     std::size_t m_positive_count = 0;
     std::vector<std::vector<JoinLink>> m_links; // per trajectory
