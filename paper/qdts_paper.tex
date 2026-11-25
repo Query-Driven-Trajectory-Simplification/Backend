@@ -1,0 +1,536 @@
+% QDTS paper skeleton: section and subsection headers only.
+% Sources: QDTS_paper_writing_plan.md (outline, page budgets, figure/table IDs, claims C1-C14)
+%          EVALUATION_FRAMEWORK_SECTION.md (merged into Section III)
+% Target: IEEE ICDE 2028, regular research track. At most 12 pages excluding references and the
+% AI-content acknowledgement. No appendix: anything marked [TR] goes to the arXiv technical report.
+%
+% Page budget per section (ICDE column of the plan):
+%   I 1.0 | II 0.5 | III 1.0 | IV 0.75 | V 2.0 | VI 1.0 | VII 1.25 | VIII 1.5 | IX 1.25 | X 1.0
+%   XI 0.5 | XII 0.25 | total 12.0
+% Section VI holds the evaluation fairness material and the information-access table (T2), so it
+% takes 0.25 pages from Section III.
+%
+% Rule between Section III (Preliminaries) and Section VI (Experimental Setup): Section III holds
+% definitions, no parameter values. Section VI holds the values and the fairness rules, and refers
+% back to Section III instead of re-defining anything. Runtime and hardware belong in Section XI.
+
+\documentclass[conference]{IEEEtran}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\planned}[1]{\textcolor{blue}{[PLANNED: #1]}}
+
+\begin{document}
+
+% Candidate titles (choose after student go/no-go 2, plan section E):
+%   1. Query-Driven Trajectory Simplification Is Nearly Separable, and Therefore Learnable
+%   2. What Matters in Query-Driven Trajectory Simplification? Where the Budget Goes, Then Which
+%      Points Stay
+%   3. Learning to Spend a Global Point Budget: Teacher-Guided Query-Driven Trajectory
+%      Simplification
+\title{\todo{Title}}
+
+\author{\IEEEauthorblockN{\todo{Authors}}
+\IEEEauthorblockA{\todo{Affiliation}}}
+
+\maketitle
+
+\begin{abstract}
+% Seven sentences (plan section E): context, gap, approach, structure, findings with numbers,
+% student, implication.
+\todo{Abstract}
+\end{abstract}
+
+\begin{IEEEkeywords}
+\todo{Keywords}
+\end{IEEEkeywords}
+
+% ---------------------------------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+% 1.0 page. Draft: INTRODUCTION_DRAFT.md. No subsections. Paragraph flow:
+%   motivation (offline, once-per-database compression under one global budget);
+%   error-driven simplification and its limits; QDTS (RL4QDTS, MLSimp), crediting RL4QDTS's
+%   "Issue 1: uniform compression ratio" and MLSimp's global-vs-per-trajectory result;
+%   Example 1 with Fig. 1; three challenges; teacher-student framework with marginality and slack;
+%   how each challenge is answered; Example 2; findings (three-number answer with budget
+%   condition); contributions; limitations paragraph; outline.
+% Figure: F1 (page-1 map teaser).
+
+% ---------------------------------------------------------------------------------------------
+\section{Related Work}
+\label{sec:related}
+% 0.5 page.
+
+\subsection{Error-Driven Trajectory Simplification}
+\label{sec:related-edts}
+% DP/RDP, Bottom-Up, Span-Search, SED/PED/DAD/SAD, RLTS, S3.
+
+\subsection{Query-Driven Trajectory Simplification}
+\label{sec:related-qdts}
+% RL4QDTS and MLSimp; Zhang et al. as the evaluation precedent. What is new here: the quantified,
+% order-free split, the separability result, and that naive global allocation is worse than equal
+% budgets.
+
+\subsection{Attribution and Workload-Aware Optimisation}
+\label{sec:related-attribution}
+% Ablation, factorial and Shapley attribution; workload-aware DB optimisers (Flood, Qd-tree).
+
+\subsection{Learning from Expert Solvers}
+\label{sec:related-imitation}
+% Imitation of an expensive expert (Gasse et al., Paulus et al.); the teacher as a reference row,
+% never an upper bound.
+
+% ---------------------------------------------------------------------------------------------
+\section{Preliminaries}
+\label{sec:prelim}
+\label{sec:framework}
+% 1.0 page. Definitions only; values and fairness rules go to Section VI.
+% Source: EVALUATION_FRAMEWORK_SECTION.md, sections 1-4.
+
+\subsection{Problem Definition}
+\label{sec:problem}
+% Budgeted, database-wide QDTS. Budget B = 2T + round(s(P - 2T)); report B/P everywhere.
+
+\subsection{Design Requirements}
+\label{sec:requirements}
+% R1 held-out queries; R2 coverage of query types; R3 comparable budgets; R4 equal information
+% access; R5 normalised aggregation; R6 reproducibility and a frozen protocol.
+
+\subsection{Data Split and Budget Accounting}
+\label{sec:split}
+% Held-out split of trajectories (database vs query pool); overlapping random splits stated
+% honestly; user-disjoint splits for learned models.
+
+\subsection{Query Suite}
+\label{sec:queries}
+% Held-out kNN, Range (point-in-box primary; segment-in-box as a variant), Where-at, held-out join
+% over several thresholds; clustering untrained; self-join and self-kNN as diagnostics outside the
+% combined score.
+% Table: query type, what is compared with what, semantics, score.
+
+\subsection{Scoring}
+\label{sec:scoring}
+% Endpoints-only floors and normalisation; combined score J4 with per-term reporting;
+% recovered share R = (J_method - J_base) / (J_teacher - J_base), R > 1 allowed; statistics
+% (mean and std over splits, paired bootstrap intervals, wins per split).
+
+% Training-test separation, information access, external methods, the protocol comparison and the
+% threats to validity moved to Section VI (Experimental Setup), which owns all fairness material.
+
+% ---------------------------------------------------------------------------------------------
+\section{Structure: When Is QDTS Separable?}
+\label{sec:structure}
+% 0.75 page. Source: QDTS_THEORY.md. Proofs must fit here in a few lines (no appendix).
+
+\subsection{Stability Under Simplification}
+\label{sec:stability}
+% Lemma: |d(Q, T_i') - d(Q, T_i)| <= delta_i for original queries; simplification_bound is a
+% valid delta_i.
+
+\subsection{Slack: When Query Answers Change}
+\label{sec:slack}
+% Join, kNN and segment-in-box Range answers are stable while deviation < slack; point-in-box
+% Range is not (counterexample).
+
+\subsection{Near-Separability with Original Queries}
+\label{sec:separability}
+% Each outcome depends on one trajectory; J4 additive up to F1 curvature and kNN near-ties.
+
+\subsection{Optimal Allocation over Concave Envelopes}
+\label{sec:allocation-theory}
+% Proposition: greedy marginal allocation is exact for concave curves and at envelope vertices
+% (Everett; Shoham-Gersho; verify the theorem statements before citing).
+
+\subsection{Where Coupling Remains}
+\label{sec:coupling}
+% kNN near-ties; compressed (self) queries, where both deviations enter each answer.
+
+% ---------------------------------------------------------------------------------------------
+\section{Method: The Teacher and the Student}
+\label{sec:method}
+% 2.0 pages. The teacher is a teacher or expert, never an oracle or upper bound.
+
+\subsection{Overview}
+\label{sec:method-overview}
+% Analysis -> teacher -> student; why Section VIII's result makes a per-trajectory student enough.
+
+\subsection{Value Curves and Simplification Recipes}
+\label{sec:value-curves}
+% Per-trajectory value of query accuracy against budget; the six recipes.
+
+\subsection{Global Budget Allocation}
+\label{sec:allocation}
+% Greedy allocation along each curve's upper concave envelope; exact budget.
+
+\subsection{Best-Response Loop}
+\label{sec:loop}
+% Coordinate ascent over recipe choices against exact query trackers; terminates at a local
+% optimum.
+
+\subsection{Pairwise Budget Trading}
+\label{sec:trading}
+% Moves points between trajectories while exact J_T rises. [TR] if pages are short.
+
+\subsection{Complexity}
+\label{sec:complexity}
+% [TR] if pages are short.
+
+\subsection{The Student}
+\label{sec:student}
+% Per-trajectory budget regressor and six-way recipe classifier on geometry and workload-density
+% features, feeding the same allocator (exact budget guarantee). Design 2 (decision-focused
+% value curves) as the route to beating the teacher on held-out join.
+
+% ---------------------------------------------------------------------------------------------
+\section{Experimental Setup}
+\label{sec:setup}
+% About 1.0 page in the conference version; this draft is longer and is meant to be trimmed, with
+% the full change lists for RL4QDTS and MLSimp moved to the technical report.
+% Scope: how simplifications are evaluated, and why the comparison is fair. Definitions are in
+% Section III; runtime, hardware and optimisations are in Section XI.
+
+This section fixes the values behind the definitions of Section~\ref{sec:prelim} and states what
+each method may see. Our aim is a comparison in which every method is scored on the same unseen
+queries, under the same budget, with the same information available to it wherever the method
+allows.
+
+\subsection{Datasets and Splits}
+\label{sec:datasets}
+
+We use GeoLife~\todo{cite}. Raw trajectories are cleaned in four steps: repeated timestamps are
+removed, trajectories are cut where they leave the Beijing area (more than five consecutive points
+outside it), they are split at time gaps longer than 60\,min, and pieces with fewer than 100 points
+are dropped. This leaves 19{,}800 trajectories with 19{,}258{,}933 points
+(Table~\ref{tab:datasets}). \todo{T-Drive and a third dataset, with their cleaning.}
+
+Each dataset is split at random into a database (85\%) and a query pool (15\%); for GeoLife this
+gives 16{,}830 database and 2{,}970 query trajectories. Only the database is simplified, and
+the query pool is used for nothing but the test queries. We report five splits (seeds 7, 99, 123,
+2024 and 777). A sixth seed (42) is reserved for development and never reported. Because the
+splits are drawn from the same trajectories, consecutive databases share most of their content;
+the spread across splits therefore measures stability, not independent replication. The student is
+trained and tested on splits that are disjoint by GeoLife user, so that repeated routes of one
+person cannot appear on both sides \planned{user-disjoint folds}.
+
+\begin{table}[t]
+\centering
+\caption{Datasets after cleaning.}
+\label{tab:datasets}
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Dataset & Traj. & Points & Database & Queries \\
+\midrule
+GeoLife & 19{,}800 & 19{,}258{,}933 & 16{,}830 & 2{,}970 \\
+T-Drive & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Budgets}
+\label{sec:budgets}
+
+We evaluate four budget shares, $s \in \{0.25, 0.5, 1, 2\}\%$, with the total budget $B$ as defined
+in Section~\ref{sec:problem}. Since every trajectory keeps its two endpoints, the share of all
+points kept is higher: $B/P = 0.45\%$, $0.70\%$, $1.20\%$ and $2.20\%$, that is, compression by
+factors of 220, 142, 83 and 45. All results are reported against $B/P$, which matches the budget
+definition of RL4QDTS~\cite{rl4qdts}. For every setting, every method receives the same total $B$,
+and endpoints count towards it for every method.
+
+\subsection{Test Workloads}
+\label{sec:parameters}
+
+All test workloads are generated from the query pool and the original database of each split, and
+are the same for every method (Table~\ref{tab:workloads}).
+
+\begin{itemize}
+\item \emph{Held-out kNN:} every query-pool trajectory retrieves its $k = 10$ nearest database
+trajectories under continuous Fr\'echet distance; we report recall@10.
+\item \emph{Range:} 20{,}000 space-time boxes of $1\,\mathrm{km} \times 1\,\mathrm{km} \times
+7$\,days, centred on data points, each with at least 5 answering trajectories (full acceptance from
+20), scored by macro F1 with point-in-box semantics. Segment-in-box semantics is reported as a
+variant (Section~\ref{sec:shift}).
+\item \emph{Where-at:} 128 probe times per database trajectory, restricted to stretches whose
+consecutive points are at most 60\,s apart; credit falls linearly from 1 at 25\,m to 0 at 200\,m,
+and the share of probes within 50\,m is reported alongside.
+\item \emph{Held-out join:} every query-pool trajectory against the database at thresholds of 50,
+100, 150 and 200\,m, macro F1 averaged over the four. Three further thresholds (75, 125 and 175\,m),
+which no method trains on, test generalisation (Section~\ref{sec:transfer}).
+\item \emph{Route clustering:} connected components of size at least 5 at the same four
+thresholds. No method optimises it; it is reported but kept out of J4.
+\end{itemize}
+
+The self join and self kNN, where both sides are simplified, are reported as a separate score
+(J4-self) and never in the headline, because the teacher's training workloads are drawn from the
+database itself.
+
+\begin{table}[t]
+\centering
+\caption{Test workloads per split (GeoLife).}
+\label{tab:workloads}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Query & Size & Score \\
+\midrule
+Held-out kNN & 2{,}970, $k = 10$ & recall@10 \\
+Range & 20{,}000 boxes & macro F1 \\
+Where-at & 128 per traj. & avg.\ hit; $\le 50$\,m \\
+Held-out join & 2{,}970, 4 thresh. & macro F1 \\
+Clustering & 4 thresh. & not in J4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Metrics and Statistics}
+\label{sec:statistics}
+
+The headline score is J4 (Section~\ref{sec:scoring}), always reported next to its four terms, so a
+gain on one query type cannot hide a loss on another. The floors are the scores of the
+endpoints-only simplification of each split. As a check on the aggregation, we also report the
+geometric and harmonic means of the four terms. For each method and budget, we report the mean and
+standard deviation over the five splits. Comparisons between two methods are paired, since both are
+scored on the same queries; we report the mean paired difference with a 95\% $t$-interval and the
+number of splits won. \todo{Bootstrap intervals over queries.} The student is reported by its
+recovered share $R$ of the teacher's gain over the best baseline \planned{student results}.
+
+\subsection{Methods Compared}
+\label{sec:baselines}
+
+\emph{Error-driven baselines.} RDP, SED and uniform sampling, each with per-trajectory budgets
+proportional to $n_i^{\alpha}$ for $\alpha \in \{0, 0.25, 1\}$ (equal, intermediate and
+size-proportional), bottom-up PED and DAD \todo{include in the final run}, and database-wide RDP
+(\textsc{RDP-Global}), which spends the whole budget by perpendicular error across all trajectories.
+
+\emph{Workload-aware baseline.} \textsc{Partner} gives extra budget, weighted by
+$\lambda \in \{0.5, 1\}$, to trajectories that have a join partner in the training workloads.
+\todo{Confirm which training pairs it uses.}
+
+\emph{Learned QDTS.} RL4QDTS~\cite{rl4qdts} and MLSimp~\cite{mlsimp}, run as described in
+Section~\ref{sec:reproduction}.
+
+\emph{Our methods.} The ablation follows the teacher's stages: allocation with RDP points only
+(\textsc{Alloc}), allocation with per-trajectory recipe choice (\textsc{Alloc+Recipe}), plus the
+best-response loop (\textsc{+Loop}), plus budget trading (the full teacher), and the student
+\planned{student}.
+
+\emph{Tuning rule.} Baselines are reported at every parameter value, and the strongest baseline at
+each budget is chosen after seeing the test results. This choice favours the baselines.
+
+% ---------------------------------------------------------------------------------------------
+\subsection{Fairness of the Evaluation}
+\label{sec:fairness}
+
+A query-driven method sees sample queries and an error-driven one does not, and reproducing
+learned methods outside their original code base involves choices. We therefore state the rules
+that every method is held to.
+
+\paragraph{Training and test data are separate}
+No method sees the query pool. The teacher's training workloads (kNN lists, join pairs, range boxes
+and where-at probes) are built from the database alone, with random seeds distinct from those of
+the test workloads, and the test workloads are built only after every method has produced its
+simplification. All methods are scored on exactly the same queries and probes.
+
+\paragraph{Information access is explicit}
+Table~\ref{tab:access} lists what each method sees. Whenever a method uses sample queries, they
+come from the training workloads of the same split, never from the test workloads. Where a learned
+method can use more training queries than its default, we also report it with the same workload as
+the teacher (MLSimp with all 256{,}000 training boxes instead of 100).
+
+\begin{table*}[t]
+\centering
+\caption{Information available to each method. No method ever sees the held-out query pool.}
+\label{tab:access}
+\small
+\begin{tabular}{@{}p{3.3cm}p{2.6cm}p{6.2cm}p{4.0cm}@{}}
+\toprule
+Method & Database & Training queries & Tuned on \\
+\midrule
+Error-driven baselines, \textsc{RDP-Global} & simplified & none & nothing ($\alpha$ reported at every value) \\
+\textsc{Partner} & simplified & training join pairs \todo{confirm} & $\lambda$ reported at every value \\
+RL4QDTS & simplified & training range boxes of the split \todo{count} & authors' settings, validation on training boxes \\
+MLSimp & simplified & 100 training range boxes (also all 256{,}000) & authors' settings and pretrained model as a control \\
+Teacher & simplified & kNN lists, join pairs at 4 thresholds, 256{,}000 range boxes, where-at probes, all from the database & development seed and pseudo splits \\
+Student & simplified & teacher labels on training users; geometry and density features at inference \planned{} & development seed \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\paragraph{Budgets are accounted identically}
+Every method receives the same total $B$ with endpoints inside it. MLSimp's code adds endpoints on
+top of its budget; we count them inside it, and report the authors' accounting as well.
+
+\paragraph{Learned methods are reproduced faithfully}
+\label{sec:reproduction}
+Both methods run from the authors' code, included unchanged; every change lives in a separate
+adapter and is listed with its reason in our repository \todo{link}. For MLSimp, the 100 range
+queries that weight its point scores were its own test queries; we draw them from the training
+boxes instead. For RL4QDTS, rewards and validation use the training range boxes of the split, never
+the test boxes; a guard checks that every training box finds exactly the trajectories our
+evaluator finds. We fix one numerical defect (a hyperbolic tangent that returns NaN for large
+inputs), which changes none of the 72{,}678 decisions of the shipped models on our data. For each
+method we report the authors' setting, the corrected setting and its strongest variant under our
+protocol. MLSimp with the authors' pretrained model scores the same as with ours, so our training
+is not the cause of its results. Finally, every method, ours included, is also evaluated under the
+authors' native protocol (Table~\ref{tab:protocols}) \todo{native-protocol runs}.
+
+\paragraph{Design choices are fixed before testing}
+All design choices of the teacher, including its two query-free terms and their weights, were made
+on the development seed or on a pseudo split, which re-splits a database and never reads the query
+pool. The teacher weights its six terms equally. The metrics were frozen at commit
+\todo{hash}. They had been tightened once, after earlier results were seen; we report the earlier
+configuration on the same splits as a check \todo{old-configuration rerun}.
+
+\paragraph{Remaining asymmetries}
+Three asymmetries remain, and we report them rather than remove them. First, the teacher is
+workload-aware and the error-driven baselines are not; its fair reference is therefore the
+workload-aware methods (\textsc{Partner}, RL4QDTS and MLSimp). Second, where-at is held out in time
+only: its test probes fall on the same database trajectories the teacher trains on, at other
+moments, and range test boxes come from the same generator as the training boxes. These two terms
+measure fidelity to the database's own trajectories rather than generalisation to new queries,
+which only held-out kNN and join test. Third, point-in-box range rewards where vertices are placed,
+not geometric fidelity, which is why we also report segment-in-box semantics.
+
+\begin{table}[t]
+\centering
+\caption{Evaluation protocols. \todo{Verify every cell for RL4QDTS and MLSimp against the papers.}}
+\label{tab:protocols}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+ & RL4QDTS & MLSimp & Ours \\
+\midrule
+DB points & \todo{} & \todo{} & 16.3\,M \\
+Test held out & no & no & yes \\
+Range boxes & \todo{} & \todo{} & 1\,km, 7\,d \\
+Similarity & EDR & \todo{} & Fr\'echet \\
+kNN $k$ & 3 & \todo{} & 10 \\
+Join thresh. & -- & -- & 50--200\,m \\
+Endpoints in $B$ & yes & no & yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------------------------
+\section{Head-to-Head Comparison}
+\label{sec:head-to-head}
+% 1.25 pages. Claims C1, C2, C7, C11.
+
+\subsection{Overall Query Accuracy}
+\label{sec:overall}
+% Figures/tables: F2, T3.
+
+\subsection{Per-Query-Type Results}
+\label{sec:per-query}
+% Figure: F3. Where the teacher does not win (held-out kNN at 1-2%, held-out join everywhere).
+
+\subsection{Under the Authors' Native Protocol}
+\label{sec:native}
+% Table: T4.
+
+% ---------------------------------------------------------------------------------------------
+\section{What Matters: Decomposing the Gain}
+\label{sec:what-matters}
+% 1.5 pages. Claims C3, C4, C5.
+
+\subsection{Order-Free Factorial Attribution}
+\label{sec:attribution}
+% Figures: F4 (and F5 if space).
+
+\subsection{Where the Budget Goes}
+\label{sec:budget-distribution}
+% Figure: F7.
+
+\subsection{Which Recipes Win}
+\label{sec:recipes}
+% Figure: F8 (inset in F7 if space).
+
+% ---------------------------------------------------------------------------------------------
+\section{When It Matters: Conditions and Limits}
+\label{sec:when-matters}
+% 1.25 pages. Claims C5, C6, C8, C9. End each subsection with a bold one-line takeaway.
+
+\subsection{The Coordination Gap by Query Type}
+\label{sec:coordination-gap}
+% Figure: F6.
+
+\subsection{Transfer to Held-Out Queries and the Join Gap}
+\label{sec:transfer}
+% Figure: F9 (F10 and F15 in [TR]).
+
+\subsection{Range Semantics and Workload Shift}
+\label{sec:shift}
+% Figure: F11.
+
+\subsection{Robustness of the Ranking}
+\label{sec:ranking-robustness}
+% One paragraph; table T6 in [TR].
+
+% ---------------------------------------------------------------------------------------------
+\section{Student: How Much of the Teacher Can Be Learned?}
+\label{sec:student-results}
+% 1.0 page. Claims C12, C13 (C14 only if run).
+
+\subsection{Recovered Share and Speed-Up}
+\label{sec:recovered-share}
+% Table: T10.
+
+\subsection{Generalisation Across Users and Datasets}
+\label{sec:student-generalisation}
+% Figure: F16.
+
+\subsection{Ablations}
+\label{sec:student-ablations}
+% Budget head vs budget + recipe; cheap loop pass at the tightest budget; feature groups (T11 in
+% [TR]). Cut from the main text first if pages are short.
+
+% ---------------------------------------------------------------------------------------------
+\section{Efficiency and Scalability}
+\label{sec:efficiency}
+% 0.5 page. Claim C10.
+
+\subsection{Simplification Time}
+\label{sec:time}
+% Figure: F13(a).
+
+\subsection{Scalability with Database Size}
+\label{sec:scalability}
+% Figure: F13(b).
+
+\subsection{Label Generation versus Inference Cost}
+\label{sec:label-cost}
+% Teacher label cost against student inference; offline-once argument.
+
+% ---------------------------------------------------------------------------------------------
+\section{Limitations and Conclusion}
+\label{sec:conclusion}
+% 0.25 page.
+
+\subsection{Limitations}
+\label{sec:limitations}
+% Scope guards; the student inherits the teacher's join overfitting.
+
+\subsection{Conclusion}
+\label{sec:conclusion-main}
+% Design implications for learned QDTS: per-trajectory scoring priced against one global budget.
+
+% ---------------------------------------------------------------------------------------------
+\section*{Acknowledgement of AI-Generated Content}
+% Mandatory for ICDE; does not count toward the 12 pages.
+\todo{AI-content acknowledgement}
+
+\bibliographystyle{IEEEtran}
+% \bibliography{references}
+
+\end{document}
