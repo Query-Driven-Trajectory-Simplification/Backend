@@ -176,6 +176,7 @@ class Objective {
     std::span<const RangeMembership> boxes(std::size_t i) const { return m_range[i]; }
     std::span<const std::uint32_t> probes(std::size_t i) const { return m_probes[i]; } // where-at
     double where_at_weight() const { return m_where_at_weight; }
+    std::span<const double> segments(std::size_t i) const { return m_segments[i]; }
 
     bool match(const core::TrajectoryView &a, const core::TrajectoryView &b,
                std::size_t term = 0) const;
@@ -212,7 +213,8 @@ class Objective {
     ObjectiveConfig m_config;
 
     std::vector<std::vector<KnnMembership>> m_knn;
-    double m_knn_weight = 0; // 1 / (k * valid queries)
+    std::vector<std::vector<KnnMembership>> m_knn_outside; // ranked outsiders per trajectory
+    double m_knn_weight = 0;                               // 1 / (k * valid queries)
     std::vector<std::vector<RangeMembership>> m_range;
     std::size_t m_scored_boxes = 0; // boxes with a nonempty reference
     struct Probe {
@@ -223,7 +225,10 @@ class Objective {
     double m_where_at_weight = 0;                     // 1 / trajectories with probes
     double m_shape_weight = 0;                        // 1 / trajectories
     std::vector<std::vector<double>> m_margins;       // per trajectory, one per kNN membership
-    double m_margin_weight = 0;                       // 1 / memberships
+    double m_margin_weight = 0;                       // 1 / kNN margin memberships
+    std::vector<std::vector<double>>
+        m_join_margins;              // per trajectory, ranked neighbours within 2*eps
+    double m_join_margin_weight = 0; // 1 / join margin memberships
 
     std::vector<std::uint32_t> m_pair_i, m_pair_j; // pairs used, positives first
     std::vector<std::uint8_t> m_pair_term;

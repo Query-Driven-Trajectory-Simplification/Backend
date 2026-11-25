@@ -17,12 +17,15 @@
 
 namespace teacher {
 
-//   BUDGET_RDP         budgets from value curves, RDP
-//   BUDGET_CHOICE      budgets from value curves, best candidate each
-//   BUDGET_LOOP        then best response against the others' current state until nothing switches
-//   BUDGET_LOOP_TRADE  then moves points between trajectories while exact J_T rises: the teacher
-inline constexpr std::array<std::string_view, 4> kArms{"BUDGET_RDP", "BUDGET_CHOICE", "BUDGET_LOOP",
-                                                       "BUDGET_LOOP_TRADE"};
+//   BUDGET_RDP                 budgets from value curves, RDP
+//   BUDGET_CHOICE              budgets from value curves, best candidate each
+//   BUDGET_LOOP                then best response against the others' current state until nothing
+//                              switches
+//   BUDGET_LOOP_TRADE          then moves points between trajectories while exact J_T rises
+//   BUDGET_LOOP_TRADE_REFINE   then 1-opt point swaps and knot shifts at fixed per-trajectory
+//                              budgets while exact J_T rises
+inline constexpr std::array<std::string_view, 5> kArms{
+    "BUDGET_RDP", "BUDGET_CHOICE", "BUDGET_LOOP", "BUDGET_LOOP_TRADE", "BUDGET_LOOP_TRADE_REFINE"};
 
 bool is_arm(std::string_view name);
 // Throws std::invalid_argument on an unknown or repeated arm

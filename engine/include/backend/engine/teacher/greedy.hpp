@@ -24,6 +24,13 @@ class Greedy {
     std::vector<std::size_t> sequence(std::size_t limit, std::span<const std::size_t> seed,
                                       std::span<const std::size_t> fill) const;
 
+    // Non-nested 1-opt neighbours of a sorted kept set (knot shifts and drop-and-add swaps),
+    // preserving budget and endpoints. range_weights: live marginal F1 per box in boxes(i) order
+    std::vector<std::vector<std::size_t>> refine_candidates(std::span<const std::size_t> kept,
+                                                            std::span<const double> range_weights,
+                                                            double range_scale,
+                                                            std::span<const double> segments) const;
+
   private:
     core::TrajectoryView m_trajectory;
     std::vector<std::vector<std::uint32_t>> m_box_points; // points inside each of i's boxes
