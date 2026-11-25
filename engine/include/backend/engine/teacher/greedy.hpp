@@ -31,6 +31,16 @@ class Greedy {
                                                             double range_scale,
                                                             std::span<const double> segments) const;
 
+    struct PointTradeOffers {
+        std::vector<std::vector<std::size_t>> drops; // (b - 1)-point sets
+        std::vector<std::vector<std::size_t>> adds;  // (b + 1)-point sets
+    };
+    // Candidate 1-point drops and 1-point additions directly on a refined sorted kept set
+    PointTradeOffers point_trade_candidates(std::span<const std::size_t> kept,
+                                            std::span<const double> range_weights,
+                                            double range_scale,
+                                            std::span<const double> segments) const;
+
   private:
     core::TrajectoryView m_trajectory;
     std::vector<std::vector<std::uint32_t>> m_box_points; // points inside each of i's boxes

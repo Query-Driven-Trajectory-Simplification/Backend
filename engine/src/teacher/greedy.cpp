@@ -631,4 +631,297 @@ Greedy::refine_candidates(std::span<const std::size_t> kept, std::span<const dou
     return out;
 }
 
+Greedy::PointTradeOffers Greedy::point_trade_candidates(std::span<const std::size_t> kept,
+                                                        std::span<const double> range_weights,
+                                                        double range_scale,
+                                                        std::span<const double> segments) const {
+    PointTradeOffers offers;
+    const auto &trajectory = m_trajectory;
+    const std::size_t n = trajectory.size();
+    const std::size_t b = kept.size();
+    if (b < 2 || n < 3)
+        return offers;
+
+    std::vector<char> is_kept(n, 0);
+    for (const auto idx : kept)
+        is_kept[idx] = 1;
+
+    std::vector<double> arc(n, 0.0);
+    for (std::size_t j = 0; j + 1 < n; ++j)
+        arc[j + 1] = arc[j] + (segments.empty() ? std::hypot(trajectory.x[j + 1] - trajectory.x[j],
+                                                             trajectory.y[j + 1] - trajectory.y[j])
+                                                : segments[j]);
+
+    const std::size_t num_boxes = m_box_points.size();
+    std::vector<std::uint32_t> box_hits(num_boxes, 0);
+    for (const auto idx : kept)
+        for (auto e = m_offsets[idx]; e < m_offsets[idx + 1]; ++e)
+            ++box_hits[m_point_boxes[e]];
+    std::vector<double> live_box_weight(num_boxes, 0.0);
+    for (std::size_t box = 0; box < num_boxes; ++box)
+        live_box_weight[box] =
+            range_weights.empty() ? m_box_weight[box] : range_scale * range_weights[box];
+
+    const double far = m_max_tolerance * m_max_tolerance * (1.0 + 1e-12);
+    const double near = m_min_tolerance * m_min_tolerance * (1.0 - 1e-12);
+    auto score_on = [&](std::size_t p, std::size_t from, std::size_t to) {
+        const double t_from = static_cast<double>(trajectory.t[from]),
+                     t_to = static_cast<double>(trajectory.t[to]);
+        const double fraction =
+            t_to > t_from ? std::clamp((m_probe_t[p] - t_from) / (t_to - t_from), 0.0, 1.0) : 0.0;
+        const double x = trajectory.x[from] + fraction * (trajectory.x[to] - trajectory.x[from]);
+        const double y = trajectory.y[from] + fraction * (trajectory.y[to] - trajectory.y[from]);
+        const double dx = x - m_probe_x[p], dy = y - m_probe_y[p];
+        const double squared = dx * dx + dy * dy;
+        if (squared >= far)
+            return 0.0;
+        if (squared <= near)
+            return 1.0;
+        return ramp(std::hypot(dx, dy), m_min_tolerance, m_max_tolerance);
+    };
+    auto probes_between = [&](std::size_t from, std::size_t to) {
+        if (m_probe_t.empty())
+            return std::pair<std::size_t, std::size_t>{0, 0};
+        const auto lo = static_cast<std::size_t>(
+            std::ranges::lower_bound(m_probe_t, static_cast<double>(trajectory.t[from])) -
+            m_probe_t.begin());
+        const auto hi =
+            to == n - 1
+                ? m_probe_t.size()
+                : static_cast<std::size_t>(
+                      std::ranges::lower_bound(m_probe_t, static_cast<double>(trajectory.t[to])) -
+                      m_probe_t.begin());
+        return std::pair{lo, hi};
+    };
+    auto seg_wa = [&](std::size_t from, std::size_t to) {
+        const auto [lo, hi] = probes_between(from, to);
+        double sum = 0.0;
+        for (std::size_t p = lo; p < hi; ++p)
+            sum += score_on(p, from, to);
+        return sum;
+    };
+    auto seg_deviation = [&](std::size_t from, std::size_t to) {
+        const double length = arc[to] - arc[from];
+        const double ax = trajectory.x[from], ay = trajectory.y[from];
+        const double dx = trajectory.x[to] - ax, dy = trajectory.y[to] - ay;
+        double max_sq = 0.0;
+        std::size_t worst = from;
+        for (std::size_t j = from + 1; j < to; ++j) {
+            const double u = length > 0.0 ? (arc[j] - arc[from]) / length : 0.0;
+            const double ex = trajectory.x[j] - (ax + u * dx);
+            const double ey = trajectory.y[j] - (ay + u * dy);
+            const double sq = ex * ex + ey * ey;
+            if (sq > max_sq) {
+                max_sq = sq;
+                worst = j;
+            }
+        }
+        return std::pair{max_sq, worst};
+    };
+
+    const std::size_t segs = b - 1;
+    std::vector<double> seg_err(segs, 0.0), seg_wa_score(segs, 0.0);
+    std::vector<std::size_t> worst_pt(segs, n);
+    for (std::size_t r = 0; r < segs; ++r) {
+        const auto [sq, w] = seg_deviation(kept[r], kept[r + 1]);
+        seg_err[r] = sq;
+        worst_pt[r] = w;
+        if (m_probe_weight > 0.0)
+            seg_wa_score[r] = seg_wa(kept[r], kept[r + 1]);
+    }
+
+    // 1. Candidate 1-point drops (when b >= 3)
+    if (b >= 3) {
+        struct DropInfo {
+            std::size_t m;
+            double local_loss;
+            double merged_err_sq;
+        };
+        std::vector<DropInfo> drops;
+        drops.reserve(b - 2);
+        for (std::size_t m = 1; m + 1 < b; ++m) {
+            double rng_loss = 0.0;
+            for (auto e = m_offsets[kept[m]]; e < m_offsets[kept[m] + 1]; ++e)
+                if (box_hits[m_point_boxes[e]] == 1)
+                    rng_loss += live_box_weight[m_point_boxes[e]];
+            double wa_loss = 0.0;
+            if (m_probe_weight > 0.0)
+                wa_loss =
+                    (seg_wa_score[m - 1] + seg_wa_score[m] - seg_wa(kept[m - 1], kept[m + 1])) *
+                    m_probe_weight;
+            drops.push_back({m, rng_loss + wa_loss, seg_deviation(kept[m - 1], kept[m + 1]).first});
+        }
+        std::vector<std::size_t> drop_set;
+        auto add_drop = [&](std::size_t m) {
+            if (std::ranges::find(drop_set, m) == drop_set.end())
+                drop_set.push_back(m);
+        };
+        auto by_local = drops;
+        std::ranges::sort(by_local, [](const DropInfo &a, const DropInfo &b) {
+            return a.local_loss < b.local_loss || (a.local_loss == b.local_loss && a.m < b.m);
+        });
+        for (std::size_t k = 0; k < std::min<std::size_t>(2, by_local.size()); ++k)
+            add_drop(by_local[k].m);
+        auto by_err = drops;
+        std::ranges::sort(by_err, [](const DropInfo &a, const DropInfo &b) {
+            return a.merged_err_sq < b.merged_err_sq ||
+                   (a.merged_err_sq == b.merged_err_sq && a.m < b.m);
+        });
+        for (std::size_t k = 0; k < std::min<std::size_t>(2, by_err.size()); ++k)
+            add_drop(by_err[k].m);
+        offers.drops.reserve(drop_set.size());
+        for (const std::size_t m : drop_set) {
+            std::vector<std::size_t> cand;
+            cand.reserve(b - 1);
+            for (std::size_t k = 0; k < b; ++k)
+                if (k != m)
+                    cand.push_back(kept[k]);
+            offers.drops.push_back(std::move(cand));
+        }
+    }
+
+    // 2. Candidate 1-point additions (when b < n)
+    if (b < n) {
+        std::vector<std::size_t> seg_order(segs);
+        std::iota(seg_order.begin(), seg_order.end(), 0);
+        std::ranges::sort(seg_order, [&](std::size_t a, std::size_t b) {
+            return seg_err[a] > seg_err[b] || (seg_err[a] == seg_err[b] && a < b);
+        });
+        std::vector<std::size_t> add_set;
+        auto add_insert = [&](std::size_t q) {
+            if (q > 0 && q + 1 < n && !is_kept[q] && std::ranges::find(add_set, q) == add_set.end())
+                add_set.push_back(q);
+        };
+        for (std::size_t k = 0; k < std::min<std::size_t>(2, seg_order.size()); ++k) {
+            const std::size_t r = seg_order[k];
+            if (seg_err[r] > 0.0 && worst_pt[r] > kept[r] && worst_pt[r] < kept[r + 1])
+                add_insert(worst_pt[r]);
+        }
+        struct InsertScore {
+            double score;
+            std::size_t q;
+        };
+        std::vector<InsertScore> best_joint, best_wa_only, best_rng_only;
+        for (std::size_t r = 0; r < segs; ++r) {
+            const std::size_t a = kept[r], c = kept[r + 1];
+            if (c <= a + 1)
+                continue;
+            const auto [lo, hi] = probes_between(a, c);
+            const double base_wa = seg_wa_score[r] * m_probe_weight;
+            auto eval_rng = [&](std::size_t j) {
+                double g = 0.0;
+                for (auto e = m_offsets[j]; e < m_offsets[j + 1]; ++e)
+                    if (box_hits[m_point_boxes[e]] == 0)
+                        g += live_box_weight[m_point_boxes[e]];
+                return g;
+            };
+            auto eval_wa_gain = [&](std::size_t j) {
+                if (m_probe_weight <= 0.0 || lo == hi)
+                    return 0.0;
+                const double tj = static_cast<double>(trajectory.t[j]);
+                double s = 0.0;
+                for (std::size_t p = lo; p < hi; ++p)
+                    s += m_probe_t[p] < tj ? score_on(p, a, j) : score_on(p, j, c);
+                return s * m_probe_weight - base_wa;
+            };
+            double top_joint = kMinGain, top_wa = kMinGain, top_rng = kMinGain;
+            std::size_t q_joint = n, q_wa = n, q_rng = n;
+            const std::size_t span = c - a;
+            if (span <= 512 || (hi - lo) <= 16) {
+                for (std::size_t j = a + 1; j < c; ++j) {
+                    const double rg = eval_rng(j);
+                    const double wg = eval_wa_gain(j);
+                    if (rg > top_rng) {
+                        top_rng = rg;
+                        q_rng = j;
+                    }
+                    if (wg > top_wa) {
+                        top_wa = wg;
+                        q_wa = j;
+                    }
+                    if (rg + wg > top_joint) {
+                        top_joint = rg + wg;
+                        q_joint = j;
+                    }
+                }
+            } else {
+                const std::size_t step = std::max<std::size_t>(1, span / 256);
+                std::size_t coarse_j = n;
+                for (std::size_t j = a + 1; j < c; ++j) {
+                    const double rg = eval_rng(j);
+                    if (rg > top_rng) {
+                        top_rng = rg;
+                        q_rng = j;
+                    }
+                    if ((j - a) % step == 0) {
+                        const double wg = eval_wa_gain(j);
+                        if (wg > top_wa) {
+                            top_wa = wg;
+                            q_wa = j;
+                        }
+                        if (rg + wg > top_joint) {
+                            top_joint = rg + wg;
+                            coarse_j = j;
+                            q_joint = j;
+                        }
+                    }
+                }
+                if (coarse_j < n) {
+                    const std::size_t win_lo = coarse_j > a + step ? coarse_j - step : a + 1;
+                    const std::size_t win_hi = std::min(c - 1, coarse_j + step);
+                    for (std::size_t j = win_lo; j <= win_hi; ++j) {
+                        const double rg = eval_rng(j);
+                        const double wg = eval_wa_gain(j);
+                        if (wg > top_wa) {
+                            top_wa = wg;
+                            q_wa = j;
+                        }
+                        if (rg + wg > top_joint) {
+                            top_joint = rg + wg;
+                            q_joint = j;
+                        }
+                    }
+                }
+                if (q_rng < n) {
+                    const double wg = eval_wa_gain(q_rng);
+                    if (top_rng + wg > top_joint) {
+                        top_joint = top_rng + wg;
+                        q_joint = q_rng;
+                    }
+                }
+            }
+            if (q_joint < n)
+                best_joint.push_back({top_joint, q_joint});
+            if (q_wa < n)
+                best_wa_only.push_back({top_wa, q_wa});
+            if (q_rng < n)
+                best_rng_only.push_back({top_rng, q_rng});
+        }
+        auto sort_ins = [](auto &v) {
+            std::ranges::sort(v, [](const InsertScore &a, const InsertScore &b) {
+                return a.score > b.score || (a.score == b.score && a.q < b.q);
+            });
+        };
+        sort_ins(best_joint);
+        sort_ins(best_wa_only);
+        sort_ins(best_rng_only);
+        for (std::size_t k = 0; k < std::min<std::size_t>(2, best_joint.size()); ++k)
+            add_insert(best_joint[k].q);
+        if (!best_wa_only.empty())
+            add_insert(best_wa_only[0].q);
+        if (!best_rng_only.empty())
+            add_insert(best_rng_only[0].q);
+
+        offers.adds.reserve(add_set.size());
+        for (const std::size_t q : add_set) {
+            std::vector<std::size_t> cand(kept.begin(), kept.end());
+            cand.push_back(q);
+            std::ranges::sort(cand);
+            offers.adds.push_back(std::move(cand));
+        }
+    }
+
+    return offers;
+}
+
 } // namespace teacher
