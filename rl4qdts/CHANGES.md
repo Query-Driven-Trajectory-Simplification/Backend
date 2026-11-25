@@ -29,7 +29,7 @@ These are in `rl4_train.py`, which replaces `rl_main_by_data.py` for our data. `
 
 With `--fixed` (`--keep-stop-bug` and `--keep-reward-bugs` turn single fixes off again):
 
-- **Stop action:** Agent-Cube's stop decision is stored and trained.
+- **Stop action:** Agent-Cube's stop decision is stored and trained. At the deepest level there is no decision left, so none is asked for; the path ends on its last zoom.
 - **First reward:** rewards are F1 changes from the start (paper, Eq. 10).
 - **Last window:** the last window of steps is rewarded.
 

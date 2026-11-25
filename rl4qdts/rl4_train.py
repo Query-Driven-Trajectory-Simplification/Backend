@@ -3,7 +3,8 @@
 Differences from the authors' script (the first three only with --fixed; without it, the authors' loop):
 - Stop action: Agent-Cube's stop decision (action 8; action 9 in the paper) is stored as a terminal
   transition, so it is trained like the other 8 actions. The authors' loop breaks out before storing
-  it, so its weights never leave their random init.
+  it, so its weights never leave their random init. At the deepest level there is no decision left,
+  so none is asked for (and no stop stored); the path ends on its last zoom.
 - First reward: the reward is the F1 *change* since the previous query (paper, Eq. 10). The authors
   start from pre = 0, so the first reward of every round is the whole F1 of the initial database
   (endpoints only), ~100x a normal reward.
@@ -201,6 +202,11 @@ def main():
                 observation = env_sam.starting(level_start)
                 obs_oub.append(observation)
                 while True:
+                    # At the deepest level there is nothing left to decide. The authors still ask
+                    # and ignore the answer; a stop stored there would leave the last zoom
+                    # non-terminal, bootstrapping from a state whose zooms are never trained.
+                    if env_sam.level_cur == level_end and not args.keep_stop_bug:
+                        break
                     action = RL_OUB.act(observation)
                     act_oub.append(action)
                     if action == 8 or env_sam.level_cur == level_end:
