@@ -14,6 +14,8 @@ namespace {
 
 constexpr int kHeaderLines = 6;
 
+} // namespace
+
 std::optional<std::int64_t> to_unix_seconds(int y, int mo, int d, int h, int mi, int s) {
     using namespace std::chrono;
     const year_month_day date = year{y} / mo / d;
@@ -21,8 +23,6 @@ std::optional<std::int64_t> to_unix_seconds(int y, int mo, int d, int h, int mi,
         return std::nullopt;
     return (sys_days{date} + hours{h} + minutes{mi} + seconds{s}).time_since_epoch().count();
 }
-
-} // namespace
 
 std::expected<Point, std::string> parse_plt_line(const std::string &line) {
     Point point{};

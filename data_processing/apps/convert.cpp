@@ -1,5 +1,6 @@
 #include "backend/data/filters/filters.hpp"
 #include "backend/data/readers/geolife.hpp"
+#include "backend/data/readers/tdrive.hpp"
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 #include <cmath>
@@ -17,26 +18,37 @@ namespace {
 
 constexpr std::size_t kMinFilePoints = 100;
 
+enum class Format { GeoLife, TDrive };
+
 struct Args {
     fs::path input;
     fs::path output;
+    Format format = Format::GeoLife;
 };
 
 std::optional<Args> parse_args(int argc, char *argv[]) {
-    if (argc != 3) {
-        std::cerr << "usage: " << argv[0] << " <input_dir> <output_file>\n";
+    if (argc != 3 && argc != 4) {
+        std::cerr << "usage: " << argv[0] << " <input_dir> <output_file> [geolife|tdrive]\n";
         return std::nullopt;
     }
 
-    const fs::path input = argv[1];
-    const fs::path output = argv[2];
+    Args args{argv[1], argv[2]};
+    if (argc == 4) {
+        const std::string format = argv[3];
+        if (format == "tdrive") {
+            args.format = Format::TDrive;
+        } else if (format != "geolife") {
+            std::cerr << "unknown format: " << format << " (geolife or tdrive)\n";
+            return std::nullopt;
+        }
+    }
 
-    if (!fs::is_directory(input)) {
-        std::cerr << "not a directory: " << input << '\n';
+    if (!fs::is_directory(args.input)) {
+        std::cerr << "not a directory: " << args.input << '\n';
         return std::nullopt;
     }
 
-    return Args{input, output};
+    return args;
 }
 
 struct PointTableBuilder {
@@ -77,14 +89,18 @@ arrow::Status write_parquet(const arrow::Table &table, const fs::path &output) {
                                       parquet::DEFAULT_MAX_ROW_GROUP_LENGTH, properties);
 }
 
-arrow::Status convert(const fs::path &input, const fs::path &output) {
-    const auto files = geolife::collect_plt_files(input);
+arrow::Status convert(const fs::path &input, const fs::path &output, Format format) {
+    const bool tdrive = format == Format::TDrive;
+    const auto files = tdrive ? tdrive::collect_files(input) : geolife::collect_plt_files(input);
+    if (files.empty())
+        return arrow::Status::Invalid("no ", tdrive ? ".txt" : ".plt", " files under ",
+                                      input.string());
     PointTableBuilder builder;
     std::size_t points = 0, stored_points = 0;
     std::size_t trajectory_id = 0;
 
     for (const auto &file : files) {
-        auto segment = geolife::read_plt_file(file);
+        auto segment = tdrive ? tdrive::read_file(file) : geolife::read_plt_file(file);
         if (!segment)
             return arrow::Status::IOError(segment.error());
 
@@ -118,7 +134,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    arrow::Status st = convert(path_arguments->input, path_arguments->output);
+    arrow::Status st =
+        convert(path_arguments->input, path_arguments->output, path_arguments->format);
     if (!st.ok()) {
         std::cerr << st.ToString() << '\n';
         return 1;

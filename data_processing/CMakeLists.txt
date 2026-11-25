@@ -1,5 +1,6 @@
 add_library(data_processing
     src/readers/geolife.cpp
+    src/readers/tdrive.cpp
     src/filters/boundingbox.cpp
     src/filters/duplicatetime.cpp
     src/filters/filters.cpp
@@ -23,6 +24,7 @@ include(GoogleTest)
 
 add_executable(data_processing_tests
     tests/geolife_test.cpp
+    tests/tdrive_test.cpp
     tests/duplicatetime_test.cpp
 )
 target_link_libraries(data_processing_tests PRIVATE data_processing GTest::gtest_main)

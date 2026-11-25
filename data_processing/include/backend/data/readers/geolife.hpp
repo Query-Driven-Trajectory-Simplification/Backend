@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,9 @@ struct Point {
 };
 
 using Segment = std::vector<Point>;
+
+// Seconds since 1970-01-01 for a date and time read as UTC, or nullopt if it doesn't exist.
+std::optional<std::int64_t> to_unix_seconds(int y, int mo, int d, int h, int mi, int s);
 
 std::expected<Point, std::string> parse_plt_line(const std::string &line);
 

@@ -1,0 +1,54 @@
+{
+    "data_path": "data/tdrive.parquet",
+    "export_results": true,
+    "export_dir": "data/output/tdrive",
+    "seed": 42,
+    "budget_shares": [0.0025, 0.005, 0.01, 0.02, 0.05, 0.1],
+    "allocation_alphas": [1.0, 0.25, 0.0],
+    "split": {
+        "type": "Random",
+        "query_percentage": 0.15
+    },
+    "algorithms": ["RDP", "SED", "UNIFORM", "RDP_GLOBAL"],
+    "knn": {
+        "k": 10,
+        "query_count": 0
+    },
+    "range": {
+        "query_count": 20000,
+        "box_size_m": 1000.0,
+        "window_seconds": 10800,
+        "min_results": 5,
+        "full_accept_at": 20,
+        "attempts_per_query": 1000
+    },
+    "where_at": {
+        "probes_per_trajectory": 128,
+        "max_gap_seconds": 60.0
+    },
+    "where_at_scoring": {
+        "hit_radius_m": 50.0,
+        "min_tolerance_m": 25.0,
+        "max_tolerance_m": 200.0
+    },
+    "join": {
+        "mode": "HeldOut",
+        "query_count": 0,
+        "eps_m": 150.0,
+        "score_eps_m": [50.0, 100.0, 200.0],
+        "self_join": true
+    },
+    "clustering": {
+        "enabled": false,
+        "eps_m": 150.0,
+        "min_size": 5
+    },
+    "frechet": "Continuous",
+    "teacher": {
+        "enabled": false,
+        "cache_dir": "cache/tdrive",
+        "arms": ["BUDGET_CHOICE", "BUDGET_LOOP", "BUDGET_LOOP_TRADE"],
+        "range_query_count": 256000,
+        "term_weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    }
+}

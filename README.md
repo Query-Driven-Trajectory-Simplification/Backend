@@ -54,6 +54,23 @@ Convert the raw files to a single filtered Parquet file ([convert.cpp](data_proc
 ./build/data_processing/convert data/geolife_raw data/geolife.parquet
 ```
 
+### T-Drive
+
+Download the [T-Drive trajectory data sample](https://www.microsoft.com/en-us/research/publication/t-drive-trajectory-data-sample/)
+and copy its `taxi_log_2008_by_id/` folder (one `.txt` file per taxi) into `data/tdrive_raw/`. The
+licence forbids redistributing the data or anything derived from it, so keep it, its Parquet file
+and its teacher caches out of git (`data/` and `cache/` are ignored).
+
+```sh
+./build/data_processing/convert data/tdrive_raw data/tdrive.parquet tdrive
+```
+
+The same filters run as for GeoLife. Expected output: `10357 files, 17653912 input points` and
+`14588088 points stored in 30417 trajectories`. T-Drive gives no time zone, so times are kept as
+written. Then run with [engine/configs/tdrive.json](engine/configs/tdrive.json), which differs from
+the GeoLife config only in its paths, a 3 h range window (one week would cover the whole 6.2-day
+dataset), two extra budget shares (5 % and 10 %), clustering off and its own teacher cache folder.
+
 ## Run
 
 Run from the repository root, since paths in the config are relative to it:
@@ -117,9 +134,9 @@ ctest --test-dir build
 ## Project structure
 
 ```
-data_processing/        Raw GeoLife -> Parquet
+data_processing/        Raw GeoLife or T-Drive -> Parquet
 ├── apps/convert.cpp    Entry point
-├── readers/            .plt reader
+├── readers/            GeoLife .plt and T-Drive .txt readers
 └── filters/            Cleaning filters (bounding box, time gaps, duplicates, min size)
 
 engine/                 Simplification and evaluation
