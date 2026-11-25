@@ -1202,3 +1202,90 @@ TEST(PreparedTrajectory, OwnsCoordinatesAndRebuildsBoundsAfterCopyMoveAndAssign)
         EXPECT_EQ(updated.bbox.y_max, std::ranges::max(updated.y));
     }
 }
+
+TEST_F(TeacherTest, RefineAndPointTradeCandidatesPreserveInvariants) {
+    const auto db = random_db(7, 24, 30);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 19, m_dir);
+    const teacher::Objective objective(db, workloads);
+    const std::vector<std::size_t> endpoints_kept{0, 29};
+    const std::vector<std::size_t> mid_kept{0, 5, 12, 20, 29};
+
+    for (std::size_t i = 0; i < 6; ++i) {
+        const teacher::Greedy greedy(objective, i);
+        const auto rw = objective.range_weights(i, {});
+        const double rscale = objective.scale(teacher::Objective::Range);
+        const auto segs = objective.segments(i);
+
+        // Endpoints-only: refine_candidates is empty, point_trade has no drops but can add
+        EXPECT_TRUE(greedy.refine_candidates(endpoints_kept, rw, rscale, segs).empty());
+        const auto ep_trades = greedy.point_trade_candidates(endpoints_kept, rw, rscale, segs);
+        EXPECT_TRUE(ep_trades.drops.empty());
+        EXPECT_FALSE(ep_trades.adds.empty());
+        for (const auto &cand : ep_trades.adds) {
+            ASSERT_EQ(cand.size(), 3u);
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+        }
+
+        const auto refs = greedy.refine_candidates(mid_kept, rw, rscale, segs);
+        EXPECT_FALSE(refs.empty());
+        for (const auto &cand : refs) {
+            ASSERT_EQ(cand.size(), mid_kept.size());
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+            EXPECT_FALSE(std::ranges::equal(cand, mid_kept));
+        }
+
+        const auto trades = greedy.point_trade_candidates(mid_kept, rw, rscale, segs);
+        EXPECT_FALSE(trades.drops.empty());
+        EXPECT_FALSE(trades.adds.empty());
+        for (const auto &cand : trades.drops) {
+            ASSERT_EQ(cand.size(), mid_kept.size() - 1);
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+        }
+        for (const auto &cand : trades.adds) {
+            ASSERT_EQ(cand.size(), mid_kept.size() + 1);
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+        }
+    }
+}
+
+TEST_F(TeacherTest, RefineArmNeverLosesToTradeAndImprovesNonNestedBudget) {
+    const auto db = random_db(13, 30, 32);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 23, m_dir);
+    teacher::add_ranked_neighbours(db, workloads, 3, 23, m_dir);
+    const teacher::ObjectiveConfig cfg{.term_weights = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
+    const teacher::Teacher model(db, std::move(workloads), cfg, 23);
+    const std::size_t budget = 2 * db.size() + 90;
+    const std::vector<std::string> arms{"BUDGET_LOOP_TRADE", "BUDGET_LOOP_TRADE_REFINE"};
+    const auto result = model.run(budget, arms);
+    ASSERT_EQ(result.size(), 2u);
+    EXPECT_EQ(result[1].simplification.num_points(), budget);
+    EXPECT_GE(result[1].objective + 1e-12, result[0].objective);
+}
+
+TEST_F(TeacherTest, JoinMarginContributesSeparablyInsideMarginTerm) {
+    const auto db = random_db(17, 24, 20);
+    auto cfg = small_config();
+    cfg.extra_join_eps_m = {50.0, 200.0};
+    auto workloads = teacher::load_or_build_workloads(db, cfg, 29, m_dir);
+    teacher::add_ranked_neighbours(db, workloads, 3, 29, m_dir);
+    const teacher::Objective margin(db, workloads, {.term_weights = {0, 0, 0, 0, 0, 1}});
+    EXPECT_NEAR(margin.total(every_point(db)), 1.0, 1e-9);
+    EXPECT_NEAR(margin.total(core::endpoints_only(db)), 0.0, 1e-9);
+    const auto kept = core::to_kept(selection::rdp::simplify_database(db, db.size() * 5));
+    double sum = 0.0;
+    for (std::size_t i = 0; i < db.size(); ++i)
+        sum += margin.separable(i, kept[i]);
+    EXPECT_NEAR(margin.total(kept), sum, 1e-9);
+}

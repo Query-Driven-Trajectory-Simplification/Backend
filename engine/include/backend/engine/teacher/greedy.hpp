@@ -42,6 +42,7 @@ class Greedy {
                                             std::span<const double> segments) const;
 
   private:
+    struct LocalContext;
     core::TrajectoryView m_trajectory;
     std::vector<std::vector<std::uint32_t>> m_box_points; // points inside each of i's boxes
     std::vector<double> m_box_weight;                     // scaled J_T weight of each box
