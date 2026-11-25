@@ -232,6 +232,8 @@ teacher::WorkloadConfig teacher_workload_config(const Config &config) {
 teacher::ObjectiveConfig teacher_objective_config(const Config &config) {
     return {.min_tolerance_m = config.where_at_scoring.min_tolerance_m,
             .max_tolerance_m = config.where_at_scoring.max_tolerance_m,
+            .min_shape_m = config.where_at_scoring.min_tolerance_m,
+            .max_shape_m = config.where_at_scoring.max_tolerance_m,
             .term_weights = config.teacher.term_weights};
 }
 

@@ -792,15 +792,31 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                         original_partners ? std::span<const core::TrajectoryView>{} : views;
                     const auto &join_state = original_partners ? orig_join : state_join;
                     for (std::size_t i = 0; i < db.size(); ++i) {
-                        // Per-trajectory kNN: each query with i in its top k, i within its cutoff
+                        // Per-trajectory kNN: each query with i in its top k, i within its cutoff,
+                        // minus each ranked outsider invasion inside the k-th neighbour distance
                         double knn = 0.0;
-                        for (const auto &entry : workloads.knn)
-                            if (entry.valid && std::ranges::find(entry.top, i) != entry.top.end() &&
-                                query::frechet_within(db.trajectory(static_cast<std::size_t>(
-                                                          &entry - workloads.knn.data())),
-                                                      views[i], entry.cutoff, workloads.frechet))
-                                knn += objective.scale(teacher::Objective::Knn) /
-                                       static_cast<double>(workloads.k * valid);
+                        const double per_knn = objective.scale(teacher::Objective::Knn) /
+                                               static_cast<double>(workloads.k * valid);
+                        for (std::size_t e = 0; e < workloads.knn.size(); ++e) {
+                            const auto &entry = workloads.knn[e];
+                            if (!entry.valid)
+                                continue;
+                            if (std::ranges::find(entry.top, i) != entry.top.end() &&
+                                query::frechet_within(db.trajectory(e), views[i], entry.cutoff,
+                                                      workloads.frechet))
+                                knn += per_knn;
+                            if (workloads.ranked.size() == db.size() &&
+                                workloads.ranked[e].size() > workloads.k) {
+                                const double inside = workloads.ranked[e][workloads.k - 1].distance;
+                                for (std::size_t r = workloads.k; r < workloads.ranked[e].size();
+                                     ++r) {
+                                    if (workloads.ranked[e][r].index == i &&
+                                        query::frechet_within(db.trajectory(e), views[i], inside,
+                                                              workloads.frechet))
+                                        knn -= per_knn;
+                                }
+                            }
+                        }
                         double range_gain = 0.0;
                         const auto weights = objective.range_weights(i, partners);
                         const auto boxes = objective.boxes(i);
