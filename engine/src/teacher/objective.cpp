@@ -273,8 +273,10 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     }
     m_knn_weight =
         valid ? 1.0 / (static_cast<double>(workloads.k) * static_cast<double>(valid)) : 0.0;
-    // A bracket on each membership's distance, from the ranked neighbours
-    if (workloads.ranked.size() == n)
+    // A bracket on each membership's distance, from the ranked neighbours, plus ranked outsiders
+    // whose invasion inside the k-th distance steals a top-k slot
+    m_knn_outside.resize(n);
+    if (workloads.ranked.size() == n) {
         for (std::size_t i = 0; i < n; ++i)
             for (auto &membership : m_knn[i])
                 for (const auto &neighbour : workloads.ranked[membership.query])
@@ -283,6 +285,19 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
                         membership.lower = std::max(0.0, neighbour.distance - kRankedDistanceError);
                         break;
                     }
+        for (std::size_t e = 0; e < n; ++e) {
+            const auto &list = workloads.ranked[e];
+            if (!workloads.knn[e].valid || list.size() <= workloads.k)
+                continue;
+            const double inside = list[workloads.k - 1].distance;
+            for (std::size_t r = workloads.k; r < list.size(); ++r) {
+                const auto &nb = list[r];
+                m_knn_outside[nb.index].push_back(
+                    {static_cast<std::uint32_t>(e), inside,
+                     std::max(0.0, nb.distance - kRankedDistanceError), nb.distance});
+            }
+        }
+    }
     m_margins.resize(n);
     const std::size_t k = workloads.k;
     if (config.term_weights[Margin] > 0) {
@@ -348,6 +363,22 @@ Objective::Objective(const core::TrajectoryDb &db, const TeacherWorkloads &workl
     }
     if (terms.size() > kMaxJoinTerms)
         throw std::invalid_argument("objective: too many join terms");
+    m_join_margins.resize(n);
+    if (config.term_weights[Margin] > 0 && workloads.ranked.size() == n) {
+        std::size_t join_memberships = 0;
+        for (std::size_t e = 0; e < n; ++e) {
+            for (const auto &nb : workloads.ranked[e]) {
+                for (const double eps : m_eps) {
+                    if (nb.distance <= 2.0 * eps) {
+                        m_join_margins[nb.index].push_back(std::abs(eps - nb.distance));
+                        ++join_memberships;
+                    }
+                }
+            }
+        }
+        m_join_margin_weight =
+            join_memberships > 0 ? 1.0 / static_cast<double>(join_memberships) : 0.0;
+    }
     m_links.resize(n);
     m_truth.assign(n * terms.size(), 0);
     auto add = [&](const JoinPair &join_pair, bool positive, std::size_t term) {
@@ -550,7 +581,8 @@ Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryV
     }
 
     const bool shape = m_config.term_weights[Shape] > 0;
-    const bool margin = m_config.term_weights[Margin] > 0 && !m_margins[i].empty();
+    const bool margin =
+        m_config.term_weights[Margin] > 0 && (!m_margins[i].empty() || !m_join_margins[i].empty());
     if (shape || margin) {
         if (deviation < 0)
             deviation = this->deviation(i, candidate);
@@ -558,10 +590,19 @@ Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryV
             terms[Shape] =
                 m_shape_weight * ramp(deviation, m_config.min_shape_m, m_config.max_shape_m);
         // The distance moves uniformly within +-deviation; a hit survives up to its margin
-        if (margin)
+        if (margin) {
+            double knn_m = 0.0;
             for (const double gap : m_margins[i])
-                terms[Margin] +=
-                    m_margin_weight * (deviation <= gap ? 1.0 : 0.5 * (1.0 + gap / deviation));
+                knn_m += m_margin_weight * (deviation <= gap ? 1.0 : 0.5 * (1.0 + gap / deviation));
+            double join_m = 0.0;
+            for (const double gap : m_join_margins[i])
+                join_m +=
+                    m_join_margin_weight * (deviation <= gap ? 1.0 : 0.5 * (1.0 + gap / deviation));
+            if (m_margin_weight > 0.0 && m_join_margin_weight > 0.0)
+                terms[Margin] = 0.5 * (knn_m + join_m);
+            else
+                terms[Margin] = knn_m + join_m;
+        }
     }
     return terms;
 }
@@ -643,18 +684,31 @@ double Objective::independent_sum(const IndependentScore &score, double knn) con
 double Objective::independent_value(const IndependentScore &score, double beat) const {
     if (m_scale[Knn] <= 0)
         return independent_sum(score, 0.0);
-    double knn = 0.0;
+    const auto i = score.trajectory;
+    // Start at the lower bound (-m_knn_weight per ranked outsider) so every hit / non-invasion
+    // increases knn monotonically toward (hits - invasions) * m_knn_weight
+    double knn = -m_knn_weight * static_cast<double>(m_knn_outside[i].size());
     auto value = [&] { return independent_sum(score, knn); };
-    // Stop once even all remaining hits cannot beat beat
+    // Stop once even all remaining hits and non-invasions cannot beat beat
     const double per_hit = m_scale[Knn] * m_knn_weight;
-    std::size_t left = m_knn[score.trajectory].size();
-    for (const auto &m : m_knn[score.trajectory]) {
+    std::size_t left = m_knn[i].size() + m_knn_outside[i].size();
+    for (const auto &m : m_knn[i]) {
         if (value() + per_hit * static_cast<double>(left) < beat - kBoundSlack)
             break;
         --left;
         const auto known =
             m_certify ? certify(m.lower, m.upper, score.deviation, m.cutoff) : std::nullopt;
         if (known ? *known : original_within(m.query, score.candidate, m.cutoff))
+            knn += m_knn_weight;
+    }
+    for (const auto &m : m_knn_outside[i]) {
+        if (value() + per_hit * static_cast<double>(left) < beat - kBoundSlack)
+            break;
+        --left;
+        const auto known =
+            m_certify ? certify(m.lower, m.upper, score.deviation, m.cutoff) : std::nullopt;
+        // Award +m_knn_weight when outsider stays outside the k-th distance (no invasion)
+        if (!(known ? *known : original_within(m.query, score.candidate, m.cutoff)))
             knn += m_knn_weight;
     }
     return value();
