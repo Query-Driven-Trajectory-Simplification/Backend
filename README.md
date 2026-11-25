@@ -75,7 +75,7 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 | `seed` | Seed for all random sampling |
 | `budget_shares` | Share of interior points to retain after reserving every endpoint: `B = 2T + round(share × (P − 2T))`. Report `B/P` for total retention |
 | `split` | `type` (`Random` or `Time`) and `query_percentage` held out for queries |
-| `algorithms` | Simplification algorithms to run: `RDP`, `SED`, `UNIFORM`, `RDP_GLOBAL`. The global variant allocates the total budget by PED and runs once per share, independently of `allocation_alphas` |
+| `algorithms` | Simplification algorithms to run: `RDP`, `SED`, `UNIFORM`, `RDP_GLOBAL`, `BOTTOM_UP_PED`, `BOTTOM_UP_DAD`, `BOTTOM_UP_PED_GLOBAL`. The global variants allocate the total budget by PED and run once per share, independently of `allocation_alphas` |
 | `knn` | `k` and `query_count` (`0` = every trajectory in the query split) |
 | `range` | Box size (m), time window (s) and sampling limits for range queries |
 | `where_at` | Probes per trajectory and max time gap (s) between points to probe |
@@ -88,6 +88,18 @@ and it then falls back to its default. [engine/configs/geolife.json](engine/conf
 `RDP_GLOBAL` is database-wide top-down PED: reserve endpoints, then repeatedly split the
 segment with the largest perpendicular error anywhere in the database. It uses no query
 workloads and receives exactly the same total point budget as the teacher.
+
+`RDP` is per-trajectory top-down PED. `SED`, `BOTTOM_UP_PED` and `BOTTOM_UP_DAD` are bottom-up
+min-max with that error (`selection/bottom_up.hpp`): start from every point and repeatedly drop
+the point whose removal adds the least error. PED is the distance to the segment between the kept
+neighbours, the same distance `RDP` and `RDP_GLOBAL` use, and DAD the largest heading change, as
+MLSimp's evaluation code defines it.
+
+`BOTTOM_UP_PED_GLOBAL` is database-wide bottom-up PED, the bottom-up counterpart of `RDP_GLOBAL`:
+every trajectory is run down to its endpoints, and the removals are then merged across the
+database cheapest first until the total budget is left. Removals in one trajectory never change
+costs in another, so this equals one heap over the whole database. The classic baselines
+Top-Down(E/W, PED), Bottom-Up(E/W, PED) and Bottom-Up(E, SED/DAD) are all covered.
 
 Continuous kNN uses the same fixed millimetre-grid ranking in the evaluator and teacher tracker,
 with ties resolved by database index. Teacher workload caches from earlier ranking versions are

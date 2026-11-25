@@ -154,6 +154,12 @@ other baselines. `RECIPE_RDP`, `RECIPE_SED` and `RECIPE_UNIFORM` equal `RDP_a0`,
 `UNI_a0`; the greedy recipes are the query-aware single recipes that choosing per trajectory must
 beat.
 
+The classic error-driven baselines are also written: bottom-up PED and DAD (`BU_PED_a0`,
+`BU_DAD_a0`), and RDP, SED and both bottom-up measures at each trajectory's share of its own points
+(`RDP_a1`, `SED_a1`, `BU_PED_a1`, `BU_DAD_a1`), the budget the published per-trajectory baselines
+use. `BU_PED_GLOBAL` is database-wide bottom-up PED, the bottom-up counterpart of `RDP_GLOBAL`,
+with the same total budget.
+
 ### The loop
 **In one sentence:** go through the trajectories one at a time, and let each switch to whichever
 of its other methods makes the tracked J_T highest, given what everyone else currently uses;

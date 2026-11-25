@@ -20,6 +20,8 @@ add_library(engine
     src/pipeline/scorer.cpp
     src/pipeline/test_workloads.cpp
     src/selection/rdp.cpp
+    src/selection/bottom_up.cpp
+    src/selection/distance_functions.cpp
     src/selection/sed.cpp
     src/selection/uniform.cpp
     src/selection/selector.cpp
@@ -82,6 +84,7 @@ add_executable(engine_tests
     tests/query/range_test.cpp
     tests/query/route_clustering_test.cpp
     tests/query/where_at_test.cpp
+    tests/selection/bottom_up_test.cpp
     tests/selection/rdp_test.cpp
     tests/selection/sed_test.cpp
     tests/selection/simplify_database_test.cpp

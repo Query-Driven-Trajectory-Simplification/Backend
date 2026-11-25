@@ -17,6 +17,7 @@
 #include "backend/engine/query/join.hpp"
 #include "backend/engine/query/knn.hpp"
 #include "backend/engine/query/route_clustering.hpp"
+#include "backend/engine/selection/bottom_up.hpp"
 #include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
@@ -249,11 +250,27 @@ std::vector<Arm> baseline_arms(const core::TrajectoryDb &db,
                         share,
                         core::to_kept(selection::rdp::simplify_database(db, budget)),
                         {}});
+        arms.push_back({"BU_PED_GLOBAL",
+                        share,
+                        core::to_kept(selection::bottom_up::simplify_database(
+                            db, budget, selection::bottom_up::Measure::Ped)),
+                        {}});
         arms.push_back({"RDP_a0", share, select(db, AlgorithmType::RDP, equal), {}});
         arms.push_back(
             {"RDP_a025", share, select(db, AlgorithmType::RDP, geometric(kRdpAlpha)), {}});
         arms.push_back({"SED_a0", share, select(db, AlgorithmType::SED, equal), {}});
         arms.push_back({"UNI_a0", share, select(db, AlgorithmType::UNIFORM, equal), {}});
+        // The remaining classic error-driven baselines: bottom-up PED and DAD, and every
+        // per-trajectory error-driven recipe at the share of its own points (alpha 1)
+        const auto proportional = geometric(1.0);
+        arms.push_back({"BU_PED_a0", share, select(db, AlgorithmType::BOTTOM_UP_PED, equal), {}});
+        arms.push_back({"BU_DAD_a0", share, select(db, AlgorithmType::BOTTOM_UP_DAD, equal), {}});
+        arms.push_back({"RDP_a1", share, select(db, AlgorithmType::RDP, proportional), {}});
+        arms.push_back({"SED_a1", share, select(db, AlgorithmType::SED, proportional), {}});
+        arms.push_back(
+            {"BU_PED_a1", share, select(db, AlgorithmType::BOTTOM_UP_PED, proportional), {}});
+        arms.push_back(
+            {"BU_DAD_a1", share, select(db, AlgorithmType::BOTTOM_UP_DAD, proportional), {}});
         for (const double lambda : kPartnerLambdas) {
             std::vector<double> weights(db.size());
             for (std::size_t i = 0; i < db.size(); ++i)

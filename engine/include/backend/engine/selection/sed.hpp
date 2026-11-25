@@ -11,7 +11,8 @@ namespace selection::sed {
 double synchronous_distance(const core::TrajectoryView &trajectory, std::size_t first,
                             std::size_t last, std::size_t point);
 
-// Bottom-up greedy min-max SED simplification with a fixed point budget.
+// Bottom-up greedy min-max SED simplification with a fixed point budget
+// (bottom_up::Measure::Sed).
 // Endpoints are always kept.
 std::vector<std::size_t> simplify(const core::TrajectoryView &trajectory,
                                   std::size_t points_to_keep);
