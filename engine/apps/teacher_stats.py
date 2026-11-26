@@ -23,6 +23,7 @@ METRICS = ["J4", "norm_knn", "norm_range", "norm_where_at", "norm_join", "J4_sel
 STEPS = [("budget search", "RDP_a0", "BUDGET_RDP"),
          ("recipe choice at searched budgets", "BUDGET_RDP", "BUDGET_CHOICE"),
          ("loop", "BUDGET_CHOICE", "BUDGET_LOOP"),
+         ("refine", "BUDGET_LOOP", "BUDGET_LOOP_REFINE"),
          ("trades", "BUDGET_LOOP", "BUDGET_LOOP_TRADE")]
 CHEAP = ["RDP_a0", "RDP_a025", "RDP_GLOBAL", "BU_PED_GLOBAL", "SED_a0", "UNI_a0", "BU_PED_a0", "BU_DAD_a0",
          "RDP_a1", "SED_a1", "BU_PED_a1", "BU_DAD_a1", "PARTNER_l0.5", "PARTNER_l1"]
@@ -120,7 +121,8 @@ def main():
         if best and "BUDGET_CHOICE" in arms:
             gate = paired(arms["BUDGET_CHOICE"]["J4"], arms[best]["J4"])
             out.append(f"| **BUDGET_CHOICE − {best} (gate: ≥ .03, CI above 0)** | {fmt(gate)} |")
-        for a, b in [("BUDGET_LOOP", "BUDGET_CHOICE"), ("BUDGET_LOOP_TRADE", "BUDGET_LOOP")]:
+        for a, b in [("BUDGET_LOOP", "BUDGET_CHOICE"), ("BUDGET_LOOP_REFINE", "BUDGET_LOOP"),
+                     ("BUDGET_LOOP_TRADE", "BUDGET_LOOP")]:
             if a in arms and b in arms:
                 out.append(f"| {a} − {b} | {fmt(paired(arms[a]['J4'], arms[b]['J4']))} |")
         out.append("")

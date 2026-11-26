@@ -792,15 +792,31 @@ TEST_F(TeacherTest, PreparedIndependentScoresMatchFullScoringAndSurvivePruning) 
                         original_partners ? std::span<const core::TrajectoryView>{} : views;
                     const auto &join_state = original_partners ? orig_join : state_join;
                     for (std::size_t i = 0; i < db.size(); ++i) {
-                        // Per-trajectory kNN: each query with i in its top k, i within its cutoff
+                        // Per-trajectory kNN: each query with i in its top k, i within its cutoff,
+                        // minus each ranked outsider invasion inside the k-th neighbour distance
                         double knn = 0.0;
-                        for (const auto &entry : workloads.knn)
-                            if (entry.valid && std::ranges::find(entry.top, i) != entry.top.end() &&
-                                query::frechet_within(db.trajectory(static_cast<std::size_t>(
-                                                          &entry - workloads.knn.data())),
-                                                      views[i], entry.cutoff, workloads.frechet))
-                                knn += objective.scale(teacher::Objective::Knn) /
-                                       static_cast<double>(workloads.k * valid);
+                        const double per_knn = objective.scale(teacher::Objective::Knn) /
+                                               static_cast<double>(workloads.k * valid);
+                        for (std::size_t e = 0; e < workloads.knn.size(); ++e) {
+                            const auto &entry = workloads.knn[e];
+                            if (!entry.valid)
+                                continue;
+                            if (std::ranges::find(entry.top, i) != entry.top.end() &&
+                                query::frechet_within(db.trajectory(e), views[i], entry.cutoff,
+                                                      workloads.frechet))
+                                knn += per_knn;
+                            if (workloads.ranked.size() == db.size() &&
+                                workloads.ranked[e].size() > workloads.k) {
+                                const double inside = workloads.ranked[e][workloads.k - 1].distance;
+                                for (std::size_t r = workloads.k; r < workloads.ranked[e].size();
+                                     ++r) {
+                                    if (workloads.ranked[e][r].index == i &&
+                                        query::frechet_within(db.trajectory(e), views[i], inside,
+                                                              workloads.frechet))
+                                        knn -= per_knn;
+                                }
+                            }
+                        }
                         double range_gain = 0.0;
                         const auto weights = objective.range_weights(i, partners);
                         const auto boxes = objective.boxes(i);
@@ -842,7 +858,7 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
     const auto result = model.run(budget, arms);
 
     ASSERT_EQ(result.size(), arms.size());
-    double choice_jt = 0, loop_jt = 0, trade_jt = 0;
+    double choice_jt = 0, loop_jt = 0, refine_jt = 0;
     for (const auto &arm : result) {
         SCOPED_TRACE(arm.name);
         ASSERT_EQ(arm.simplification.size(), db.size());
@@ -859,11 +875,11 @@ TEST_F(TeacherTest, ArmsKeepTheBudgetAndBestResponseOnlyImproves) {
             choice_jt = arm.objective;
         if (arm.name == "BUDGET_LOOP")
             loop_jt = arm.objective;
-        if (arm.name == "BUDGET_LOOP_TRADE")
-            trade_jt = arm.objective;
+        if (arm.name == "BUDGET_LOOP_REFINE")
+            refine_jt = arm.objective;
     }
     EXPECT_GE(loop_jt, choice_jt - 1e-12);
-    EXPECT_GE(trade_jt, loop_jt - 1e-12);
+    EXPECT_GE(refine_jt, loop_jt - 1e-12);
 }
 
 // With 200 trajectories and k = 3 the kNN watch lists cover a small part of the database, so the
@@ -1048,30 +1064,24 @@ TEST_F(TeacherTest, WatchingVersionsMakesKnnProposalsExact) {
     EXPECT_GT(changed, 0u);
 }
 
-TEST_F(TeacherTest, GreedyKeepsTheBudgetAndTheSeed) {
+TEST_F(TeacherTest, GreedyKeepsTheBudget) {
     const auto db = random_db(4, 20, 30);
     const auto workloads = teacher::load_or_build_workloads(db, small_config(), 13, m_dir);
     const teacher::Objective objective(db, workloads);
     for (std::size_t i = 0; i < db.size(); ++i) {
         const teacher::Greedy greedy(objective, i);
         const std::size_t n = db.trajectory(i).size();
-        const std::vector<std::size_t> seed{n / 2};
         std::vector<std::size_t> fill(n);
         for (std::size_t k = 0; k < n; ++k)
             fill[k] = n - 1 - k;
         for (const std::size_t b : {2u, 3u, 6u, 12u, 40u}) {
             SCOPED_TRACE(std::to_string(i) + " at " + std::to_string(b));
-            const auto kept = greedy.run(
-                b, b > 2 ? std::span<const std::size_t>(seed) : std::span<const std::size_t>(),
-                fill);
+            const auto kept = greedy.run(b, fill);
             ASSERT_EQ(kept.size(), std::min(b, n));
             EXPECT_EQ(kept.front(), 0u);
             EXPECT_EQ(kept.back(), n - 1);
             EXPECT_TRUE(std::ranges::is_sorted(kept));
             EXPECT_EQ(std::ranges::adjacent_find(kept), kept.end());
-            if (b > 2 && b < n) {
-                EXPECT_TRUE(std::ranges::binary_search(kept, n / 2));
-            }
         }
     }
 }
@@ -1107,7 +1117,7 @@ TEST_F(TeacherTest, SingleRecipesKeepTheBudget) {
     const teacher::Teacher model(db, std::move(workloads), {}, 11);
     const std::size_t budget = 2 * db.size() + 40;
     const auto recipes = model.single_recipes(budget);
-    ASSERT_EQ(recipes.size(), 6u);
+    ASSERT_EQ(recipes.size(), 5u);
     EXPECT_EQ(recipes.front().name, "RECIPE_RDP");
     for (const auto &arm : recipes) {
         SCOPED_TRACE(arm.name);
@@ -1184,5 +1194,140 @@ TEST(PreparedTrajectory, OwnsCoordinatesAndRebuildsBoundsAfterCopyMoveAndAssign)
         EXPECT_EQ(updated.bbox.x_max, std::ranges::max(updated.x));
         EXPECT_EQ(updated.bbox.y_min, std::ranges::min(updated.y));
         EXPECT_EQ(updated.bbox.y_max, std::ranges::max(updated.y));
+    }
+}
+
+TEST_F(TeacherTest, RefineAndPointTradeCandidatesPreserveInvariants) {
+    const auto db = random_db(7, 24, 30);
+    const auto workloads = teacher::load_or_build_workloads(db, small_config(), 19, m_dir);
+    const teacher::Objective objective(db, workloads);
+    const std::vector<std::size_t> endpoints_kept{0, 29};
+    const std::vector<std::size_t> mid_kept{0, 5, 12, 20, 29};
+
+    for (std::size_t i = 0; i < 6; ++i) {
+        const teacher::Greedy greedy(objective, i);
+        const auto rw = objective.range_weights(i, {});
+        const double rscale = objective.scale(teacher::Objective::Range);
+        const auto segs = objective.segments(i);
+
+        // Endpoints-only: refine_candidates is empty, point_trade has no drops but can add
+        EXPECT_TRUE(greedy.refine_candidates(endpoints_kept, rw, rscale, segs).empty());
+        const auto ep_trades = greedy.point_trade_candidates(endpoints_kept, rw, rscale, segs);
+        EXPECT_TRUE(ep_trades.drops.empty());
+        EXPECT_FALSE(ep_trades.adds.empty());
+        for (const auto &cand : ep_trades.adds) {
+            ASSERT_EQ(cand.size(), 3u);
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+        }
+
+        const auto refs = greedy.refine_candidates(mid_kept, rw, rscale, segs);
+        EXPECT_FALSE(refs.empty());
+        for (const auto &cand : refs) {
+            ASSERT_EQ(cand.size(), mid_kept.size());
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+            EXPECT_FALSE(std::ranges::equal(cand, mid_kept));
+        }
+
+        const auto trades = greedy.point_trade_candidates(mid_kept, rw, rscale, segs);
+        EXPECT_FALSE(trades.drops.empty());
+        EXPECT_FALSE(trades.adds.empty());
+        for (const auto &cand : trades.drops) {
+            ASSERT_EQ(cand.size(), mid_kept.size() - 1);
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+        }
+        for (const auto &cand : trades.adds) {
+            ASSERT_EQ(cand.size(), mid_kept.size() + 1);
+            EXPECT_EQ(cand.front(), 0u);
+            EXPECT_EQ(cand.back(), 29u);
+            EXPECT_TRUE(std::ranges::is_sorted(cand));
+            EXPECT_EQ(std::ranges::adjacent_find(cand), cand.end());
+        }
+    }
+}
+
+TEST_F(TeacherTest, RefineArmNeverLosesToLoopAndImprovesNonNestedBudget) {
+    const auto db = random_db(13, 30, 32);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 23, m_dir);
+    teacher::add_ranked_neighbours(db, workloads, 3, 23, m_dir);
+    const teacher::ObjectiveConfig cfg{.term_weights = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
+    const teacher::Teacher model(db, std::move(workloads), cfg, 23);
+    const std::size_t budget = 2 * db.size() + 90;
+    const std::vector<std::string> arms{"BUDGET_LOOP", "BUDGET_LOOP_REFINE"};
+    const auto result = model.run(budget, arms);
+    ASSERT_EQ(result.size(), 2u);
+    EXPECT_EQ(result[1].simplification.num_points(), budget);
+    EXPECT_GE(result[1].objective + 1e-12, result[0].objective);
+}
+
+TEST_F(TeacherTest, JoinMarginContributesSeparablyInsideMarginTerm) {
+    const auto db = random_db(17, 24, 20);
+    auto cfg = small_config();
+    cfg.extra_join_eps_m = {50.0, 200.0};
+    auto workloads = teacher::load_or_build_workloads(db, cfg, 29, m_dir);
+    teacher::add_ranked_neighbours(db, workloads, 3, 29, m_dir);
+    const teacher::Objective margin(db, workloads, {.term_weights = {0, 0, 0, 0, 0, 1}});
+    EXPECT_NEAR(margin.total(every_point(db)), 1.0, 1e-9);
+    EXPECT_NEAR(margin.total(core::endpoints_only(db)), 0.0, 1e-9);
+    const auto kept = core::to_kept(selection::rdp::simplify_database(db, db.size() * 5));
+    double sum = 0.0;
+    for (std::size_t i = 0; i < db.size(); ++i)
+        sum += margin.separable(i, kept[i]);
+    EXPECT_NEAR(margin.total(kept), sum, 1e-9);
+}
+
+TEST_F(TeacherTest, DeviationProfileDistinguishesWholeTrajectorySlackFromSingleSpike) {
+    // 5-point trajectory with two identical 100 m bumps at indices 1 and 3
+    std::vector<std::int64_t> t{0, 10, 20, 30, 40};
+    std::vector<double> x{0.0, 100.0, 200.0, 300.0, 400.0};
+    std::vector<double> y{0.0, 100.0, 0.0, 100.0, 0.0};
+    const core::TrajectoryView orig{0, t, {}, {}, x, y, {0.0, 400.0, 0.0, 100.0}};
+
+    // Keeping {0, 2, 4} drops both bumps; keeping {0, 1, 2, 4} fixes the first bump while keeping
+    // the exact same worst-case L_inf deviation (100 m) on the second bump
+    const teacher::PreparedTrajectory both_bad(orig, std::vector<std::size_t>{0, 2, 4});
+    const teacher::PreparedTrajectory one_clean(orig, std::vector<std::size_t>{0, 1, 2, 4});
+    const auto p_bad = teacher::simplification_profile(orig, both_bad.view(), {}, 25.0, 200.0);
+    const auto p_one = teacher::simplification_profile(orig, one_clean.view(), {}, 25.0, 200.0);
+    EXPECT_NEAR(p_bad.max_m, teacher::simplification_bound(orig, both_bad.view()), 1e-12);
+    EXPECT_NEAR(p_one.max_m, teacher::simplification_bound(orig, one_clean.view()), 1e-12);
+    EXPECT_NEAR(p_bad.max_m, p_one.max_m, 1e-12);
+    EXPECT_LE(p_one.rms_m, p_one.max_m + 1e-12);
+    EXPECT_LT(p_one.rms_m, p_bad.rms_m);
+    EXPECT_GT(p_one.arc_shape, p_bad.arc_shape);
+}
+
+TEST_F(TeacherTest, GreedyJointSequencePreservesInvariantsAndMatchesShapeMargin) {
+    const auto db = random_db(19, 24, 28);
+    auto workloads = teacher::load_or_build_workloads(db, small_config(), 31, m_dir);
+    teacher::add_ranked_neighbours(db, workloads, 3, 31, m_dir);
+    const teacher::ObjectiveConfig cfg{.term_weights = {0.0, 0.0, 0.0, 0.0, 1.0, 1.0}};
+    const teacher::Objective obj(db, workloads, cfg);
+    for (std::size_t i = 0; i < 6; ++i) {
+        const auto orig = db.trajectory(i);
+        const teacher::Greedy greedy(obj, i);
+        const auto rdp_seq = selection::rdp::sequence(orig, 12);
+        const auto seq = greedy.joint_sequence(12, obj, i, obj.segments(i), rdp_seq);
+        ASSERT_EQ(seq.size(), 12u);
+        auto sorted = seq;
+        std::ranges::sort(sorted);
+        EXPECT_EQ(sorted.front(), 0u);
+        EXPECT_EQ(sorted.back(), orig.size() - 1);
+        EXPECT_EQ(std::ranges::adjacent_find(sorted), sorted.end());
+
+        // With WhereAt weight 0, shape_margin(cand) - shape_margin(endpoints) == separable(cand)
+        const teacher::PreparedTrajectory cand(orig, sorted);
+        const teacher::PreparedTrajectory ends(orig, std::vector<std::size_t>{0, orig.size() - 1});
+        const double expected = obj.shape_margin(i, obj.deviation_profile(i, cand.view())) -
+                                obj.shape_margin(i, obj.deviation_profile(i, ends.view()));
+        EXPECT_NEAR(obj.separable(i, cand.view()), expected, 1e-12);
     }
 }

@@ -10,6 +10,7 @@
 #include "backend/engine/evaluator/combined.hpp"
 #include "backend/engine/evaluator/evaluator.hpp"
 #include "backend/engine/evaluator/join.hpp"
+#include "backend/engine/evaluator/range.hpp"
 #include "backend/engine/io/parquet_loader.hpp"
 #include "backend/engine/pipeline/config.hpp"
 #include "backend/engine/pipeline/test_workloads.hpp"
@@ -33,6 +34,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <random>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -64,6 +66,7 @@ struct Args {
     std::vector<double> eval_eps{kEvalEps.begin(), kEvalEps.end()};
     bool knn_check = false;
     bool diagnose = false;
+    bool range_robustness = false;
     std::size_t knn_outside = 0;               // ranked outsiders per query for the margin term
     std::optional<std::uint64_t> pseudo_split; // re-split the database: tuning without the pool
 };
@@ -116,6 +119,8 @@ Args parse_args(int argc, char **argv) {
             args.knn_check = true;
         else if (key == "--diagnose")
             args.diagnose = true;
+        else if (key == "--range-robustness")
+            args.range_robustness = true;
         else if (key == "--knn-outside")
             args.knn_outside = std::stoull(value());
         else if (key == "--pseudo-split")
@@ -123,10 +128,11 @@ Args parse_args(int argc, char **argv) {
         else if (key == "--no-baselines")
             args.baselines = false;
         else
-            throw std::invalid_argument("unknown argument " + key +
-                                        " (--config --data --out --cache --seeds --shares --arms "
-                                        "--train-eps --term-weights --eval-eps --knn-check "
-                                        "--diagnose --knn-outside --pseudo-split --no-baselines)");
+            throw std::invalid_argument(
+                "unknown argument " + key +
+                " (--config --data --out --cache --seeds --shares --arms "
+                "--train-eps --term-weights --eval-eps --knn-check "
+                "--diagnose --range-robustness --knn-outside --pseudo-split --no-baselines)");
     }
     teacher::check_arms(args.arms);
     return args;
@@ -479,6 +485,167 @@ std::ofstream open_csv(const std::filesystem::path &file, const std::string &hea
     return out;
 }
 
+// 3D Liang-Barsky test: whether any polyline segment intersects the closed (x, y, t) box
+bool seg_intersects_box(const core::TrajectoryView &t, const query::RangeBox &box) {
+    const std::size_t n = t.size();
+    if (n == 0)
+        return false;
+    if (t.bbox.x_max < box.x_min || t.bbox.x_min > box.x_max || t.bbox.y_max < box.y_min ||
+        t.bbox.y_min > box.y_max || t.t.back() < box.t_min || t.t.front() > box.t_max)
+        return false;
+    if (n == 1)
+        return t.x[0] >= box.x_min && t.x[0] <= box.x_max && t.y[0] >= box.y_min &&
+               t.y[0] <= box.y_max && t.t[0] >= box.t_min && t.t[0] <= box.t_max;
+    const double tmin = static_cast<double>(box.t_min), tmax = static_cast<double>(box.t_max);
+    for (std::size_t k = 0; k + 1 < n; ++k) {
+        if (t.t[k + 1] < box.t_min)
+            continue;
+        if (t.t[k] > box.t_max)
+            break;
+        double u0 = 0.0, u1 = 1.0;
+        auto clip = [&](double p, double q) {
+            if (p == 0.0)
+                return q >= 0.0;
+            const double r = q / p;
+            if (p < 0.0) {
+                if (r > u1)
+                    return false;
+                if (r > u0)
+                    u0 = r;
+            } else {
+                if (r < u0)
+                    return false;
+                if (r < u1)
+                    u1 = r;
+            }
+            return true;
+        };
+        const double x0 = t.x[k], dx = t.x[k + 1] - x0;
+        const double y0 = t.y[k], dy = t.y[k + 1] - y0;
+        const double s0 = static_cast<double>(t.t[k]), ds = static_cast<double>(t.t[k + 1]) - s0;
+        if (clip(-dx, x0 - box.x_min) && clip(dx, box.x_max - x0) && clip(-dy, y0 - box.y_min) &&
+            clip(dy, box.y_max - y0) && clip(-ds, s0 - tmin) && clip(ds, tmax - s0))
+            return true;
+    }
+    return false;
+}
+
+struct SegRangeScores {
+    double f1 = 0.0, recall = 0.0, precision = 0.0, mean_fp = 0.0;
+};
+
+struct RangeRobustnessSuites {
+    query::RangeWorkload seg1k;
+    query::RangeWorkload pt500;
+    query::RangeWorkload pt2k;
+    query::RangeWorkload gauss1k;
+    double flr_pt1k = 0.0, flr_seg1k = 0.0, flr_pt500 = 0.0, flr_pt2k = 0.0, flr_gauss1k = 0.0;
+};
+
+SegRangeScores evaluate_seg_range(const core::TrajectoryDb &db,
+                                  const query::RangeWorkload &workload) {
+    const std::size_t qn = workload.queries.size();
+    std::vector<double> f1s(qn, 0.0), recs(qn, 0.0), precs(qn, 0.0), fps(qn, 0.0);
+    std::vector<char> counted(qn, 0);
+    core::parallel_for(qn, [&](std::size_t q) {
+        const auto &query = workload.queries[q];
+        if (query.reference.empty())
+            return;
+        std::size_t hits = 0, found = 0;
+        for (std::size_t i = 0; i < db.size(); ++i) {
+            if (!seg_intersects_box(db.trajectory(i), query.box))
+                continue;
+            ++found;
+            if (std::ranges::binary_search(query.reference, i))
+                ++hits;
+        }
+        counted[q] = 1;
+        f1s[q] = (found + query.reference.size()) > 0
+                     ? 2.0 * static_cast<double>(hits) /
+                           static_cast<double>(found + query.reference.size())
+                     : 0.0;
+        recs[q] = static_cast<double>(hits) / static_cast<double>(query.reference.size());
+        precs[q] = found > 0 ? static_cast<double>(hits) / static_cast<double>(found) : 0.0;
+        fps[q] = static_cast<double>(found - hits);
+    });
+    double sf1 = 0.0, srec = 0.0, sprec = 0.0, sfp = 0.0;
+    std::size_t cnt = 0;
+    for (std::size_t q = 0; q < qn; ++q) {
+        if (!counted[q])
+            continue;
+        sf1 += f1s[q];
+        srec += recs[q];
+        sprec += precs[q];
+        sfp += fps[q];
+        ++cnt;
+    }
+    if (cnt == 0)
+        return {};
+    const double d = static_cast<double>(cnt);
+    return {sf1 / d, srec / d, sprec / d, sfp / d};
+}
+
+query::RangeWorkload generate_gaussian_range(const core::TrajectoryDb &db,
+                                             const query::RangeConfig &cfg, std::uint64_t seed) {
+    query::RangeWorkload out;
+    out.queries.reserve(cfg.query_count);
+    std::mt19937_64 rng(seed);
+    std::uniform_int_distribution<std::size_t> pick_traj(0, db.size() - 1);
+    std::normal_distribution<double> shift(0.0, 1500.0);
+    const double half = 0.5 * cfg.box_size_m;
+    const std::int64_t half_w = cfg.window_seconds / 2;
+    const std::size_t max_tries = cfg.query_count * 40;
+    for (std::size_t tries = 0; tries < max_tries && out.queries.size() < cfg.query_count;
+         ++tries) {
+        const auto t = db.trajectory(pick_traj(rng));
+        if (t.size() == 0)
+            continue;
+        std::uniform_int_distribution<std::size_t> pick_pt(0, t.size() - 1);
+        const std::size_t p = pick_pt(rng);
+        const double cx = t.x[p] + shift(rng);
+        const double cy = t.y[p] + shift(rng);
+        const std::int64_t ct = t.t[p];
+        const query::RangeBox box{cx - half, cx + half,   cy - half,
+                                  cy + half, ct - half_w, ct + half_w};
+        auto ref = query::range(db, box);
+        if (ref.size() >= cfg.min_results)
+            out.queries.push_back({box, std::move(ref)});
+    }
+    return out;
+}
+
+RangeRobustnessSuites build_range_robustness_suites(const core::TrajectoryDb &db,
+                                                    const core::TrajectoryDb &floor_db,
+                                                    const query::RangeConfig &cfg,
+                                                    std::span<const query::RangeQuery> pt1k,
+                                                    double flr_pt1k, std::uint64_t seed) {
+    RangeRobustnessSuites suites;
+    suites.flr_pt1k = flr_pt1k;
+    // seg1k: same 1 km boxes with segment-in-box ground truth on uncompressed db
+    suites.seg1k.queries.resize(pt1k.size());
+    core::parallel_for(pt1k.size(), [&](std::size_t q) {
+        const auto &box = pt1k[q].box;
+        std::vector<std::size_t> ref;
+        for (std::size_t i = 0; i < db.size(); ++i)
+            if (seg_intersects_box(db.trajectory(i), box))
+                ref.push_back(i);
+        suites.seg1k.queries[q] = {box, std::move(ref)};
+    });
+    auto cfg500 = cfg;
+    cfg500.box_size_m = 500.0;
+    suites.pt500 = query::generate_range_queries(db, cfg500, seed + 101);
+    auto cfg2k = cfg;
+    cfg2k.box_size_m = 2000.0;
+    suites.pt2k = query::generate_range_queries(db, cfg2k, seed + 102);
+    suites.gauss1k = generate_gaussian_range(db, cfg, seed + 103);
+
+    suites.flr_seg1k = evaluate_seg_range(floor_db, suites.seg1k).f1;
+    suites.flr_pt500 = evaluator::evaluate_range(floor_db, suites.pt500.queries).f1;
+    suites.flr_pt2k = evaluator::evaluate_range(floor_db, suites.pt2k.queries).f1;
+    suites.flr_gauss1k = evaluator::evaluate_range(floor_db, suites.gauss1k.queries).f1;
+    return suites;
+}
+
 } // namespace
 
 int main(int argc, char **argv) try {
@@ -525,6 +692,13 @@ int main(int argc, char **argv) try {
             open_csv(args.out / "knn_diagnostics.csv",
                      "seed,share,arm,pairs,shift_p10,shift_p50,shift_p90,shift_mean,shift_positive,"
                      "recall,recall_eps01,recall_eps05,recall_eps10,shift_p99");
+    std::ofstream range_robustness;
+    if (args.range_robustness)
+        range_robustness = open_csv(
+            args.out / "range_robustness.csv",
+            "seed,share,arm,pt1k_f1,norm_pt1k,seg1k_f1,norm_seg1k,seg1k_rec,seg1k_prec,seg1k_fp,"
+            "pt500_f1,norm_pt500,pt2k_f1,norm_pt2k,gauss1k_f1,norm_gauss1k,"
+            "flr_pt1k,flr_seg1k,flr_pt500,flr_pt2k,flr_gauss1k");
 
     for (const auto seed : args.seeds.value_or(std::vector{base_config.seed})) {
         auto config = base_config;
@@ -538,8 +712,9 @@ int main(int argc, char **argv) try {
         const auto &source = inner ? *inner : all;
         const auto parts =
             args.pseudo_split ? split::split(source, config.split, *args.pseudo_split) : outer;
-        if (args.pseudo_split)
-            config.teacher.cache_dir /= std::format("pseudo_{}", *args.pseudo_split);
+        const auto cache_dir = args.pseudo_split ? config.teacher.cache_dir /
+                                                       std::format("pseudo_{}", *args.pseudo_split)
+                                                 : config.teacher.cache_dir;
         const auto db = core::subset(source, parts.database);
         std::cerr << std::format(
             "seed {}: database {} trajectories, {} points{}\n", seed, db.size(), db.num_points(),
@@ -548,13 +723,13 @@ int main(int argc, char **argv) try {
         // Database only
         auto start = std::chrono::steady_clock::now();
         auto workloads = teacher::load_or_build_workloads(
-            db, pipeline::teacher_workload_config(config), seed, config.teacher.cache_dir);
+            db, pipeline::teacher_workload_config(config), seed, cache_dir);
         const std::size_t outside = args.knn_outside > 0 ? args.knn_outside
                                     : config.teacher.term_weights[teacher::Objective::Margin] > 0
                                         ? teacher::kMarginOutside
                                         : 0;
         if (outside > 0)
-            teacher::add_ranked_neighbours(db, workloads, outside, seed, config.teacher.cache_dir);
+            teacher::add_ranked_neighbours(db, workloads, outside, seed, cache_dir);
         const auto pairs = workloads.positives;
         const teacher::Teacher model(db, std::move(workloads),
                                      pipeline::teacher_objective_config(config), seed);
@@ -631,6 +806,10 @@ int main(int argc, char **argv) try {
 
         const auto &objective = model.objective();
         const double db_knn_floor = args.knn_check ? objective.knn_recall(floor_db) : kNan;
+        std::optional<RangeRobustnessSuites> rr_suites;
+        if (args.range_robustness)
+            rr_suites = build_range_robustness_suites(db, floor_db, config.range, test.range,
+                                                      floor.range_f1, seed);
         for (const auto &arm : arms) {
             start = std::chrono::steady_clock::now();
             const auto compressed = core::materialize(db, arm.kept);
@@ -699,6 +878,28 @@ int main(int argc, char **argv) try {
             if (args.diagnose && (teacher::is_arm(arm.name) || arm.name == "RDP_a0" ||
                                   arm.name.starts_with("PARTNER")))
                 diagnose(diagnostics, knn_diagnostics, seed, arm, db, compressed, test);
+            if (rr_suites) {
+                const auto seg = evaluate_seg_range(compressed, rr_suites->seg1k);
+                const double f500 =
+                    evaluator::evaluate_range(compressed, rr_suites->pt500.queries).f1;
+                const double f2k =
+                    evaluator::evaluate_range(compressed, rr_suites->pt2k.queries).f1;
+                const double fg =
+                    evaluator::evaluate_range(compressed, rr_suites->gauss1k.queries).f1;
+                auto norm_r = [](double v, double flr) { return (v - flr) / (1.0 - flr); };
+                range_robustness << std::format(
+                    "{},{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.4f},"
+                    "{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},"
+                    "{:.6f},{:.6f},{:.6f},{:.6f},{:.6f}\n",
+                    seed, arm.share, arm.name, scores.range_f1,
+                    norm_r(scores.range_f1, rr_suites->flr_pt1k), seg.f1,
+                    norm_r(seg.f1, rr_suites->flr_seg1k), seg.recall, seg.precision, seg.mean_fp,
+                    f500, norm_r(f500, rr_suites->flr_pt500), f2k, norm_r(f2k, rr_suites->flr_pt2k),
+                    fg, norm_r(fg, rr_suites->flr_gauss1k), rr_suites->flr_pt1k,
+                    rr_suites->flr_seg1k, rr_suites->flr_pt500, rr_suites->flr_pt2k,
+                    rr_suites->flr_gauss1k);
+                range_robustness.flush();
+            }
             if (teacher::is_arm(arm.name))
                 for (std::size_t i = 0; i < arm.kept.size(); ++i)
                     budgets << std::format("{},{},{},{},{}\n", seed, arm.share, arm.name,
