@@ -474,8 +474,8 @@ struct Refined {
     bool reverted = false;
 };
 
-// Alternating free-knot refinement (knot shifts and 1-opt swaps at fixed per-trajectory budgets)
-// and 1-point cross-trajectory budget trading against live tracked exact J_T
+// Alternating free-knot refinement (knot shifts at fixed per-trajectory budgets) and 1-point
+// cross-trajectory budget trading against live tracked exact J_T
 Refined refine_points(const core::TrajectoryDb &db, const Objective &objective,
                       const std::vector<std::size_t> &caps, Makers &makers, KeptSets kept,
                       double start_value, Search::Trackers *reused = nullptr) {

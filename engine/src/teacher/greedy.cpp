@@ -599,11 +599,82 @@ struct Greedy::LocalContext {
         return drop_set;
     }
 
+    struct IntervalScan {
+        double top_joint = kMinGain, top_wa = kMinGain, top_rng = kMinGain;
+        std::size_t q_joint = 0, q_wa = 0, q_rng = 0;
+    };
+
+    // Scans j in (a, c) for best Range, Where-At, and Range+WA gains over base_wa, using exact
+    // evaluation on short intervals and stride-256 coarse-to-fine refinement on long ones
+    IntervalScan scan_interval(std::size_t a, std::size_t c, double base_wa,
+                               double min_joint = kMinGain,
+                               std::size_t init_joint = std::size_t(-1)) const {
+        if (init_joint == std::size_t(-1))
+            init_joint = n;
+        const auto &t = g.m_trajectory;
+        const auto [lo, hi] = probes_between(a, c);
+        auto eval_wa_gain = [&](std::size_t j) {
+            if (g.m_probe_weight <= 0.0 || lo == hi)
+                return 0.0;
+            const double tj = static_cast<double>(t.t[j]);
+            double s = 0.0;
+            for (std::size_t p = lo; p < hi; ++p)
+                s += g.m_probe_t[p] < tj ? score_on(p, a, j) : score_on(p, j, c);
+            return s * g.m_probe_weight - base_wa;
+        };
+        IntervalScan res{min_joint, kMinGain, kMinGain, init_joint, n, n};
+        auto consider = [&](std::size_t j, double rg, double wg) {
+            if (wg > res.top_wa) {
+                res.top_wa = wg;
+                res.q_wa = j;
+            }
+            if (rg + wg > res.top_joint) {
+                res.top_joint = rg + wg;
+                res.q_joint = j;
+            }
+        };
+        const std::size_t span = c - a;
+        if (span <= 512 || (hi - lo) <= 16) {
+            for (std::size_t j = a + 1; j < c; ++j) {
+                const double rg = eval_rng(j);
+                if (rg > res.top_rng) {
+                    res.top_rng = rg;
+                    res.q_rng = j;
+                }
+                consider(j, rg, eval_wa_gain(j));
+            }
+            return res;
+        }
+        const std::size_t step = std::max<std::size_t>(1, span / 256);
+        std::size_t coarse_j = init_joint;
+        for (std::size_t j = a + 1; j < c; ++j) {
+            const double rg = eval_rng(j);
+            if (rg > res.top_rng) {
+                res.top_rng = rg;
+                res.q_rng = j;
+            }
+            if ((j - a) % step == 0) {
+                const double prev_top = res.top_joint;
+                consider(j, rg, eval_wa_gain(j));
+                if (res.top_joint > prev_top)
+                    coarse_j = j;
+            }
+        }
+        if (coarse_j < n) {
+            const std::size_t win_lo = coarse_j > a + step ? coarse_j - step : a + 1;
+            const std::size_t win_hi = std::min(c - 1, coarse_j + step);
+            for (std::size_t j = win_lo; j <= win_hi; ++j)
+                consider(j, eval_rng(j), eval_wa_gain(j));
+        }
+        if (res.q_rng < n)
+            consider(res.q_rng, res.top_rng, eval_wa_gain(res.q_rng));
+        return res;
+    }
+
     // Up to 8 top global unkept insertion points (Fréchet max/RMS + Range + Where-At)
     std::vector<std::size_t> add_candidates() const {
         if (b >= n)
             return {};
-        const auto &t = g.m_trajectory;
         std::vector<std::size_t> add_set;
         auto add_insert = [&](std::size_t q) {
             if (q > 0 && q + 1 < n && !is_kept[q] && std::ranges::find(add_set, q) == add_set.end())
@@ -628,89 +699,13 @@ struct Greedy::LocalContext {
             const std::size_t a = kept[r], c = kept[r + 1];
             if (c <= a + 1)
                 continue;
-            const auto [lo, hi] = probes_between(a, c);
-            const double base_wa = seg_wa_score[r] * g.m_probe_weight;
-            auto eval_wa_gain = [&](std::size_t j) {
-                if (g.m_probe_weight <= 0.0 || lo == hi)
-                    return 0.0;
-                const double tj = static_cast<double>(t.t[j]);
-                double s = 0.0;
-                for (std::size_t p = lo; p < hi; ++p)
-                    s += g.m_probe_t[p] < tj ? score_on(p, a, j) : score_on(p, j, c);
-                return s * g.m_probe_weight - base_wa;
-            };
-            double top_joint = kMinGain, top_wa = kMinGain, top_rng = kMinGain;
-            std::size_t q_joint = n, q_wa = n, q_rng = n;
-            const std::size_t span = c - a;
-            if (span <= 512 || (hi - lo) <= 16) {
-                for (std::size_t j = a + 1; j < c; ++j) {
-                    const double rg = eval_rng(j);
-                    const double wg = eval_wa_gain(j);
-                    if (rg > top_rng) {
-                        top_rng = rg;
-                        q_rng = j;
-                    }
-                    if (wg > top_wa) {
-                        top_wa = wg;
-                        q_wa = j;
-                    }
-                    if (rg + wg > top_joint) {
-                        top_joint = rg + wg;
-                        q_joint = j;
-                    }
-                }
-            } else {
-                const std::size_t step = std::max<std::size_t>(1, span / 256);
-                std::size_t coarse_j = n;
-                for (std::size_t j = a + 1; j < c; ++j) {
-                    const double rg = eval_rng(j);
-                    if (rg > top_rng) {
-                        top_rng = rg;
-                        q_rng = j;
-                    }
-                    if ((j - a) % step == 0) {
-                        const double wg = eval_wa_gain(j);
-                        if (wg > top_wa) {
-                            top_wa = wg;
-                            q_wa = j;
-                        }
-                        if (rg + wg > top_joint) {
-                            top_joint = rg + wg;
-                            coarse_j = j;
-                            q_joint = j;
-                        }
-                    }
-                }
-                if (coarse_j < n) {
-                    const std::size_t win_lo = coarse_j > a + step ? coarse_j - step : a + 1;
-                    const std::size_t win_hi = std::min(c - 1, coarse_j + step);
-                    for (std::size_t j = win_lo; j <= win_hi; ++j) {
-                        const double rg = eval_rng(j);
-                        const double wg = eval_wa_gain(j);
-                        if (wg > top_wa) {
-                            top_wa = wg;
-                            q_wa = j;
-                        }
-                        if (rg + wg > top_joint) {
-                            top_joint = rg + wg;
-                            q_joint = j;
-                        }
-                    }
-                }
-                if (q_rng < n) {
-                    const double wg = eval_wa_gain(q_rng);
-                    if (top_rng + wg > top_joint) {
-                        top_joint = top_rng + wg;
-                        q_joint = q_rng;
-                    }
-                }
-            }
-            if (q_joint < n)
-                best_joint.push_back({top_joint, q_joint});
-            if (q_wa < n)
-                best_wa_only.push_back({top_wa, q_wa});
-            if (q_rng < n)
-                best_rng_only.push_back({top_rng, q_rng});
+            const auto scan = scan_interval(a, c, seg_wa_score[r] * g.m_probe_weight);
+            if (scan.q_joint < n)
+                best_joint.push_back({scan.top_joint, scan.q_joint});
+            if (scan.q_wa < n)
+                best_wa_only.push_back({scan.top_wa, scan.q_wa});
+            if (scan.q_rng < n)
+                best_rng_only.push_back({scan.top_rng, scan.q_rng});
         }
         auto sort_ins = [](auto &v) {
             std::ranges::sort(v, [](const InsertScore &a, const InsertScore &c) {
@@ -763,70 +758,13 @@ Greedy::refine_candidates(std::span<const std::size_t> kept, std::span<const dou
             continue;
         for (auto e = m_offsets[cur]; e < m_offsets[cur + 1]; ++e)
             --ctx.box_hits[m_point_boxes[e]];
-        const auto [lo, hi] = ctx.probes_between(a, c);
-        auto eval_wa = [&](std::size_t j) {
-            if (m_probe_weight <= 0.0 || lo == hi)
-                return 0.0;
-            const double tj = static_cast<double>(m_trajectory.t[j]);
-            double s = 0.0;
-            for (std::size_t p = lo; p < hi; ++p)
-                s += m_probe_t[p] < tj ? ctx.score_on(p, a, j) : ctx.score_on(p, j, c);
-            return s * m_probe_weight;
-        };
         const double cur_score =
             ctx.eval_rng(cur) + (ctx.seg_wa_score[m - 1] + ctx.seg_wa_score[m]) * m_probe_weight;
-        double best_score = cur_score;
-        std::size_t best_j = cur;
-        const std::size_t span = c - a;
-        if (span <= 512 || (hi - lo) <= 16) {
-            for (std::size_t j = a + 1; j < c; ++j) {
-                const double sc = ctx.eval_rng(j) + eval_wa(j);
-                if (sc > best_score) {
-                    best_score = sc;
-                    best_j = j;
-                }
-            }
-        } else {
-            const std::size_t step = std::max<std::size_t>(1, span / 256);
-            std::size_t coarse_j = cur;
-            double best_rng_val = -1.0;
-            std::size_t best_rng_j = cur;
-            for (std::size_t j = a + 1; j < c; ++j) {
-                const double rg = ctx.eval_rng(j);
-                if (rg > best_rng_val) {
-                    best_rng_val = rg;
-                    best_rng_j = j;
-                }
-                if ((j - a) % step == 0) {
-                    const double sc = rg + eval_wa(j);
-                    if (sc > best_score) {
-                        best_score = sc;
-                        coarse_j = j;
-                    }
-                }
-            }
-            best_j = coarse_j;
-            const std::size_t win_lo = coarse_j > a + step ? coarse_j - step : a + 1;
-            const std::size_t win_hi = std::min(c - 1, coarse_j + step);
-            for (std::size_t j = win_lo; j <= win_hi; ++j) {
-                const double sc = ctx.eval_rng(j) + eval_wa(j);
-                if (sc > best_score) {
-                    best_score = sc;
-                    best_j = j;
-                }
-            }
-            if (best_rng_j != cur) {
-                const double sc = best_rng_val + eval_wa(best_rng_j);
-                if (sc > best_score) {
-                    best_score = sc;
-                    best_j = best_rng_j;
-                }
-            }
-        }
+        const auto scan = ctx.scan_interval(a, c, 0.0, cur_score, cur);
         for (auto e = m_offsets[cur]; e < m_offsets[cur + 1]; ++e)
             ++ctx.box_hits[m_point_boxes[e]];
-        if (best_j != cur && best_score > cur_score + kMinGain)
-            shifts.push_back({best_score - cur_score, m, best_j});
+        if (scan.q_joint != cur && scan.top_joint > cur_score + kMinGain)
+            shifts.push_back({scan.top_joint - cur_score, m, scan.q_joint});
     }
     std::ranges::sort(shifts, [](const ShiftProposal &a, const ShiftProposal &c) {
         return a.gain > c.gain || (a.gain == c.gain && a.m < c.m);
@@ -888,16 +826,6 @@ Greedy::refine_candidates(std::span<const std::size_t> kept, std::span<const dou
         }
     }
 
-    // 2. Global 1-opt swaps: pair cheapest droppable knots with top global insertion points
-    const auto drop_set = ctx.drop_candidates();
-    const auto add_set = ctx.add_candidates();
-    for (const std::size_t d : drop_set) {
-        for (const std::size_t q : add_set) {
-            std::vector<std::size_t> cand(kept.begin(), kept.end());
-            cand[d] = q;
-            emit(std::move(cand));
-        }
-    }
     return out;
 }
 

@@ -28,8 +28,9 @@ class Greedy {
                                             std::size_t i, std::span<const double> segments,
                                             std::span<const std::size_t> fill) const;
 
-    // Non-nested 1-opt neighbours of a sorted kept set (knot shifts and drop-and-add swaps),
-    // preserving budget and endpoints. range_weights: live marginal F1 per box in boxes(i) order
+    // Non-nested knot-shift neighbours of a sorted kept set (Range+WA, simultaneous red-black, and
+    // Fréchet peak/midpoint shifts), preserving budget and endpoints. range_weights: live marginal
+    // F1 per box in boxes(i) order
     std::vector<std::vector<std::size_t>> refine_candidates(std::span<const std::size_t> kept,
                                                             std::span<const double> range_weights,
                                                             double range_scale,

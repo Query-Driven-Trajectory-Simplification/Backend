@@ -614,8 +614,8 @@ trackers; `run` updates them in place, so it runs once.
   against exact coupled `J_T`.
 - **Computation:** alternates up to `kMaxRefineCycles` cycles of:
   1. **Intra-trajectory knot refinement** (`Greedy::refine_candidates`): single-knot Range+WA
-     shifts, red-black simultaneous shifts (all and max+RMS-safe), Fréchet peak/midpoint shifts on
-     worst max/RMS segments, and 1-opt drop-and-add swaps at fixed budget `b_i`.
+     shifts, red-black simultaneous shifts (all and max+RMS-safe), and Fréchet peak/midpoint
+     shifts on worst max/RMS segments at fixed budget `b_i`.
   2. **Inter-trajectory 1-point trading** (`Greedy::point_trade_candidates`): pairs highest-gain
      `b_i + 1` buyers with lowest-loss `b_i - 1` sellers and commits each pair only if exact
      coupled `J_T` strictly rises.
