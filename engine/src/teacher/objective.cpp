@@ -140,6 +140,13 @@ double squared_directed_hausdorff(const core::TrajectoryView &a, const core::Tra
 // of arc length. Along each original edge the gap is convex, so its maximum is at a vertex
 double simplification_bound(const core::TrajectoryView &original, const core::TrajectoryView &kept,
                             std::span<const double> segments) {
+    return simplification_profile(original, kept, segments, 0.0, 1.0).max_m;
+}
+
+DeviationProfile simplification_profile(const core::TrajectoryView &original,
+                                        const core::TrajectoryView &kept,
+                                        std::span<const double> segments, double min_shape_m,
+                                        double max_shape_m) {
     const auto edge = [&](std::size_t j) {
         return segments.empty() ? std::hypot(original.x[j + 1] - original.x[j],
                                              original.y[j + 1] - original.y[j])
@@ -147,11 +154,22 @@ double simplification_bound(const core::TrajectoryView &original, const core::Tr
     };
     const std::size_t n = original.size();
     if (kept.size() < 2 || n < 2)
-        return std::numeric_limits<double>::infinity();
+        return {};
+    const double near_sq = min_shape_m * min_shape_m * (1.0 - 1e-12);
+    const double far_sq = max_shape_m * max_shape_m * (1.0 + 1e-12);
+    auto shape_at = [&](double sq) {
+        if (sq <= near_sq)
+            return 1.0;
+        if (sq >= far_sq)
+            return 0.0;
+        return ramp(std::sqrt(sq), min_shape_m, max_shape_m);
+    };
     double bound_sq = 0.0;
+    double total_len = 0.0;
+    double rms_num = 0.0;
+    double arc_shape_num = 0.0;
     std::size_t at = 0;
     for (std::size_t k = 0; k + 1 < kept.size(); ++k) {
-        // Kept points are copies of original points, in order
         while (at < n && !(original.t[at] == kept.t[k] && original.x[at] == kept.x[k] &&
                            original.y[at] == kept.y[k]))
             ++at;
@@ -160,24 +178,40 @@ double simplification_bound(const core::TrajectoryView &original, const core::Tr
                             original.y[end] == kept.y[k + 1]))
             ++end;
         if (end >= n)
-            return std::numeric_limits<double>::infinity();
+            return {};
         double length = 0.0;
         for (std::size_t j = at; j < end; ++j)
             length += edge(j);
         double walked = 0.0;
         const double kx = kept.x[k], ky = kept.y[k];
         const double kdx = kept.x[k + 1] - kx, kdy = kept.y[k + 1] - ky;
+        double prev_dx = 0.0, prev_dy = 0.0, prev_sq = 0.0, prev_r = 1.0;
         for (std::size_t j = at; j <= end; ++j) {
+            const double w = j > at ? edge(j - 1) : 0.0;
             if (j > at)
-                walked += edge(j - 1);
+                walked += w;
             const double u = length > 0 ? walked / length : 0.0;
             const double dx = original.x[j] - (kx + u * kdx);
             const double dy = original.y[j] - (ky + u * kdy);
-            bound_sq = std::max(bound_sq, dx * dx + dy * dy);
+            const double sq = dx * dx + dy * dy;
+            bound_sq = std::max(bound_sq, sq);
+            const double r = shape_at(sq);
+            if (j > at && w > 0.0) {
+                total_len += w;
+                rms_num += w * (prev_sq + prev_dx * dx + prev_dy * dy + sq) / 3.0;
+                arc_shape_num += w * 0.5 * (prev_r + r);
+            }
+            prev_dx = dx;
+            prev_dy = dy;
+            prev_sq = sq;
+            prev_r = r;
         }
         at = end;
     }
-    return std::sqrt(bound_sq);
+    const double max_m = std::sqrt(bound_sq);
+    if (total_len <= 0.0)
+        return {max_m, max_m, ramp(max_m, min_shape_m, max_shape_m)};
+    return {max_m, std::sqrt(std::max(0.0, rms_num / total_len)), arc_shape_num / total_len};
 }
 
 namespace {
@@ -542,7 +576,7 @@ bool Objective::match(const core::TrajectoryView &a, const core::TrajectoryView 
 }
 
 Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryView &candidate,
-                                          double deviation) const {
+                                          const DeviationProfile *provided_profile) const {
     Terms terms{};
     if (!m_sorted_probes[i].empty()) {
         const double far = m_config.max_tolerance_m * m_config.max_tolerance_m * (1.0 + 1e-12);
@@ -584,38 +618,60 @@ Objective::Terms Objective::raw_separable(std::size_t i, const core::TrajectoryV
     const bool margin =
         m_config.term_weights[Margin] > 0 && (!m_margins[i].empty() || !m_join_margins[i].empty());
     if (shape || margin) {
-        if (deviation < 0)
-            deviation = this->deviation(i, candidate);
-        if (shape)
-            terms[Shape] =
-                m_shape_weight * ramp(deviation, m_config.min_shape_m, m_config.max_shape_m);
-        // The distance moves uniformly within +-deviation; a hit survives up to its margin
-        if (margin) {
-            double knn_m = 0.0;
-            for (const double gap : m_margins[i])
-                knn_m += m_margin_weight * (deviation <= gap ? 1.0 : 0.5 * (1.0 + gap / deviation));
-            double join_m = 0.0;
-            for (const double gap : m_join_margins[i])
-                join_m +=
-                    m_join_margin_weight * (deviation <= gap ? 1.0 : 0.5 * (1.0 + gap / deviation));
-            if (m_margin_weight > 0.0 && m_join_margin_weight > 0.0)
-                terms[Margin] = 0.5 * (knn_m + join_m);
-            else
-                terms[Margin] = knn_m + join_m;
-        }
+        const DeviationProfile profile =
+            provided_profile ? *provided_profile : deviation_profile(i, candidate);
+        fill_shape_margin(i, profile, terms);
     }
     return terms;
+}
+
+void Objective::fill_shape_margin(std::size_t i, const DeviationProfile &profile,
+                                  Terms &terms) const {
+    if (m_config.term_weights[Shape] > 0)
+        terms[Shape] =
+            m_shape_weight * 0.5 *
+            (ramp(profile.max_m, m_config.min_shape_m, m_config.max_shape_m) + profile.arc_shape);
+    // Combine worst-case L_inf deviation with arc-length RMS deviation on kNN margins while
+    // keeping join margins pure L_inf
+    if (m_config.term_weights[Margin] > 0 &&
+        (!m_margins[i].empty() || !m_join_margins[i].empty())) {
+        auto survive = [](double dev, double gap) {
+            return dev <= gap ? 1.0 : 0.5 * (1.0 + gap / dev);
+        };
+        double knn_m = 0.0;
+        for (const double gap : m_margins[i])
+            knn_m +=
+                m_margin_weight * 0.5 * (survive(profile.max_m, gap) + survive(profile.rms_m, gap));
+        double join_m = 0.0;
+        for (const double gap : m_join_margins[i])
+            join_m += m_join_margin_weight * survive(profile.max_m, gap);
+        terms[Margin] = (m_margin_weight > 0.0 && m_join_margin_weight > 0.0)
+                            ? 0.5 * (knn_m + join_m)
+                            : (knn_m + join_m);
+    }
 }
 
 double Objective::separable(std::size_t i, std::span<const std::size_t> kept) const {
     return separable(i, PreparedTrajectory(m_db.trajectory(i), kept).view());
 }
 
-double Objective::separable(std::size_t i, const core::TrajectoryView &candidate,
-                            double deviation) const {
-    const auto t = raw_separable(i, candidate, deviation);
+double Objective::separable(std::size_t i, const core::TrajectoryView &candidate) const {
+    const auto t = raw_separable(i, candidate);
     return m_scale[WhereAt] * t[WhereAt] + m_scale[Shape] * t[Shape] + m_scale[Margin] * t[Margin] -
            m_endpoint_separable[i];
+}
+
+double Objective::separable(std::size_t i, const core::TrajectoryView &candidate,
+                            const DeviationProfile &profile) const {
+    const auto t = raw_separable(i, candidate, &profile);
+    return m_scale[WhereAt] * t[WhereAt] + m_scale[Shape] * t[Shape] + m_scale[Margin] * t[Margin] -
+           m_endpoint_separable[i];
+}
+
+double Objective::shape_margin(std::size_t i, const DeviationProfile &profile) const {
+    Terms terms{};
+    fill_shape_margin(i, profile, terms);
+    return m_scale[Shape] * terms[Shape] + m_scale[Margin] * terms[Margin];
 }
 
 std::vector<double> Objective::range_weights(std::size_t i,
@@ -651,8 +707,9 @@ Objective::prepare_independent(std::size_t i, const core::TrajectoryView &candid
     IndependentScore score;
     score.trajectory = i;
     score.candidate = candidate;
-    score.deviation = deviation(i, candidate);
-    score.terms = raw_separable(i, candidate, score.deviation);
+    const auto profile = deviation_profile(i, candidate);
+    score.deviation = profile.max_m;
+    score.terms = raw_separable(i, candidate, &profile);
     if (!range_weights.empty() && range_weights.size() != m_range[i].size())
         throw std::invalid_argument("objective: one range weight per membership needed");
     if (m_scale[Range] > 0 && !m_range[i].empty()) {
@@ -793,6 +850,12 @@ double Objective::knn_recall(const core::TrajectoryDb &compressed) const {
 
 double Objective::deviation(std::size_t i, const core::TrajectoryView &candidate) const {
     return simplification_bound(m_db.trajectory(i), candidate, m_segments[i]);
+}
+
+DeviationProfile Objective::deviation_profile(std::size_t i,
+                                              const core::TrajectoryView &candidate) const {
+    return simplification_profile(m_db.trajectory(i), candidate, m_segments[i],
+                                  m_config.min_shape_m, m_config.max_shape_m);
 }
 
 double Objective::total(const KeptSets &kept) const { return total(metrics(kept)); }

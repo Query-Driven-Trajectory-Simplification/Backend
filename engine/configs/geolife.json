@@ -47,7 +47,7 @@
     "teacher": {
         "enabled": false,
         "cache_dir": "cache",
-        "arms": ["BUDGET_CHOICE", "BUDGET_LOOP", "BUDGET_LOOP_TRADE"],
+        "arms": ["BUDGET_CHOICE", "BUDGET_LOOP", "BUDGET_LOOP_REFINE"],
         "range_query_count": 256000,
         "term_weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     }

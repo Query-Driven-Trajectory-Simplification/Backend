@@ -40,7 +40,7 @@ pipeline::run                                    (pipeline.cpp)
        │   ├─ BUDGET_RDP                          allocated budgets, RDP's points
        │   └─ BUDGET_CHOICE                       allocated budgets, best candidate each
        │       └─ BUDGET_LOOP                     best response on the tracked J_T
-       │           └─ BUDGET_LOOP_TRADE           points traded between trajectories: the teacher
+       │           └─ BUDGET_LOOP_REFINE          alternating free-knot refinement & 1-point trades: the teacher
       → each arm evaluated and exported like RDP and SED
 ```
 
@@ -49,9 +49,9 @@ Files:
 | File | Contents |
 |---|---|
 | `workloads.hpp/.cpp` | The teacher's training workloads, and the cache that saves the slow part |
-| `objective.hpp/.cpp` | J_T, the score the teacher maximises, and range, join and kNN state trackers |
+| `objective.hpp/.cpp` | J_T, the score the teacher maximises, `DeviationProfile`, and range, join and kNN trackers |
 | `curves.hpp/.cpp` | Value curves and the budget allocator |
-| `greedy.hpp/.cpp` | Query-aware point selection, with optional classic-method seeds |
+| `greedy.hpp/.cpp` | Query-aware greedy selectors (`GREEDY`, `GREEDY_JOINT`) and free-knot refine/trade proposals |
 | `teacher.hpp/.cpp` | The `Teacher` class and the selection steps |
 
 ## Words used throughout
@@ -102,18 +102,17 @@ Files:
 - **Join pairs:** the teacher uses every pair at each of its thresholds, because whoever
   compresses the database knows all of it. Whether the join gain generalises to thresholds the
   teacher never saw is tested in `teacher_eval` at 125, 175 and 250 m, between the trained ones.
-- **Arm:** one named output of the teacher, e.g. `BUDGET_LOOP_TRADE`.
+- **Arm:** one named output of the teacher, e.g. `BUDGET_LOOP_REFINE`.
 
 ---
 
 ## How selection works, in plain terms
 
 ### What is being chosen
-- At a given budget, the teacher chooses **one candidate per trajectory**. The six recipes are
-  RDP, SED, UNIFORM, unseeded greedy, and greedy seeded with half of the interior budget from
-  SED or from RDP. A variant seeded with a quarter from SED was removed: at small budgets it
-  kept the same points as unseeded greedy. Seeded candidates combine classic and greedy
-  point selection. Different recipes can produce identical kept sets.
+- At a given budget, the teacher chooses **one candidate per trajectory** from five recipes:
+  three query-free selectors (`RDP`, `SED`, `UNIFORM`) and two query-aware greedy selectors
+  (`GREEDY` maximising Range + Where-At, and `GREEDY_JOINT` maximising Range + Where-At + Shape +
+  Margin). Different recipes can produce identical kept sets.
 - Per-trajectory budgets come from value curves, with the total fixed.
 - For example, the three classic candidates for a trajectory with budget 4 might be:
 
@@ -142,14 +141,12 @@ on the current choices elsewhere in the database.
    allocated budget.
 4. **The loop** (`BUDGET_LOOP`, class `Search`): best response on the tracked J_T, against the
    others' current choices.
-5. **Trades** (`BUDGET_LOOP_TRADE`, `trade_budgets`): move 1, 2 or 4 points from one trajectory to
-   another while the exact J_T rises.
-
-On held-out runs most of the J4 gain comes from allocation, then recipe choice; the loop and
-trades add little J4 but win back kNN and join (research notes, 2026-11-22).
+5. **Free-knot refinement & point trading** (`BUDGET_LOOP_REFINE`, `refine_points`): alternate
+   intra-trajectory knot shifts/swaps at fixed per-trajectory budgets with inter-trajectory
+   1-point budget trades until round gain drops below `kMinRoundGain`.
 
 `Teacher::single_recipes` gives the matching baselines: each candidate recipe for every trajectory
-at equal budgets (`RECIPE_RDP`, …, `RECIPE_GREEDY_RDP2`). `teacher_eval` writes them with the
+at equal budgets (`RECIPE_RDP`, …, `RECIPE_GREEDY_JOINT`). `teacher_eval` writes them with the
 other baselines. `RECIPE_RDP`, `RECIPE_SED` and `RECIPE_UNIFORM` equal `RDP_a0`, `SED_a0` and
 `UNI_a0`; the greedy recipes are the query-aware single recipes that choosing per trajectory must
 beat.
@@ -530,7 +527,7 @@ simplified.
 
 | Name | Meaning |
 |---|---|
-| `CandidateIndex`, `kCandidates` | Named indices and labels for the six candidate recipes. The index is the "method". |
+| `CandidateIndex`, `kCandidates` | Named indices and labels for the five candidate recipes. The index is the "method". |
 | `kArms` | the four arm names, listed in `teacher.hpp` |
 | `TeacherConfig` | `enabled`, `cache_dir`, `arms`, `range_query_count` (default 128000), `extra_join_eps_m` (default: `join.score_eps_m`), `term_weights` (kNN, range, where-at, join, shape, margin; 4 to 6 values, missing ones 0; default 1, 1, 1, 1, 0, 0) |
 | `Arm` | one result: `name`, `simplification` (for the pipeline), `objective` (its J_T) |
@@ -538,7 +535,7 @@ simplified.
 | `Methods` | one method index per trajectory, i.e. a selection |
 | `kMaxResponsePasses` | at most 10 best-response passes |
 | `kKnnWatchFactor` | each kNN query watches its 3k nearest trajectories in the start state |
-| `kTradeSteps`, `kMaxTradeRounds` | trades move 1, 2 or 4 points; at most 3 rounds |
+| `kMaxRefineCycles`, `kMaxRefineRounds`, `kMinRoundGain` | up to 3 alternating refine/point-trade cycles (2 cycles + final refine), up to 8 rounds per phase, stopping below `1.5e-4` gain |
 | `kMinImprovement` | strict gain threshold, 1e-12 |
 
 ### `Teacher(db, workloads, config, seed)` — constructor
@@ -562,7 +559,7 @@ simplified.
   5. **`BUDGET_RDP`:** `allocate` on the RDP curves.
   6. **`BUDGET_CHOICE`:** `allocate` on the best curves; each trajectory takes its curve's method.
   7. **`BUDGET_LOOP`:** `Search(...).run(seed)` from `BUDGET_CHOICE`, then `checked_loop`.
-  8. **`BUDGET_LOOP_TRADE`:** `trade_budgets` from `BUDGET_LOOP`.
+  8. **`BUDGET_LOOP_REFINE`:** `refine_points` from `BUDGET_LOOP`.
   9. `keep` assembles each arm's kept sets, computes its exact J_T, and prints how many
      trajectories each method won. `timed` prints step durations.
 - **Output:** one `Arm` per requested name, in the requested order. Each keeps exactly
@@ -573,9 +570,9 @@ simplified.
 - **Why:** each candidate is simplified once, then reused by every step.
 - **Input:** objective, per-trajectory budgets and caps, the shared makers, and optionally
   selected method indices.
-- **Computation:** in parallel, each trajectory's `CandidateMaker` builds all six recipes, or only
-  the selected one. A maker is created on first use and kept for the whole `run`, so its RDP, SED
-  and greedy sequences are built once and serve the curves, the candidates and the trades.
+- **Computation:** in parallel, each trajectory's `CandidateMaker` builds all five recipes, or only
+  the selected one. A maker is created on first use and kept for the whole `run`, so its RDP, SED,
+  greedy, and joint-greedy sequences are built once and reused across curves, candidates, and refine.
 - **Output:** `Candidates`.
 
 ### `assemble(candidates, method)` — internal
@@ -610,15 +607,21 @@ simplified.
 The loop described above. The constructor prepares every distinct candidate and builds the
 trackers; `run` updates them in place, so it runs once.
 
-### `trade_budgets(db, objective, caps, kept, value)` — internal
+### `refine_points(db, objective, caps, makers, kept, value, reused)` — internal
 
-- **Why:** allocation scores trajectories against fixed partners; trades correct budgets against
-  the actual state.
-- **Computation:** each round, every trajectory's best recipe at `b ± 1, 2, 4` is scored against
-  the current state (kNN by `propose_bounded`, computing a distance only near a query's k-th
-  place). The kNN lists then watch every offered version. Buyers are paired with the cheapest
-  sellers; each pair is rescored exactly as applied and kept only if the sum gains.
-- **Output:** the traded kept sets and their exact J_T, or the input if the exact J_T fell.
+- **Why:** recipe selection fixes knots to one of five templates and budgets to the initial curve
+  allocation; `refine_points` frees individual knots and rebalances per-trajectory budgets directly
+  against exact coupled `J_T`.
+- **Computation:** alternates up to `kMaxRefineCycles` cycles of:
+  1. **Intra-trajectory knot refinement** (`Greedy::refine_candidates`): single-knot Range+WA
+     shifts, red-black simultaneous shifts (all and max+RMS-safe), Fréchet peak/midpoint shifts on
+     worst max/RMS segments, and 1-opt drop-and-add swaps at fixed budget `b_i`.
+  2. **Inter-trajectory 1-point trading** (`Greedy::point_trade_candidates`): pairs highest-gain
+     `b_i + 1` buyers with lowest-loss `b_i - 1` sellers and commits each pair only if exact
+     coupled `J_T` strictly rises.
+  Both steps extend `KnnState` watch lists for offered versions and stop a phase once round gain
+  falls below `kMinRoundGain`.
+- **Output:** the refined kept sets and their exact `J_T`, or the input if the exact `J_T` fell.
 
 ### `wins`, `is_arm` — helpers
 

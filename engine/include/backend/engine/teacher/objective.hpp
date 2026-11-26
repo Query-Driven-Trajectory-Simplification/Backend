@@ -50,6 +50,20 @@ class PreparedTrajectories {
 double simplification_bound(const core::TrajectoryView &original, const core::TrajectoryView &kept,
                             std::span<const double> segments = {});
 
+// Whole-trajectory deviation summary along the arc-length alignment: worst-case L_inf bound
+// (identical to simplification_bound), arc-length-weighted RMS deviation, and arc-length-weighted
+// mean of ramp(error, min_shape_m, max_shape_m)
+struct DeviationProfile {
+    double max_m = std::numeric_limits<double>::infinity();
+    double rms_m = std::numeric_limits<double>::infinity();
+    double arc_shape = 0.0;
+};
+
+DeviationProfile simplification_profile(const core::TrajectoryView &original,
+                                        const core::TrajectoryView &kept,
+                                        std::span<const double> segments, double min_shape_m,
+                                        double max_shape_m);
+
 inline constexpr std::size_t kTermCount = 6; // kNN, range, where-at, join, shape, margin
 using TermWeights = std::array<double, kTermCount>;
 
@@ -85,13 +99,13 @@ struct JoinLink {
 //   join      held-out macro F1 per threshold: each trajectory queries its partners as original
 //             against their compressed versions; each threshold normalised by its own floor, then
 //             averaged: J4's join grid mean
-//   shape     query-free: mean over trajectories of a ramp on simplification_bound, a prior
-//             for queries the workloads do not contain. Off unless weighted
-//   margin    query-free per hit: for each true neighbour of a database kNN query, the chance it
-//             stays inside the top k if its distance moves anywhere within its deviation bound,
-//             against its gap to the (k + 1)th neighbour, and for each outsider ranked past k
-//             the chance it stays out, against its gap to the k-th. Needs workloads.ranked
-//             (add_ranked_neighbours). Off unless weighted
+//   shape     query-free: mean over trajectories of 0.5 * (max_m ramp + arc-length mean ramp) on
+//             DeviationProfile, a prior for queries the workloads do not contain. Off unless
+//             weighted
+//   margin    query-free per hit: for each ranked kNN neighbour / outsider, 0.5 * (survive(max_m) +
+//             survive(rms_m)) against its boundary gap; for each join threshold boundary, pure
+//             L_inf survive(max_m). Needs workloads.ranked (add_ranked_neighbours). Off unless
+//             weighted
 // Where-at, shape, margin and the per-trajectory kNN add up over trajectories. Range, join and kNN
 // are tracked under one-at-a-time changes by RangeState, JoinState and KnnState
 class JoinState;
@@ -107,8 +121,11 @@ class Objective {
 
     // i's scaled where-at, shape and margin, 0 with endpoints only
     double separable(std::size_t i, std::span<const std::size_t> kept) const;
+    double separable(std::size_t i, const core::TrajectoryView &candidate) const;
     double separable(std::size_t i, const core::TrajectoryView &candidate,
-                     double deviation = -1.0) const;
+                     const DeviationProfile &profile) const;
+    // Scaled shape + margin contribution of a trajectory profile (unshifted by endpoints)
+    double shape_margin(std::size_t i, const DeviationProfile &profile) const;
 
     // Approximate score of i alone: separable, per-trajectory kNN, marginal range F1 against fixed
     // partners (empty = original), and partner-slot join marginal when join_state is given.
@@ -143,6 +160,7 @@ class Objective {
     double total(const Terms &metrics) const;
     // simplification_bound of candidate against original i, with i's edge lengths cached
     double deviation(std::size_t i, const core::TrajectoryView &candidate) const;
+    DeviationProfile deviation_profile(std::size_t i, const core::TrajectoryView &candidate) const;
 
     // Unscaled metrics
     Terms metrics(const KeptSets &kept) const;
@@ -201,9 +219,10 @@ class Objective {
     // m_pair_lower and m_pair_upper, once per pair across terms
     void bracket_pairs();
 
-    // Knn slot left 0. deviation < 0: computed here if needed
+    // Knn slot left 0. profile == nullptr: computed here if needed
     Terms raw_separable(std::size_t i, const core::TrajectoryView &candidate,
-                        double deviation = -1.0) const;
+                        const DeviationProfile *profile = nullptr) const;
+    void fill_shape_margin(std::size_t i, const DeviationProfile &profile, Terms &terms) const;
     double independent_sum(const IndependentScore &score, double knn) const;
     double join_metric(std::span<const core::TrajectoryView> state) const;
     std::vector<double> join_f1s(std::span<const core::TrajectoryView> state) const;
