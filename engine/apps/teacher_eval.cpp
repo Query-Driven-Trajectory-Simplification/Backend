@@ -695,8 +695,9 @@ int main(int argc, char **argv) try {
         const auto &source = inner ? *inner : all;
         const auto parts =
             args.pseudo_split ? split::split(source, config.split, *args.pseudo_split) : outer;
-        if (args.pseudo_split)
-            config.teacher.cache_dir /= std::format("pseudo_{}", *args.pseudo_split);
+        const auto cache_dir = args.pseudo_split ? config.teacher.cache_dir /
+                                                       std::format("pseudo_{}", *args.pseudo_split)
+                                                 : config.teacher.cache_dir;
         const auto db = core::subset(source, parts.database);
         std::cerr << std::format(
             "seed {}: database {} trajectories, {} points{}\n", seed, db.size(), db.num_points(),
@@ -705,13 +706,13 @@ int main(int argc, char **argv) try {
         // Database only
         auto start = std::chrono::steady_clock::now();
         auto workloads = teacher::load_or_build_workloads(
-            db, pipeline::teacher_workload_config(config), seed, config.teacher.cache_dir);
+            db, pipeline::teacher_workload_config(config), seed, cache_dir);
         const std::size_t outside = args.knn_outside > 0 ? args.knn_outside
                                     : config.teacher.term_weights[teacher::Objective::Margin] > 0
                                         ? teacher::kMarginOutside
                                         : 0;
         if (outside > 0)
-            teacher::add_ranked_neighbours(db, workloads, outside, seed, config.teacher.cache_dir);
+            teacher::add_ranked_neighbours(db, workloads, outside, seed, cache_dir);
         const auto pairs = workloads.positives;
         const teacher::Teacher model(db, std::move(workloads),
                                      pipeline::teacher_objective_config(config), seed);
