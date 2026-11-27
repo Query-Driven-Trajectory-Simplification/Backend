@@ -6,6 +6,7 @@
 #include "backend/engine/student/candidate_pool.hpp"
 #include "backend/engine/student/density_index.hpp"
 #include "backend/engine/student/features.hpp"
+#include "backend/engine/student/range_sampler.hpp"
 #include "backend/engine/student/submodular_solver.hpp"
 
 #include <chrono>
@@ -24,14 +25,15 @@ SimplifyResult simplify_database_oof(const core::TrajectoryDb &db, std::size_t t
 
     SimplifyResult res;
 
-    // 1. 3D spatiotemporal density index (zero Frechet)
+    // 1. 3D spatiotemporal density index + fast 128k sampled Range boxes (zero Frechet, zero Q leakage)
     auto t0 = std::chrono::steady_clock::now();
     const DbDensityIndex density_idx(db);
+    const auto range_idx = build_sampled_range_index(db, 128000);
     res.density_ms = core::seconds_since(t0) * 1000.0;
 
-    // 2. 10-feature extraction (tiny10)
+    // 2. 13-feature extraction (tiny10 + 3 exact sampled Range features)
     auto t1 = std::chrono::steady_clock::now();
-    const auto feats = extract_trajectory_features(db, density_idx);
+    const auto feats = extract_trajectory_features(db, density_idx, &range_idx);
     res.feature_ms = core::seconds_since(t1) * 1000.0;
 
     // 3. Stage 1 MLP -> exact discrete water-filling -> Stage 2 MLP
@@ -68,9 +70,13 @@ SimplifyResult simplify_database_oof(const core::TrajectoryDb &db, std::size_t t
 
     // 5. C++ Submodular Greedy + Red-Black Free-Knot Polish
     auto t4 = std::chrono::steady_clock::now();
+    const bool use_boxes = range_idx.valid_boxes > 0;
     core::parallel_for(N, [&](std::size_t i) {
-        res.kept[i] = submodular_simplify_on_pool(db.trajectory(i), pools[i], budgets[i],
-                                                  weights[i], density_idx);
+        const double tot_w = range_idx.uncov_weight[i] + range_idx.ep_weight[i];
+        const double ufrac = (tot_w > 1e-12) ? (range_idx.uncov_weight[i] / tot_w) : 0.0;
+        res.kept[i] = submodular_simplify_on_pool(
+            db.trajectory(i), pools[i], budgets[i], weights[i], density_idx,
+            use_boxes ? &range_idx.uncov_boxes[i] : nullptr, ufrac);
     });
     res.decode_ms = core::seconds_since(t4) * 1000.0;
     return res;

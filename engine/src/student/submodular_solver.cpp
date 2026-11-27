@@ -171,6 +171,58 @@ CellModel build_cell_model(const core::TrajectoryView &tr, std::span<const std::
     return cm;
 }
 
+CellModel build_blended_range_model(const core::TrajectoryView &tr, std::span<const std::size_t> pool,
+                                    const DbDensityIndex &density_idx,
+                                    std::span<const SampledRangeBox> boxes, double uncov_frac) {
+    CellModel cm;
+    const std::size_t m = pool.size();
+    cm.cand_covers.resize(m);
+    if (m == 0 || boxes.empty())
+        return cm; // Zero uncovered valid [5, 20] Range boxes -> spend budget on Geo & Where-At!
+
+    // 1. 20% continuous 333m x 3.5d cell grid floor (never runs dry at 2% budget)
+    cm = build_cell_model(tr, pool, density_idx);
+    const double cell_scale = 0.20 / cm.total_weight;
+    for (double &w : cm.cell_weight)
+        w *= cell_scale;
+
+    // 2. 80% exact sampled 1km x 7d uncovered Range boxes scaled by true uncovered fraction
+    //    (so a trip already 90% covered by endpoints doesn't steal points from Where-At / Join!)
+    const std::size_t base_id = cm.cell_weight.size();
+    const std::size_t B = std::min<std::size_t>(boxes.size(), 65000 - base_id);
+    double box_wsum = 0.0;
+    for (std::size_t b = 0; b < B; ++b) {
+        const auto &sb = boxes[b];
+        const auto &bx = sb.box;
+        bool any = false;
+        const auto id = static_cast<std::uint16_t>(cm.cell_weight.size());
+        for (std::size_t j = 0; j < m; ++j) {
+            const std::size_t k = pool[j];
+            const std::int64_t tk = tr.t[k];
+            if (tk < bx.t_min)
+                continue;
+            if (tk > bx.t_max)
+                break;
+            const double xk = tr.x[k], yk = tr.y[k];
+            if (xk >= bx.x_min && xk <= bx.x_max && yk >= bx.y_min && yk <= bx.y_max) {
+                cm.cand_covers[j].push_back(id);
+                any = true;
+            }
+        }
+        if (any) {
+            cm.cell_weight.push_back(sb.weight);
+            box_wsum += sb.weight;
+        }
+    }
+    if (box_wsum > 1e-9) {
+        const double box_scale = (0.80 * std::clamp(uncov_frac, 0.0, 1.0)) / box_wsum;
+        for (std::size_t idx = base_id; idx < cm.cell_weight.size(); ++idx)
+            cm.cell_weight[idx] *= box_scale;
+    }
+    cm.total_weight = 1.0;
+    return cm;
+}
+
 struct SegScores {
     double shape_arc_sum = 0.0; // exact trapezoidal arc-weighted shape in [0, seg_arc]
     double ped_l1_sum = 0.0;    // exact trapezoidal arc-weighted L1 perpendicular error (m * m)
@@ -235,11 +287,11 @@ SegScores eval_seg_scores(const core::TrajectoryView &tr, std::span<const std::s
 
 } // namespace
 
-std::vector<std::size_t> submodular_simplify_on_pool(const core::TrajectoryView &traj,
-                                                     std::span<const std::size_t> pool,
-                                                     std::size_t budget,
-                                                     const SubmodularWeights &w,
-                                                     const DbDensityIndex &density_idx) {
+std::vector<std::size_t>
+submodular_simplify_on_pool(const core::TrajectoryView &traj, std::span<const std::size_t> pool,
+                            std::size_t budget, const SubmodularWeights &w,
+                            const DbDensityIndex &density_idx,
+                            const std::vector<SampledRangeBox> *uncov_boxes, double uncov_frac) {
     const std::size_t n = traj.size();
     const std::size_t m = pool.size();
     if (budget >= n) {
@@ -288,7 +340,9 @@ std::vector<std::size_t> submodular_simplify_on_pool(const core::TrajectoryView 
         probe_start[m - 1] = probes.size();
     }
 
-    const auto cm = build_cell_model(traj, pool, density_idx);
+    const auto cm = (uncov_boxes != nullptr)
+                        ? build_blended_range_model(traj, pool, density_idx, *uncov_boxes, uncov_frac)
+                        : build_cell_model(traj, pool, density_idx);
     const std::size_t C = cm.cell_weight.size();
     std::vector<std::uint16_t> cov_count(C, 0);
 

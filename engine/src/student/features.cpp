@@ -121,11 +121,12 @@ inline std::uint64_t pack_grid2d(std::int32_t gx, std::int32_t gy) {
 } // namespace
 
 TrajectoryFeatureTable extract_trajectory_features(const core::TrajectoryDb &db,
-                                                   const DbDensityIndex &density_idx) {
+                                                   const DbDensityIndex &density_idx,
+                                                   const SampledRangeIndex *range_idx) {
     TrajectoryFeatureTable table;
     table.num_trajs = db.size();
 
-    // Compact 10-feature zero-Frechet set (6 single-trip + 4 database context)
+    // Compact 13-feature zero-Frechet set (6 single-trip + 7 database context)
     table.feature_names = {
         "log_n",
         "log_arc",
@@ -137,6 +138,9 @@ TrajectoryFeatureTable extract_trajectory_features(const core::TrajectoryDb &db,
         "log_rho_sum",
         "sig5_cnt_200",
         "log_sig5_d1",
+        "log_rng_uncov",
+        "log_rng_boxes",
+        "rng_ep_frac",
     };
 
     const std::size_t F = table.feature_names.size();
@@ -245,6 +249,19 @@ TrajectoryFeatureTable extract_trajectory_features(const core::TrajectoryDb &db,
 
         put(std::log1p(static_cast<double>(cnt200)) / log_db);
         put(std::log1p(d1));
+
+        // Exact sampled Range features (scale-invariant across DB size and box count)
+        if (range_idx != nullptr && range_idx->valid_boxes > 0) {
+            const double uw = range_idx->uncov_weight[i];
+            const double ew = range_idx->ep_weight[i];
+            put(std::log1p(uw));
+            put(std::log1p(range_idx->uncov_count_norm[i]));
+            put((uw + ew > 1e-12) ? (ew / (uw + ew)) : 1.0);
+        } else {
+            put(0.0);
+            put(0.0);
+            put(0.0);
+        }
     });
 
     return table;

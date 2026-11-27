@@ -67,8 +67,8 @@ TEST(StudentTest, Tiny10FeaturesAreExactAndFinite) {
     const auto feats = student::extract_trajectory_features(db, dens);
 
     EXPECT_EQ(feats.num_trajs, db.size());
-    EXPECT_EQ(feats.feature_names.size(), 10U);
-    EXPECT_EQ(feats.values.size(), db.size() * 10U);
+    EXPECT_EQ(feats.feature_names.size(), 13U);
+    EXPECT_EQ(feats.values.size(), db.size() * 13U);
     for (float v : feats.values)
         EXPECT_TRUE(std::isfinite(v));
 }
@@ -93,20 +93,20 @@ TEST(StudentTest, SubmodularSolverPreservesExactBudget) {
 TEST(StudentTest, PureCppModelSimplifiesExactBudget) {
     const auto db = make_synthetic_db();
     student::StudentModel m;
-    m.s1_in_dim = 10;
+    m.s1_in_dim = 13;
     m.num_anchors = 4;
-    m.s1_mean.assign(10, 0.0f);
-    m.s1_std.assign(10, 1.0f);
+    m.s1_mean.assign(13, 0.0f);
+    m.s1_std.assign(13, 1.0f);
     m.log_anchors = {std::log(2.0f), std::log(4.0f), std::log(8.0f), std::log(16.0f)};
-    m.s1_layers.push_back({10, 4, false, std::vector<float>(40, 0.05f), {1.0f, 0.2f, 0.2f, 0.2f}, {}, {}});
+    m.s1_layers.push_back({13, 4, false, std::vector<float>(52, 0.05f), {1.0f, 0.2f, 0.2f, 0.2f}, {}, {}});
 
-    m.s2_in_dim = 13;
+    m.s2_in_dim = 16;
     m.num_presets = 2;
-    m.s2_mean.assign(13, 0.0f);
-    m.s2_std.assign(13, 1.0f);
+    m.s2_mean.assign(16, 0.0f);
+    m.s2_std.assign(16, 1.0f);
     m.log_simplex = {std::log(0.4f), std::log(1.3f), std::log(2.2f),
                      std::log(1.0f), std::log(1.0f), std::log(1.0f)};
-    m.s2_layers.push_back({13, 2, false, std::vector<float>(26, 0.01f), {0.0f, 0.0f}, {}, {}});
+    m.s2_layers.push_back({16, 2, false, std::vector<float>(32, 0.01f), {0.0f, 0.0f}, {}, {}});
 
     const std::size_t total_budget = db.size() * 2 + 60;
     const auto res = student::simplify_database(db, total_budget, m, 2);

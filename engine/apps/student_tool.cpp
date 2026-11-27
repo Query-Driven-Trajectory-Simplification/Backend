@@ -16,6 +16,7 @@
 #include "backend/engine/student/candidate_pool.hpp"
 #include "backend/engine/student/density_index.hpp"
 #include "backend/engine/student/features.hpp"
+#include "backend/engine/student/range_sampler.hpp"
 #include "backend/engine/student/student.hpp"
 #include "backend/engine/student/submodular_solver.hpp"
 #include "backend/engine/teacher/teacher.hpp"
@@ -225,10 +226,11 @@ void run_export(const core::TrajectoryDb &db, const pipeline::Config &config,
 
     auto t0 = std::chrono::steady_clock::now();
     const student::DbDensityIndex density_idx(db);
+    const auto range_idx = student::build_sampled_range_index(db, 128000);
     const double dens_ms = core::seconds_since(t0) * 1000.0;
 
     auto t1 = std::chrono::steady_clock::now();
-    const auto feats = student::extract_trajectory_features(db, density_idx);
+    const auto feats = student::extract_trajectory_features(db, density_idx, &range_idx);
     const double feat_ms = core::seconds_since(t1) * 1000.0;
 
     std::vector<std::uint32_t> lengths(db.size());
@@ -306,15 +308,14 @@ void run_fit_simplex(const core::TrajectoryDb &db, const CliArgs &args,
     std::ofstream(args.out_dir / "presets.json") << nlohmann::json(kSimplex).dump(2) << '\n';
 
     const student::DbDensityIndex density_idx(db);
-    std::vector<std::vector<float>> all_rho(db.size());
+    const auto range_idx = student::build_sampled_range_index(db, 128000);
     std::vector<std::vector<std::size_t>> pools(db.size());
     core::parallel_for(db.size(), [&](std::size_t i) {
-        all_rho[i] = density_idx.trajectory_range_rho(db.trajectory(i));
         pools[i] = student::build_candidate_pool(db.trajectory(i));
     });
 
     auto eval_profile = [](const core::TrajectoryView &tr, std::span<const std::size_t> kept,
-                           std::span<const float> rho) {
+                           std::span<const student::SampledRangeBox> uncov_boxes) {
         double max_ped = 0.0;
         for (std::size_t s = 0; s + 1 < kept.size(); ++s) {
             const std::size_t a = kept[s], b = kept[s + 1];
@@ -345,21 +346,22 @@ void run_fit_simplex(const core::TrajectoryDb &db, const CliArgs &args,
             }
             wa /= 32.0;
         }
-        std::vector<std::pair<std::int64_t, float>> cells;
-        cells.reserve(kept.size());
-        for (std::size_t idx : kept) {
-            const auto gx = static_cast<std::int64_t>(std::floor(tr.x[idx] / 500.0));
-            const auto gy = static_cast<std::int64_t>(std::floor(tr.y[idx] / 500.0));
-            cells.emplace_back((gx << 32) ^ (gy & 0xffffffffLL), rho[idx]);
+        double cov = 0.0, tot = 0.0;
+        for (const auto &sb : uncov_boxes) {
+            tot += sb.weight;
+            const auto &bx = sb.box;
+            for (std::size_t idx : kept) {
+                const std::int64_t tk = tr.t[idx];
+                if (tk < bx.t_min) continue;
+                if (tk > bx.t_max) break;
+                if (tr.x[idx] >= bx.x_min && tr.x[idx] <= bx.x_max &&
+                    tr.y[idx] >= bx.y_min && tr.y[idx] <= bx.y_max) {
+                    cov += sb.weight;
+                    break;
+                }
+            }
         }
-        std::ranges::sort(cells, [](auto a, auto b) {
-            return a.first < b.first || (a.first == b.first && a.second > b.second);
-        });
-        double cov = 0.0;
-        for (std::size_t j = 0; j < cells.size(); ++j)
-            if (j == 0 || cells[j].first != cells[j - 1].first)
-                cov += cells[j].second;
-        return std::array<double, 3>{max_ped, wa, cov};
+        return std::array<double, 3>{max_ped, wa, tot > 1e-12 ? (cov / tot) : 1.0};
     };
 
     auto chamfer = [](const core::TrajectoryView &tr, std::span<const std::size_t> a,
@@ -392,16 +394,19 @@ void run_fit_simplex(const core::TrajectoryDb &db, const CliArgs &args,
             const auto &tk = t_kept[i];
             if (tk.size() <= 2)
                 return;
-            const auto tgt = eval_profile(tr, tk, all_rho[i]);
+            const auto tgt = eval_profile(tr, tk, range_idx.uncov_boxes[i]);
             for (std::size_t g = 0; g < G; ++g) {
                 const student::SubmodularWeights sw{kSimplex[g][0], kSimplex[g][1], kSimplex[g][2], 1};
-                const auto ck = student::submodular_simplify_on_pool(tr, pools[i], tk.size(),
-                                                                     sw, density_idx);
-                const auto prof = eval_profile(tr, ck, all_rho[i]);
+                const double tot_w = range_idx.uncov_weight[i] + range_idx.ep_weight[i];
+                const double ufrac = (tot_w > 1e-12) ? (range_idx.uncov_weight[i] / tot_w) : 0.0;
+                const auto ck = student::submodular_simplify_on_pool(
+                    tr, pools[i], tk.size(), sw, density_idx,
+                    range_idx.valid_boxes > 0 ? &range_idx.uncov_boxes[i] : nullptr, ufrac);
+                const auto prof = eval_profile(tr, ck, range_idx.uncov_boxes[i]);
                 const double loss = chamfer(tr, ck, tk) / 150.0 +
                                     std::abs(prof[0] - tgt[0]) / 100.0 +
                                     std::abs(prof[1] - tgt[1]) * 3.0 +
-                                    std::abs(prof[2] - tgt[2]) / std::max(1.0, tgt[2]) * 2.0;
+                                    std::abs(prof[2] - tgt[2]) * 3.0;
                 losses[i * G + g] = static_cast<float>(loss);
             }
         });
