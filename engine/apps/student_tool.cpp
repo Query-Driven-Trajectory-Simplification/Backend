@@ -170,7 +170,9 @@ SplitData load_split(const pipeline::Config &config, const CliArgs &args, std::u
     std::vector<std::size_t> perm(base_db.size());
     std::iota(perm.begin(), perm.end(), 0);
     std::mt19937_64 rng(seed * 1315423911ULL + (args.pseudo_split.value_or(0) * 2654435761ULL) + 17);
-    std::shuffle(perm.begin(), perm.end(), rng);
+    // Portable Fisher-Yates shuffle (identical across libstdc++, libc++, and MSVC)
+    for (std::size_t i = perm.size(); i > 1; --i)
+        std::swap(perm[i - 1], perm[static_cast<std::size_t>(rng() % i)]);
 
     const std::size_t mid = perm.size() / 2;
     std::vector<std::uint32_t> fold_of(base_db.size(), 0);

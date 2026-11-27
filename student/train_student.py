@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+Offline Student Trainer (Stage 1 DWF-Alloc + Stage 2 Param-Submod).
+Reads a C++ `student_tool export` + `fit-simplex` directory, trains both tiny MLPs,
+and exports a single self-contained ~48 KB binary (`student_model.bin`) for pure-C++ inference.
+"""
+
 from __future__ import annotations
 
 import argparse
