@@ -313,3 +313,28 @@ TEST(Config, ReadsTheJoinScoreThresholds) {
                      std::invalid_argument);
     }
 }
+
+TEST(Config, ReadsAndValidatesStudentSection) {
+    const auto def = pipeline::load_config(write_config("student_def.json", R"({"data_path": "d"})"));
+    EXPECT_FALSE(def.student.enabled);
+    EXPECT_TRUE(def.student.model_path.empty());
+    EXPECT_EQ(def.student.rb_passes, 2);
+    EXPECT_EQ(def.student.train_shares, (std::vector<double>{0.0025, 0.01, 0.02}));
+
+    const auto ok = pipeline::load_config(write_config(
+        "student_ok.json",
+        R"({"data_path": "d", "student": {"enabled": true, "model_path": "m.bin", "rb_passes": 1, "train_shares": [0.01, 0.02]}})"));
+    EXPECT_TRUE(ok.student.enabled);
+    EXPECT_EQ(ok.student.model_path, "m.bin");
+    EXPECT_EQ(ok.student.rb_passes, 1);
+    EXPECT_EQ(ok.student.train_shares, (std::vector<double>{0.01, 0.02}));
+
+    for (const char *bad : {R"({"enabled": true})", R"({"enabled": true, "model_path": ""})",
+                            R"({"rb_passes": -1})", R"({"train_shares": []})",
+                            R"({"train_shares": [0.0]})", R"({"mode": "A"})"}) {
+        SCOPED_TRACE(bad);
+        const auto contents = std::string(R"({"data_path": "d", "student": )") + bad + "}";
+        EXPECT_THROW(pipeline::load_config(write_config("student_bad.json", contents)),
+                     std::invalid_argument);
+    }
+}

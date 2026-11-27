@@ -9,6 +9,7 @@
 #include "backend/engine/selection/rdp.hpp"
 #include "backend/engine/selection/selector.hpp"
 #include "backend/engine/split/split.hpp"
+#include "backend/engine/student/student.hpp"
 #include "backend/engine/teacher/teacher.hpp"
 #include "backend/engine/teacher/workloads.hpp"
 
@@ -69,6 +70,10 @@ void run(const Config &config) {
     print_size("query pool", queries);
 
     const auto teacher = make_teacher(database, config);
+    const std::optional<student::StudentModel> student_model =
+        config.student.enabled
+            ? std::optional<student::StudentModel>(student::load_model(config.student.model_path))
+            : std::nullopt;
     // The self-kNN reference comes from the teacher's cache; without the teacher J4-self is NaN
     std::optional<query::KnnWorkload> self_knn;
     if (teacher && config.self_join)
@@ -119,6 +124,16 @@ void run(const Config &config) {
                 scorer.score(
                     std::format("{}% {} (J_T {:.4f})", share * 100, arm.name, arm.objective),
                     std::format("{}_{:g}pct", arm.name, share * 100), arm.simplification);
+        }
+
+        if (student_model) {
+            const auto res = student::simplify_database(database, budget, *student_model,
+                                                        config.student.rb_passes);
+            const double ms =
+                res.density_ms + res.feature_ms + res.ml_ms + res.pool_ms + res.decode_ms;
+            scorer.score(std::format("{}% STUDENT ({:.0f}ms)", share * 100, ms),
+                         std::format("STUDENT_{:g}pct", share * 100),
+                         core::to_simplification(res.kept));
         }
     }
 }

@@ -38,6 +38,12 @@ struct Config {
     std::vector<double> join_score_eps_m;
     query::RouteClusteringConfig clustering;
     teacher::TeacherConfig teacher;
+    struct StudentConfig {
+        bool enabled = false;
+        std::filesystem::path model_path;
+        int rb_passes = 2;
+        std::vector<double> train_shares{0.0025, 0.01, 0.02};
+    } student;
 };
 
 // Reads a JSON config. Only data_path is required, a missing key keeps its default.
