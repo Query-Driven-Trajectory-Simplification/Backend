@@ -148,11 +148,30 @@ void parse_teacher_config(Config &config, const json &section) {
         throw std::invalid_argument("config: teacher.range_query_count must be positive");
 }
 
+void parse_student_config(Config &config, const json &section) {
+    validate_keys(section, {"enabled", "model_path", "rb_passes", "train_shares"}, "student");
+    auto &s = config.student;
+    s.enabled = section.value("enabled", s.enabled);
+    s.model_path = section.value("model_path", s.model_path.string());
+    s.rb_passes = section.value("rb_passes", s.rb_passes);
+    s.train_shares = section.value("train_shares", s.train_shares);
+    if (s.enabled && s.model_path.empty())
+        throw std::invalid_argument("config: student.model_path must not be empty when enabled");
+    if (s.rb_passes < 0)
+        throw std::invalid_argument("config: student.rb_passes must be non-negative");
+    if (s.train_shares.empty())
+        throw std::invalid_argument("config: student.train_shares must not be empty");
+    for (const double share : s.train_shares) {
+        if (!std::isfinite(share) || share <= 0.0 || share > 1.0)
+            throw std::invalid_argument("config: student.train_shares must be finite and in (0, 1]");
+    }
+}
+
 Config parse_config(const json &data) {
     validate_keys(data,
                   {"data_path", "export_results", "export_dir", "seed", "budget_shares",
                    "allocation_alphas", "algorithms", "split", "knn", "range", "where_at",
-                   "where_at_scoring", "join", "clustering", "frechet", "teacher"},
+                   "where_at_scoring", "join", "clustering", "frechet", "teacher", "student"},
                   "root");
     Config config;
 
@@ -188,6 +207,7 @@ Config parse_config(const json &data) {
     parse_join_config(config, data.value("join", json::object()));
     parse_clustering_config(config, data.value("clustering", json::object()));
     parse_teacher_config(config, data.value("teacher", json::object()));
+    parse_student_config(config, data.value("student", json::object()));
     // One distance for every Fréchet-based query, so both sides of each comparison agree
     if (data.contains("frechet")) {
         const auto variant = parse_enum<query::FrechetVariant>(data["frechet"]);

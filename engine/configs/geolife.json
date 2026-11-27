@@ -50,5 +50,10 @@
         "arms": ["BUDGET_CHOICE", "BUDGET_LOOP", "BUDGET_LOOP_REFINE"],
         "range_query_count": 256000,
         "term_weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    },
+    "student": {
+        "enabled": false,
+        "model_path": "",
+        "train_shares": [0.0025, 0.01, 0.02]
     }
 }

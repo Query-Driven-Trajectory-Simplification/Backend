@@ -49,6 +49,12 @@ add_library(engine
     src/teacher/curves.cpp
     src/teacher/greedy.cpp
     src/teacher/teacher.cpp
+    src/student/candidate_pool.cpp
+    src/student/range_sampler.cpp
+    src/student/features.cpp
+    src/student/submodular_solver.cpp
+    src/student/student_model.cpp
+    src/student/student.cpp
 )
 
 target_include_directories(engine PUBLIC include)
@@ -66,6 +72,12 @@ add_executable(teacher_eval
 )
 
 target_link_libraries(teacher_eval PRIVATE engine)
+
+add_executable(student_tool
+    apps/student_tool.cpp
+)
+
+target_link_libraries(student_tool PRIVATE engine nlohmann_json::nlohmann_json)
 
 add_executable(engine_tests
     tests/allocation/size_proportional_test.cpp
@@ -93,6 +105,7 @@ add_executable(engine_tests
     tests/teacher/certificate_test.cpp
     tests/teacher/curves_test.cpp
     tests/teacher/teacher_test.cpp
+    tests/student/student_test.cpp
 )
 target_link_libraries(engine_tests PRIVATE engine GTest::gtest_main Arrow::arrow_shared Parquet::parquet_shared)
 gtest_discover_tests(engine_tests)
