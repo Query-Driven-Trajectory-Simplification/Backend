@@ -1,7 +1,10 @@
 #include "backend/engine/student/density_index.hpp"
 
+#include "backend/engine/core/parallel.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace student {
 
@@ -18,43 +21,62 @@ std::uint64_t DbDensityIndex::pack_3d(std::int32_t gx, std::int32_t gy, std::int
 DbDensityIndex::DbDensityIndex(const core::TrajectoryDb &db, double cell_m,
                                std::int64_t time_bin_s)
     : m_cell_m(cell_m), m_time_bin_s(time_bin_s) {
-    m_st_cells.reserve(db.size() * 12);
-
+    const std::size_t N = db.size();
     const double inv_cell = 1.0 / m_cell_m;
     const double inv_time = 1.0 / static_cast<double>(m_time_bin_s);
-    std::vector<std::uint64_t> seen;
-    seen.reserve(256);
 
-    for (std::size_t i = 0; i < db.size(); ++i) {
-        const auto traj = db.trajectory(i);
-        seen.clear();
-        std::uint64_t prev_key = 0;
-        std::uint32_t run = 0;
-        for (std::size_t k = 0; k < traj.size(); ++k) {
-            const auto gx = static_cast<std::int32_t>(std::floor(traj.x[k] * inv_cell));
-            const auto gy = static_cast<std::int32_t>(std::floor(traj.y[k] * inv_cell));
-            const auto gt =
-                static_cast<std::int32_t>(std::floor(static_cast<double>(traj.t[k]) * inv_time));
-            const std::uint64_t key = pack_3d(gx, gy, gt);
-            if (run > 0 && key == prev_key) {
-                ++run;
-            } else {
-                if (run > 0) {
-                    m_st_cells[prev_key].point_count += run;
-                    seen.push_back(prev_key);
+    const std::size_t num_chunks = std::min<std::size_t>(16, std::max<std::size_t>(1, (N + 255) / 256));
+    std::vector<std::unordered_map<std::uint64_t, CellStats>> locals(num_chunks);
+
+    core::parallel_for(num_chunks, [&](std::size_t c) {
+        const std::size_t i0 = (c * N) / num_chunks;
+        const std::size_t i1 = ((c + 1) * N) / num_chunks;
+        auto &cells = locals[c];
+        cells.reserve((i1 - i0) * 12);
+        std::vector<std::uint64_t> seen;
+        seen.reserve(256);
+
+        for (std::size_t i = i0; i < i1; ++i) {
+            const auto traj = db.trajectory(i);
+            seen.clear();
+            std::uint64_t prev_key = 0;
+            std::uint32_t run = 0;
+            for (std::size_t k = 0; k < traj.size(); ++k) {
+                const auto gx = static_cast<std::int32_t>(std::floor(traj.x[k] * inv_cell));
+                const auto gy = static_cast<std::int32_t>(std::floor(traj.y[k] * inv_cell));
+                const auto gt = static_cast<std::int32_t>(
+                    std::floor(static_cast<double>(traj.t[k]) * inv_time));
+                const std::uint64_t key = pack_3d(gx, gy, gt);
+                if (run > 0 && key == prev_key) {
+                    ++run;
+                } else {
+                    if (run > 0) {
+                        cells[prev_key].point_count += run;
+                        seen.push_back(prev_key);
+                    }
+                    prev_key = key;
+                    run = 1;
                 }
-                prev_key = key;
-                run = 1;
             }
+            if (run > 0) {
+                cells[prev_key].point_count += run;
+                seen.push_back(prev_key);
+            }
+            std::ranges::sort(seen);
+            seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+            for (std::uint64_t key : seen)
+                cells[key].traj_count += 1;
         }
-        if (run > 0) {
-            m_st_cells[prev_key].point_count += run;
-            seen.push_back(prev_key);
+    });
+
+    m_st_cells = std::move(locals[0]);
+    m_st_cells.reserve(N * 12);
+    for (std::size_t c = 1; c < num_chunks; ++c) {
+        for (const auto &[key, st] : locals[c]) {
+            auto &dst = m_st_cells[key];
+            dst.point_count += st.point_count;
+            dst.traj_count += st.traj_count;
         }
-        std::ranges::sort(seen);
-        seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
-        for (std::uint64_t key : seen)
-            m_st_cells[key].traj_count += 1;
     }
 
     double sum_imp = 0.0;

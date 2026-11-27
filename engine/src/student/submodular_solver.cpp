@@ -4,6 +4,7 @@
 #include "backend/engine/student/candidate_pool.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
@@ -119,15 +120,18 @@ CellModel build_cell_model(const core::TrajectoryView &tr, std::span<const std::
     for (std::size_t j = 0; j < m; ++j) {
         const std::size_t k = pool[j];
         const double px = tr.x[k], py = tr.y[k], pt = static_cast<double>(tr.t[k]);
-        const auto gx = static_cast<std::int32_t>(std::floor(px * inv_cell));
-        const auto gy = static_cast<std::int32_t>(std::floor(py * inv_cell));
-        const auto gt = static_cast<std::int32_t>(std::floor(pt * inv_time));
+        // Exact integer cell bounds satisfying |p - (c + 0.5) * step| <= kHalf
+        const auto cx_lo = static_cast<std::int32_t>(std::ceil((px - kHalfBox) * inv_cell - 0.5));
+        const auto cx_hi = static_cast<std::int32_t>(std::floor((px + kHalfBox) * inv_cell - 0.5));
+        const auto cy_lo = static_cast<std::int32_t>(std::ceil((py - kHalfBox) * inv_cell - 0.5));
+        const auto cy_hi = static_cast<std::int32_t>(std::floor((py + kHalfBox) * inv_cell - 0.5));
+        const auto ct_lo = static_cast<std::int32_t>(std::ceil((pt - kHalfTime) * inv_time - 0.5));
+        const auto ct_hi = static_cast<std::int32_t>(std::floor((pt + kHalfTime) * inv_time - 0.5));
 
         auto &cov = cm.cand_covers[j];
-        for (int dx = -2; dx <= 2; ++dx) {
-            for (int dy = -2; dy <= 2; ++dy) {
-                for (int dt = -1; dt <= 1; ++dt) {
-                    const std::int32_t cx_i = gx + dx, cy_i = gy + dy, ct_i = gt + dt;
+        for (std::int32_t cx_i = cx_lo; cx_i <= cx_hi; ++cx_i) {
+            for (std::int32_t cy_i = cy_lo; cy_i <= cy_hi; ++cy_i) {
+                for (std::int32_t ct_i = ct_lo; ct_i <= ct_hi; ++ct_i) {
                     const double cx = (static_cast<double>(cx_i) + 0.5) * cell_m;
                     const double cy = (static_cast<double>(cy_i) + 0.5) * cell_m;
                     const double ct = (static_cast<double>(ct_i) + 0.5) * time_bin;
@@ -382,18 +386,21 @@ std::vector<std::size_t> submodular_simplify_on_pool(const core::TrajectoryView 
                 }
             }
 
-            std::vector<std::size_t> cands;
-            cands.reserve(12);
-            cands.push_back(arg_dev);
-            cands.push_back(arg_sed);
-            cands.push_back(arg_rng);
+            std::array<std::size_t, 8> cands{};
+            std::size_t n_cands = 0;
+            cands[n_cands++] = arg_dev;
+            cands[n_cands++] = arg_sed;
+            cands[n_cands++] = arg_rng;
             const std::size_t n_uni = std::min<std::size_t>(5, span);
             for (std::size_t q = 1; q <= n_uni; ++q)
-                cands.push_back(ia + (q * (ib - ia)) / (n_uni + 1));
-            std::ranges::sort(cands);
-            cands.erase(std::unique(cands.begin(), cands.end()), cands.end());
+                cands[n_cands++] = ia + (q * (ib - ia)) / (n_uni + 1);
+            std::sort(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n_cands));
+            n_cands = static_cast<std::size_t>(
+                std::unique(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n_cands)) -
+                cands.begin());
 
-            for (std::size_t ik : cands) {
+            for (std::size_t ci = 0; ci < n_cands; ++ci) {
+                const std::size_t ik = cands[ci];
                 if (ik <= ia || ik >= ib)
                     continue;
                 const auto left_sc =
