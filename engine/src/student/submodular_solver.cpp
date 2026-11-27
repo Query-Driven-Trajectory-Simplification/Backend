@@ -7,7 +7,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <unordered_map>
 
 namespace student {
 
@@ -100,116 +99,24 @@ std::vector<Probe> build_probes(const core::TrajectoryView &traj, std::size_t co
 }
 
 struct RangeCoverageModel {
-    // Each unique coverage unit (333m cell or sampled 1km x 7d box) gets a compact ID 0..C-1
+    // Each sampled 1km x 7d uncovered Range box gets a compact ID 0..B-1
     std::vector<double> unit_weights;
     double total_weight = 1.0;
-    // For each candidate j in 0..pool_size-1: list of unit IDs covered by placing a knot at pool[j]
+    // For each candidate j in 0..pool_size-1: list of box IDs covered by placing a knot at pool[j]
     std::vector<std::vector<std::uint16_t>> candidate_covers;
 };
 
-RangeCoverageModel build_cell_model(const core::TrajectoryView &traj,
-                                    std::span<const std::size_t> pool,
-                                    const DbDensityIndex &density_idx) {
-    RangeCoverageModel model;
-    const std::size_t pool_size = pool.size();
-    model.candidate_covers.resize(pool_size);
-    if (pool_size == 0)
-        return model;
-
-    constexpr double kHalfBox = 500.0;     // 1km box half-width
-    constexpr double kHalfTime = 302400.0; // 7-day window half-width
-    const double cell_m = density_idx.cell_m();
-    const double inv_cell = 1.0 / cell_m;
-    const double time_bin = static_cast<double>(density_idx.time_bin_s());
-    const double inv_time = 1.0 / time_bin;
-
-    std::unordered_map<std::uint64_t, std::uint16_t> key_to_unit_id;
-    model.unit_weights.reserve(128);
-    double weight_sum = 0.0;
-
-    for (std::size_t pool_pos = 0; pool_pos < pool_size; ++pool_pos) {
-        const std::size_t pt_idx = pool[pool_pos];
-        const double px = traj.x[pt_idx];
-        const double py = traj.y[pt_idx];
-        const double pt = static_cast<double>(traj.t[pt_idx]);
-        // Exact integer cell bounds satisfying |p - (c + 0.5) * step| <= kHalf
-        const auto cx_lo = static_cast<std::int32_t>(std::ceil((px - kHalfBox) * inv_cell - 0.5));
-        const auto cx_hi = static_cast<std::int32_t>(std::floor((px + kHalfBox) * inv_cell - 0.5));
-        const auto cy_lo = static_cast<std::int32_t>(std::ceil((py - kHalfBox) * inv_cell - 0.5));
-        const auto cy_hi = static_cast<std::int32_t>(std::floor((py + kHalfBox) * inv_cell - 0.5));
-        const auto ct_lo = static_cast<std::int32_t>(std::ceil((pt - kHalfTime) * inv_time - 0.5));
-        const auto ct_hi = static_cast<std::int32_t>(std::floor((pt + kHalfTime) * inv_time - 0.5));
-
-        auto &covers = model.candidate_covers[pool_pos];
-        for (std::int32_t cell_x = cx_lo; cell_x <= cx_hi; ++cell_x) {
-            for (std::int32_t cell_y = cy_lo; cell_y <= cy_hi; ++cell_y) {
-                for (std::int32_t cell_t = ct_lo; cell_t <= ct_hi; ++cell_t) {
-                    const double center_x = (static_cast<double>(cell_x) + 0.5) * cell_m;
-                    const double center_y = (static_cast<double>(cell_y) + 0.5) * cell_m;
-                    const double center_t = (static_cast<double>(cell_t) + 0.5) * time_bin;
-                    if (std::abs(px - center_x) > kHalfBox ||
-                        std::abs(py - center_y) > kHalfBox ||
-                        std::abs(pt - center_t) > kHalfTime)
-                        continue;
-
-                    const std::uint64_t key = DbDensityIndex::pack_3d(cell_x, cell_y, cell_t);
-                    auto it = key_to_unit_id.find(key);
-                    std::uint16_t unit_id = 0;
-                    if (it == key_to_unit_id.end()) {
-                        const auto stats = density_idx.cell_stats(cell_x, cell_y, cell_t);
-                        if (stats.point_count == 0 || model.unit_weights.size() >= 2500)
-                            continue;
-                        double neighbor_trajs = static_cast<double>(stats.traj_count);
-                        for (int dx = -1; dx <= 1; ++dx)
-                            for (int dy = -1; dy <= 1; ++dy)
-                                if (dx != 0 || dy != 0)
-                                    neighbor_trajs +=
-                                        0.35 *
-                                        static_cast<double>(
-                                            density_idx.cell_stats(cell_x + dx, cell_y + dy, cell_t)
-                                                .traj_count);
-                        const double accept_prob =
-                            neighbor_trajs < 3.0 ? 0.05 : std::min(1.0, neighbor_trajs / 20.0);
-                        const double cell_weight = static_cast<double>(stats.point_count) *
-                                                   accept_prob / std::max(3.0, neighbor_trajs);
-                        unit_id = static_cast<std::uint16_t>(model.unit_weights.size());
-                        key_to_unit_id.emplace(key, unit_id);
-                        model.unit_weights.push_back(cell_weight);
-                        weight_sum += cell_weight;
-                    } else {
-                        unit_id = it->second;
-                    }
-                    covers.push_back(unit_id);
-                }
-            }
-        }
-    }
-
-    model.total_weight = std::max(1e-6, weight_sum);
-    return model;
-}
-
-RangeCoverageModel build_blended_range_model(const core::TrajectoryView &traj,
-                                             std::span<const std::size_t> pool,
-                                             const DbDensityIndex &density_idx,
-                                             std::span<const SampledRangeBox> boxes,
-                                             double uncovered_frac) {
+RangeCoverageModel build_range_model(const core::TrajectoryView &traj,
+                                     std::span<const std::size_t> pool,
+                                     std::span<const SampledRangeBox> boxes,
+                                     double uncovered_frac) {
     RangeCoverageModel model;
     const std::size_t pool_size = pool.size();
     model.candidate_covers.resize(pool_size);
     if (pool_size == 0 || boxes.empty())
-        return model; // Zero uncovered valid [5, 20] Range boxes -> spend budget on Geo & Where-At!
+        return model; // Zero uncovered valid [5, 20] Range boxes -> spend budget on Geo & Where-At
 
-    // 1. 20% continuous 333m x 3.5d cell grid floor (never runs dry at 2% budget)
-    model = build_cell_model(traj, pool, density_idx);
-    const double cell_scale = 0.20 / model.total_weight;
-    for (double &weight : model.unit_weights)
-        weight *= cell_scale;
-
-    // 2. 80% exact sampled 1km x 7d uncovered Range boxes scaled by true uncovered fraction
-    //    (so a trip already 90% covered by endpoints doesn't steal points from Where-At / Join!)
-    const std::size_t first_box_unit_id = model.unit_weights.size();
-    const std::size_t num_boxes = std::min<std::size_t>(boxes.size(), 65000 - first_box_unit_id);
+    const std::size_t num_boxes = std::min<std::size_t>(boxes.size(), 65000);
     double box_weight_sum = 0.0;
     for (std::size_t box_idx = 0; box_idx < num_boxes; ++box_idx) {
         const auto &sampled_box = boxes[box_idx];
@@ -235,9 +142,9 @@ RangeCoverageModel build_blended_range_model(const core::TrajectoryView &traj,
         }
     }
     if (box_weight_sum > 1e-9) {
-        const double box_scale = (0.80 * std::clamp(uncovered_frac, 0.0, 1.0)) / box_weight_sum;
-        for (std::size_t idx = first_box_unit_id; idx < model.unit_weights.size(); ++idx)
-            model.unit_weights[idx] *= box_scale;
+        const double box_scale = std::clamp(uncovered_frac, 0.0, 1.0) / box_weight_sum;
+        for (double &weight : model.unit_weights)
+            weight *= box_scale;
     }
     model.total_weight = 1.0;
     return model;
@@ -314,8 +221,7 @@ SegmentScores eval_segment_scores(const core::TrajectoryView &traj,
 std::vector<std::size_t>
 submodular_simplify_on_pool(const core::TrajectoryView &traj, std::span<const std::size_t> pool,
                             std::size_t budget, const SubmodularWeights &weights,
-                            const DbDensityIndex &density_idx,
-                            const std::vector<SampledRangeBox> *uncov_boxes, double uncov_frac) {
+                            std::span<const SampledRangeBox> uncov_boxes, double uncov_frac) {
     const std::size_t traj_len = traj.size();
     const std::size_t pool_size = pool.size();
     if (budget >= traj_len) {
@@ -364,10 +270,7 @@ submodular_simplify_on_pool(const core::TrajectoryView &traj, std::span<const st
         probe_start[pool_size - 1] = probes.size();
     }
 
-    const auto range_model =
-        (uncov_boxes != nullptr)
-            ? build_blended_range_model(traj, pool, density_idx, *uncov_boxes, uncov_frac)
-            : build_cell_model(traj, pool, density_idx);
+    const auto range_model = build_range_model(traj, pool, uncov_boxes, uncov_frac);
     const std::size_t num_units = range_model.unit_weights.size();
     std::vector<std::uint16_t> cover_counts(num_units, 0);
 

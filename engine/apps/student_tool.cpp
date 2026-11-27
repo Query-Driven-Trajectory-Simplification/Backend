@@ -14,7 +14,6 @@
 #include "backend/engine/selection/sed.hpp"
 #include "backend/engine/split/split.hpp"
 #include "backend/engine/student/candidate_pool.hpp"
-#include "backend/engine/student/density_index.hpp"
 #include "backend/engine/student/features.hpp"
 #include "backend/engine/student/range_sampler.hpp"
 #include "backend/engine/student/student.hpp"
@@ -232,20 +231,19 @@ void validate_kept(const core::KeptSets &kept, const core::TrajectoryDb &db,
 }
 
 // =============================================================================
-// 1. EXPORT: 13 zero-Frechet features + cached frozen Teacher targets
+// 1. EXPORT: 11 zero-Frechet features + cached frozen Teacher targets
 // =============================================================================
 void run_export(const core::TrajectoryDb &db, const pipeline::Config &config,
                 const SplitData &split_data, const CliArgs &args, std::uint64_t seed,
                 std::span<const double> shares) {
     std::filesystem::create_directories(args.out_dir);
 
-    auto t_density = std::chrono::steady_clock::now();
-    const student::DbDensityIndex density_idx(db);
+    auto t_range = std::chrono::steady_clock::now();
     const auto range_idx = student::build_sampled_range_index(db, 128000);
-    const double density_ms = core::seconds_since(t_density) * 1000.0;
+    const double range_index_ms = core::seconds_since(t_range) * 1000.0;
 
     auto t_features = std::chrono::steady_clock::now();
-    const auto features = student::extract_trajectory_features(db, density_idx, &range_idx);
+    const auto features = student::extract_trajectory_features(db, &range_idx);
     const double feature_ms = core::seconds_since(t_features) * 1000.0;
 
     std::vector<std::uint32_t> lengths(db.size());
@@ -261,12 +259,12 @@ void run_export(const core::TrajectoryDb &db, const pipeline::Config &config,
         {"num_features", features.feature_names.size()},
         {"feature_names", features.feature_names},
         {"shares", std::vector<double>(shares.begin(), shares.end())},
-        {"density_ms", density_ms},
+        {"range_index_ms", range_index_ms},
         {"feature_ms", feature_ms},
     };
     std::ofstream(args.out_dir / "meta.json") << meta.dump(2) << '\n';
-    std::cerr << std::format("Exported {} trajs x {} feats in {:.1f}ms dens + {:.1f}ms feat\n",
-                             features.num_trajs, features.feature_names.size(), density_ms,
+    std::cerr << std::format("Exported {} trajs x {} feats in {:.1f}ms range + {:.1f}ms feat\n",
+                             features.num_trajs, features.feature_names.size(), range_index_ms,
                              feature_ms);
 
     bool any_missing = false;
@@ -324,7 +322,6 @@ void run_fit_simplex(const core::TrajectoryDb &db, const CliArgs &args,
     std::filesystem::create_directories(args.out_dir);
     std::ofstream(args.out_dir / "presets.json") << nlohmann::json(kSimplex).dump(2) << '\n';
 
-    const student::DbDensityIndex density_idx(db);
     const auto range_idx = student::build_sampled_range_index(db, 128000);
     std::vector<std::vector<std::size_t>> pools(db.size());
     core::parallel_for(db.size(), [&](std::size_t i) {
@@ -438,8 +435,7 @@ void run_fit_simplex(const core::TrajectoryDb &db, const CliArgs &args,
                                                   ? (range_idx.uncov_weight[i] / total_range_weight)
                                                   : 0.0;
                 const auto candidate_kept = student::submodular_simplify_on_pool(
-                    traj, pools[i], teacher_kept.size(), weights, density_idx,
-                    range_idx.valid_boxes > 0 ? &range_idx.uncov_boxes[i] : nullptr,
+                    traj, pools[i], teacher_kept.size(), weights, range_idx.uncov_boxes[i],
                     uncovered_frac);
                 const auto candidate_profile =
                     eval_profile(traj, candidate_kept, range_idx.uncov_boxes[i]);
@@ -482,10 +478,10 @@ void run_eval(const core::TrajectoryDb &db, const core::TrajectoryDb &pool,
     std::cerr << std::format("[eval] TestWorkloads+floor built in {:.2f}s\n",
                              core::seconds_since(t_workloads));
 
-    std::optional<student::DbDensityIndex> density_idx;
+    std::optional<student::SampledRangeIndex> range_idx;
     std::vector<std::vector<std::size_t>> pools;
     if (args.baselines) {
-        density_idx.emplace(db);
+        range_idx = student::build_sampled_range_index(db, 128000);
         pools.resize(db.size());
         core::parallel_for(db.size(), [&](std::size_t i) {
             pools[i] = student::build_candidate_pool(db.trajectory(i));
@@ -556,12 +552,12 @@ void run_eval(const core::TrajectoryDb &db, const core::TrajectoryDb &pool,
                                                  config.student.rb_passes, rdp_only)
                 : student::simplify_database(db, total_budget, models[0], config.student.rb_passes,
                                              rdp_only);
-        const double total_ms = result.density_ms + result.feature_ms + result.ml_ms +
+        const double total_ms = result.range_index_ms + result.feature_ms + result.ml_ms +
                                 result.pool_ms + result.decode_ms;
         std::cerr << std::format(
-            "[pure-C++ {} {:5.2f}%] dens={:.1f}ms feat={:.1f}ms ml={:.1f}ms pool={:.1f}ms "
+            "[pure-C++ {} {:5.2f}%] range={:.1f}ms feat={:.1f}ms ml={:.1f}ms pool={:.1f}ms "
             "dec={:.1f}ms -> total={:.1f}ms\n",
-            label, share * 100.0, result.density_ms, result.feature_ms, result.ml_ms,
+            label, share * 100.0, result.range_index_ms, result.feature_ms, result.ml_ms,
             result.pool_ms, result.decode_ms, total_ms);
         report(label, share, total_budget, result.kept, total_ms);
     };
@@ -587,8 +583,15 @@ void run_eval(const core::TrajectoryDb &db, const core::TrajectoryDb &pool,
             t_start = std::chrono::steady_clock::now();
             const student::SubmodularWeights weights{0.40, 1.30, 2.25, config.student.rb_passes};
             core::parallel_for(db.size(), [&](std::size_t i) {
+                const double total_range_weight =
+                    range_idx->uncov_weight[i] + range_idx->ep_weight[i];
+                const double uncovered_frac =
+                    (total_range_weight > 1e-12)
+                        ? (range_idx->uncov_weight[i] / total_range_weight)
+                        : 0.0;
                 kept[i] = student::submodular_simplify_on_pool(
-                    db.trajectory(i), pools[i], equal_budgets[i], weights, *density_idx);
+                    db.trajectory(i), pools[i], equal_budgets[i], weights,
+                    range_idx->uncov_boxes[i], uncovered_frac);
             });
             report("ZeroML_SubmodV3", share, total_budget, kept,
                    core::seconds_since(t_start) * 1000.0);

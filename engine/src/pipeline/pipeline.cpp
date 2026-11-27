@@ -130,7 +130,7 @@ void run(const Config &config) {
             const auto res = student::simplify_database(database, budget, *student_model,
                                                         config.student.rb_passes);
             const double ms =
-                res.density_ms + res.feature_ms + res.ml_ms + res.pool_ms + res.decode_ms;
+                res.range_index_ms + res.feature_ms + res.ml_ms + res.pool_ms + res.decode_ms;
             scorer.score(std::format("{}% STUDENT ({:.0f}ms)", share * 100, ms),
                          std::format("STUDENT_{:g}pct", share * 100),
                          core::to_simplification(res.kept));

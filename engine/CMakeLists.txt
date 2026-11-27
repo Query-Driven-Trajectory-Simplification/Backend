@@ -50,7 +50,6 @@ add_library(engine
     src/teacher/greedy.cpp
     src/teacher/teacher.cpp
     src/student/candidate_pool.cpp
-    src/student/density_index.cpp
     src/student/range_sampler.cpp
     src/student/features.cpp
     src/student/submodular_solver.cpp

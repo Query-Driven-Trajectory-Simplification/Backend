@@ -1,7 +1,6 @@
 #include "backend/engine/student/range_sampler.hpp"
 
 #include "backend/engine/core/parallel.hpp"
-#include "backend/engine/student/density_index.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +10,16 @@
 namespace student {
 
 namespace {
+
+inline std::uint64_t pack_grid_3d(std::int32_t gx, std::int32_t gy, std::int32_t gt) {
+    const std::uint64_t ux = static_cast<std::uint64_t>(static_cast<std::int64_t>(gx) + (1 << 20)) &
+                             ((1ULL << 21) - 1);
+    const std::uint64_t uy = static_cast<std::uint64_t>(static_cast<std::int64_t>(gy) + (1 << 20)) &
+                             ((1ULL << 21) - 1);
+    const std::uint64_t ut = static_cast<std::uint64_t>(static_cast<std::int64_t>(gt) + (1 << 20)) &
+                             ((1ULL << 21) - 1);
+    return (ux << 42) | (uy << 21) | ut;
+}
 
 inline bool point_in_box(const query::RangeBox &box, std::int64_t t, double x, double y) {
     return t >= box.t_min && t <= box.t_max && x >= box.x_min && x <= box.x_max && y >= box.y_min &&
@@ -54,7 +63,7 @@ SampledRangeIndex build_sampled_range_index(const core::TrajectoryDb &db, std::s
             const auto gy = static_cast<std::int32_t>(std::floor(traj.y[pt_idx] * kInvCell));
             const auto gt = static_cast<std::int32_t>(
                 std::floor(static_cast<double>(traj.t[pt_idx]) * kInvTime));
-            const std::uint64_t key = DbDensityIndex::pack_3d(gx, gy, gt);
+            const std::uint64_t key = pack_grid_3d(gx, gy, gt);
             if (pt_idx == 0 || key != prev_key) {
                 keys.push_back(key);
                 prev_key = key;
@@ -115,7 +124,7 @@ SampledRangeIndex build_sampled_range_index(const core::TrajectoryDb &db, std::s
         for (std::int32_t gx = gx_min; gx <= gx_max; ++gx)
             for (std::int32_t gy = gy_min; gy <= gy_max; ++gy)
                 for (std::int32_t gt = gt_min; gt <= gt_max; ++gt) {
-                    const auto it = inverted_grid.find(DbDensityIndex::pack_3d(gx, gy, gt));
+                    const auto it = inverted_grid.find(pack_grid_3d(gx, gy, gt));
                     if (it != inverted_grid.end())
                         candidate_trajs.insert(candidate_trajs.end(), it->second.begin(),
                                                it->second.end());

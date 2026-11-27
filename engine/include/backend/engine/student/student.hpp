@@ -12,7 +12,7 @@ namespace student {
 
 struct SimplifyResult {
     core::KeptSets kept;
-    double density_ms = 0.0;
+    double range_index_ms = 0.0;
     double feature_ms = 0.0;
     double ml_ms = 0.0;
     double pool_ms = 0.0;

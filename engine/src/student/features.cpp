@@ -124,13 +124,12 @@ inline std::uint64_t pack_grid2d(std::int32_t gx, std::int32_t gy) {
 } // namespace
 
 TrajectoryFeatureTable extract_trajectory_features(const core::TrajectoryDb &db,
-                                                   const DbDensityIndex &density_idx,
                                                    const SampledRangeIndex *range_idx) {
     const std::size_t num_trajs = db.size();
     TrajectoryFeatureTable table;
     table.num_trajs = num_trajs;
 
-    // Compact 13-feature zero-Frechet set (6 single-trip + 7 database context)
+    // Compact 11-feature zero-Frechet set (6 single-trip + 5 database context)
     table.feature_names = {
         "log_n",
         "log_arc",
@@ -138,8 +137,6 @@ TrajectoryFeatureTable extract_trajectory_features(const core::TrajectoryDb &db,
         "log_rdp_err_2",
         "log_rdp_err_8",
         "log_sed_err_8",
-        "rho_mean",
-        "log_rho_sum",
         "sig5_cnt_200",
         "log_sig5_d1",
         "log_rng_uncov",
@@ -211,15 +208,7 @@ TrajectoryFeatureTable extract_trajectory_features(const core::TrajectoryDb &db,
         push_feature(std::log1p(rdp_err_8));
         push_feature(std::log1p(sed_err_8));
 
-        // Database-context features (7, zero Frechet)
-        const auto rho = density_idx.trajectory_range_rho(traj);
-        double rho_sum = 0.0;
-        for (float val : rho)
-            rho_sum += val;
-        const double rho_mean = rho.empty() ? 0.0 : rho_sum / static_cast<double>(rho.size());
-        push_feature(rho_mean);
-        push_feature(std::log1p(rho_mean * static_cast<double>(cells_1km.size())));
-
+        // Database-context features (5, zero Frechet)
         // 5-point signature neighbor count <= 200m and nearest neighbor distance
         const auto &sig_i = signatures[traj_idx];
         std::size_t near_neighbor_count = 0;

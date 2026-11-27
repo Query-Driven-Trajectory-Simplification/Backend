@@ -1,7 +1,7 @@
 #include "backend/engine/core/trajectory_db.hpp"
 #include "backend/engine/student/candidate_pool.hpp"
-#include "backend/engine/student/density_index.hpp"
 #include "backend/engine/student/features.hpp"
+#include "backend/engine/student/range_sampler.hpp"
 #include "backend/engine/student/student.hpp"
 #include "backend/engine/student/submodular_solver.hpp"
 
@@ -63,19 +63,19 @@ TEST(StudentTest, CandidatePoolPreservesEndpointsAndOrder) {
 
 TEST(StudentTest, FeaturesAreExactAndFinite) {
     const auto db = make_synthetic_db();
-    const student::DbDensityIndex density_idx(db);
-    const auto features = student::extract_trajectory_features(db, density_idx);
+    const auto range_idx = student::build_sampled_range_index(db, 200);
+    const auto features = student::extract_trajectory_features(db, &range_idx);
 
     EXPECT_EQ(features.num_trajs, db.size());
-    EXPECT_EQ(features.feature_names.size(), 13U);
-    EXPECT_EQ(features.values.size(), db.size() * 13U);
+    EXPECT_EQ(features.feature_names.size(), 11U);
+    EXPECT_EQ(features.values.size(), db.size() * 11U);
     for (float val : features.values)
         EXPECT_TRUE(std::isfinite(val));
 }
 
 TEST(StudentTest, SubmodularSolverPreservesExactBudget) {
     const auto db = make_synthetic_db();
-    const student::DbDensityIndex density_idx(db);
+    const auto range_idx = student::build_sampled_range_index(db, 200);
     const student::CandidatePoolConfig pool_cfg{};
 
     for (std::size_t i = 0; i < db.size(); ++i) {
@@ -84,7 +84,7 @@ TEST(StudentTest, SubmodularSolverPreservesExactBudget) {
         for (std::size_t budget : {std::size_t{2}, std::size_t{3}, std::size_t{8}, traj.size() / 2,
                                    traj.size()}) {
             const auto kept = student::submodular_simplify_on_pool(
-                traj, pool, budget, {0.4, 1.3, 2.2, 2}, density_idx);
+                traj, pool, budget, {0.4, 1.3, 2.2, 2}, range_idx.uncov_boxes[i]);
             check_valid_kept(traj, kept, budget);
         }
     }
@@ -93,21 +93,21 @@ TEST(StudentTest, SubmodularSolverPreservesExactBudget) {
 TEST(StudentTest, PureCppModelSimplifiesExactBudget) {
     const auto db = make_synthetic_db();
     student::StudentModel model;
-    model.s1_in_dim = 13;
+    model.s1_in_dim = 11;
     model.num_anchors = 4;
-    model.s1_mean.assign(13, 0.0f);
-    model.s1_std.assign(13, 1.0f);
+    model.s1_mean.assign(11, 0.0f);
+    model.s1_std.assign(11, 1.0f);
     model.log_anchors = {std::log(2.0f), std::log(4.0f), std::log(8.0f), std::log(16.0f)};
     model.s1_layers.push_back(
-        {13, 4, false, std::vector<float>(52, 0.05f), {1.0f, 0.2f, 0.2f, 0.2f}, {}, {}});
+        {11, 4, false, std::vector<float>(44, 0.05f), {1.0f, 0.2f, 0.2f, 0.2f}, {}, {}});
 
-    model.s2_in_dim = 16;
+    model.s2_in_dim = 14;
     model.num_presets = 2;
-    model.s2_mean.assign(16, 0.0f);
-    model.s2_std.assign(16, 1.0f);
+    model.s2_mean.assign(14, 0.0f);
+    model.s2_std.assign(14, 1.0f);
     model.log_simplex = {std::log(0.4f), std::log(1.3f), std::log(2.2f),
                          std::log(1.0f), std::log(1.0f), std::log(1.0f)};
-    model.s2_layers.push_back({16, 2, false, std::vector<float>(32, 0.01f), {0.0f, 0.0f}, {}, {}});
+    model.s2_layers.push_back({14, 2, false, std::vector<float>(28, 0.01f), {0.0f, 0.0f}, {}, {}});
 
     const std::size_t total_budget = db.size() * 2 + 60;
     const auto result = student::simplify_database(db, total_budget, model, 2);
