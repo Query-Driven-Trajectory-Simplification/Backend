@@ -21,65 +21,66 @@ SimplifyResult simplify_database_oof(const core::TrajectoryDb &db, std::size_t t
                                      bool rdp_only) {
     if (fold_models.empty())
         throw std::invalid_argument("fold_models cannot be empty");
-    const std::size_t N = db.size();
+    const std::size_t num_trajs = db.size();
 
-    SimplifyResult res;
+    SimplifyResult result;
 
     // 1. 3D spatiotemporal density index + fast 128k sampled Range boxes (zero Frechet, zero Q leakage)
-    auto t0 = std::chrono::steady_clock::now();
+    auto t_density = std::chrono::steady_clock::now();
     const DbDensityIndex density_idx(db);
     const auto range_idx = build_sampled_range_index(db, 128000);
-    res.density_ms = core::seconds_since(t0) * 1000.0;
+    result.density_ms = core::seconds_since(t_density) * 1000.0;
 
-    // 2. 13-feature extraction (tiny10 + 3 exact sampled Range features)
-    auto t1 = std::chrono::steady_clock::now();
-    const auto feats = extract_trajectory_features(db, density_idx, &range_idx);
-    res.feature_ms = core::seconds_since(t1) * 1000.0;
+    // 2. 13-feature extraction (6 single-trip + 7 database context)
+    auto t_features = std::chrono::steady_clock::now();
+    const auto features = extract_trajectory_features(db, density_idx, &range_idx);
+    result.feature_ms = core::seconds_since(t_features) * 1000.0;
 
     // 3. Stage 1 MLP -> exact discrete water-filling -> Stage 2 MLP
-    auto t2 = std::chrono::steady_clock::now();
-    std::vector<std::size_t> lengths(N);
-    for (std::size_t i = 0; i < N; ++i)
+    auto t_ml = std::chrono::steady_clock::now();
+    std::vector<std::size_t> lengths(num_trajs);
+    for (std::size_t i = 0; i < num_trajs; ++i)
         lengths[i] = db.trajectory(i).size();
-    const auto ell = predict_marginal_curves(fold_models, fold_ids, feats, lengths);
-    const auto budgets =
-        discrete_water_filling(ell, lengths, total_budget, fold_models[0].log_anchors);
+    const auto marginal_curves = predict_marginal_curves(fold_models, fold_ids, features, lengths);
+    const auto budgets = discrete_water_filling(marginal_curves, lengths, total_budget,
+                                                fold_models[0].log_anchors);
     std::vector<SubmodularWeights> weights;
     if (!rdp_only)
-        weights =
-            predict_submodular_weights(fold_models, fold_ids, feats, lengths, budgets, rb_passes);
-    res.ml_ms = core::seconds_since(t2) * 1000.0;
+        weights = predict_submodular_weights(fold_models, fold_ids, features, lengths, budgets,
+                                             rb_passes);
+    result.ml_ms = core::seconds_since(t_ml) * 1000.0;
 
-    res.kept.resize(N);
+    result.kept.resize(num_trajs);
     if (rdp_only) {
-        auto t4 = std::chrono::steady_clock::now();
-        core::parallel_for(N, [&](std::size_t i) {
-            res.kept[i] = selection::rdp::simplify(db.trajectory(i), budgets[i]);
+        auto t_decode = std::chrono::steady_clock::now();
+        core::parallel_for(num_trajs, [&](std::size_t i) {
+            result.kept[i] = selection::rdp::simplify(db.trajectory(i), budgets[i]);
         });
-        res.decode_ms = core::seconds_since(t4) * 1000.0;
-        return res;
+        result.decode_ms = core::seconds_since(t_decode) * 1000.0;
+        return result;
     }
 
     // 4. Safe Candidate Pool (~4x reduction)
-    auto t3 = std::chrono::steady_clock::now();
-    std::vector<std::vector<std::size_t>> pools(N);
-    core::parallel_for(N, [&](std::size_t i) {
+    auto t_pool = std::chrono::steady_clock::now();
+    std::vector<std::vector<std::size_t>> pools(num_trajs);
+    core::parallel_for(num_trajs, [&](std::size_t i) {
         pools[i] = build_candidate_pool(db.trajectory(i));
     });
-    res.pool_ms = core::seconds_since(t3) * 1000.0;
+    result.pool_ms = core::seconds_since(t_pool) * 1000.0;
 
     // 5. C++ Submodular Greedy + Red-Black Free-Knot Polish
-    auto t4 = std::chrono::steady_clock::now();
-    const bool use_boxes = range_idx.valid_boxes > 0;
-    core::parallel_for(N, [&](std::size_t i) {
-        const double tot_w = range_idx.uncov_weight[i] + range_idx.ep_weight[i];
-        const double ufrac = (tot_w > 1e-12) ? (range_idx.uncov_weight[i] / tot_w) : 0.0;
-        res.kept[i] = submodular_simplify_on_pool(
+    auto t_decode = std::chrono::steady_clock::now();
+    const bool use_sampled_boxes = range_idx.valid_boxes > 0;
+    core::parallel_for(num_trajs, [&](std::size_t i) {
+        const double total_range_weight = range_idx.uncov_weight[i] + range_idx.ep_weight[i];
+        const double uncovered_frac =
+            (total_range_weight > 1e-12) ? (range_idx.uncov_weight[i] / total_range_weight) : 0.0;
+        result.kept[i] = submodular_simplify_on_pool(
             db.trajectory(i), pools[i], budgets[i], weights[i], density_idx,
-            use_boxes ? &range_idx.uncov_boxes[i] : nullptr, ufrac);
+            use_sampled_boxes ? &range_idx.uncov_boxes[i] : nullptr, uncovered_frac);
     });
-    res.decode_ms = core::seconds_since(t4) * 1000.0;
-    return res;
+    result.decode_ms = core::seconds_since(t_decode) * 1000.0;
+    return result;
 }
 
 SimplifyResult simplify_database(const core::TrajectoryDb &db, std::size_t total_budget,

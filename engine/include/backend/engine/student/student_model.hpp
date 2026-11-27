@@ -45,7 +45,7 @@ std::vector<double> predict_marginal_curves(std::span<const StudentModel> fold_m
                                             std::span<const std::size_t> lengths);
 
 // Exact discrete water-filling: sum(b_i) == total_budget, min(2, n_i) <= b_i <= n_i.
-std::vector<std::size_t> discrete_water_filling(std::span<const double> ell,
+std::vector<std::size_t> discrete_water_filling(std::span<const double> marginal_curves,
                                                 std::span<const std::size_t> lengths,
                                                 std::size_t total_budget,
                                                 std::span<const float> log_anchors);

@@ -14,12 +14,12 @@ namespace student {
 namespace {
 
 // Exact 25m -> 200m linear ramp in [0, 1] matching Where-At & Shape
-inline double ramp_unit(double d) {
-    if (d <= 25.0)
+inline double ramp_unit(double dist_m) {
+    if (dist_m <= 25.0)
         return 1.0;
-    if (d >= 200.0)
+    if (dist_m >= 200.0)
         return 0.0;
-    return (200.0 - d) / 175.0;
+    return (200.0 - dist_m) / 175.0;
 }
 
 struct Probe {
@@ -28,83 +28,93 @@ struct Probe {
     double y;
 };
 
-std::vector<Probe> build_probes(const core::TrajectoryView &tr, std::size_t count = 64) {
-    const std::size_t n = tr.size();
-    if (n < 2)
+std::vector<Probe> build_probes(const core::TrajectoryView &traj, std::size_t count = 64) {
+    const std::size_t traj_len = traj.size();
+    if (traj_len < 2)
         return {};
-    const double t0 = static_cast<double>(tr.t.front());
-    const double t1 = static_cast<double>(tr.t.back());
-    if (t1 <= t0)
+    const double start_t = static_cast<double>(traj.t.front());
+    const double end_t = static_cast<double>(traj.t.back());
+    if (end_t <= start_t)
         return {};
 
     // Collect eligible intervals (gap <= 60s, matching geolife.json where_at.max_gap_seconds)
-    std::vector<double> cum_dur;
-    std::vector<std::size_t> seg_idx;
-    cum_dur.reserve(n);
-    seg_idx.reserve(n);
-    double total = 0.0;
-    for (std::size_t k = 0; k + 1 < n; ++k) {
-        const double dt = static_cast<double>(tr.t[k + 1] - tr.t[k]);
+    std::vector<double> cumulative_duration;
+    std::vector<std::size_t> segment_indices;
+    cumulative_duration.reserve(traj_len);
+    segment_indices.reserve(traj_len);
+    double total_duration = 0.0;
+    for (std::size_t idx = 0; idx + 1 < traj_len; ++idx) {
+        const double dt = static_cast<double>(traj.t[idx + 1] - traj.t[idx]);
         if (dt > 0.0 && dt <= 60.0) {
-            total += dt;
-            cum_dur.push_back(total);
-            seg_idx.push_back(k);
+            total_duration += dt;
+            cumulative_duration.push_back(total_duration);
+            segment_indices.push_back(idx);
         }
     }
     std::vector<Probe> probes;
     probes.reserve(count);
-    if (total <= 0.0) {
+    if (total_duration <= 0.0) {
         // Fallback uniform over full time span
-        for (std::size_t p = 0; p < count; ++p) {
-            const double tp = t0 + ((static_cast<double>(p) + 0.5) / static_cast<double>(count)) * (t1 - t0);
-            auto it = std::lower_bound(tr.t.begin(), tr.t.end(), static_cast<std::int64_t>(tp));
-            std::size_t j = static_cast<std::size_t>(it - tr.t.begin());
-            if (j == 0)
-                j = 1;
-            if (j >= n)
-                j = n - 1;
-            const double dt = static_cast<double>(tr.t[j] - tr.t[j - 1]);
-            const double u = dt > 0.0 ? std::clamp((tp - static_cast<double>(tr.t[j - 1])) / dt, 0.0, 1.0) : 0.0;
-            probes.push_back({tp, tr.x[j - 1] + u * (tr.x[j] - tr.x[j - 1]),
-                              tr.y[j - 1] + u * (tr.y[j] - tr.y[j - 1])});
+        for (std::size_t probe_idx = 0; probe_idx < count; ++probe_idx) {
+            const double probe_t =
+                start_t + ((static_cast<double>(probe_idx) + 0.5) / static_cast<double>(count)) *
+                              (end_t - start_t);
+            auto it = std::lower_bound(traj.t.begin(), traj.t.end(),
+                                       static_cast<std::int64_t>(probe_t));
+            std::size_t pt_idx = static_cast<std::size_t>(it - traj.t.begin());
+            if (pt_idx == 0)
+                pt_idx = 1;
+            if (pt_idx >= traj_len)
+                pt_idx = traj_len - 1;
+            const double dt = static_cast<double>(traj.t[pt_idx] - traj.t[pt_idx - 1]);
+            const double frac =
+                dt > 0.0 ? std::clamp((probe_t - static_cast<double>(traj.t[pt_idx - 1])) / dt,
+                                      0.0, 1.0)
+                         : 0.0;
+            probes.push_back({probe_t,
+                              traj.x[pt_idx - 1] + frac * (traj.x[pt_idx] - traj.x[pt_idx - 1]),
+                              traj.y[pt_idx - 1] + frac * (traj.y[pt_idx] - traj.y[pt_idx - 1])});
         }
         return probes;
     }
 
-    for (std::size_t p = 0; p < count; ++p) {
-        const double target = ((static_cast<double>(p) + 0.5) / static_cast<double>(count)) * total;
-        auto it = std::lower_bound(cum_dur.begin(), cum_dur.end(), target);
-        std::size_t pos = static_cast<std::size_t>(it - cum_dur.begin());
-        if (pos >= seg_idx.size())
-            pos = seg_idx.size() - 1;
-        const std::size_t k = seg_idx[pos];
-        const double prev_cum = pos > 0 ? cum_dur[pos - 1] : 0.0;
-        const double dt = static_cast<double>(tr.t[k + 1] - tr.t[k]);
-        const double u = dt > 0.0 ? std::clamp((target - prev_cum) / dt, 0.0, 1.0) : 0.0;
-        const double tp = static_cast<double>(tr.t[k]) + u * dt;
-        probes.push_back({tp, tr.x[k] + u * (tr.x[k + 1] - tr.x[k]),
-                          tr.y[k] + u * (tr.y[k + 1] - tr.y[k])});
+    for (std::size_t probe_idx = 0; probe_idx < count; ++probe_idx) {
+        const double target_duration =
+            ((static_cast<double>(probe_idx) + 0.5) / static_cast<double>(count)) * total_duration;
+        auto it =
+            std::lower_bound(cumulative_duration.begin(), cumulative_duration.end(), target_duration);
+        std::size_t seg_pos = static_cast<std::size_t>(it - cumulative_duration.begin());
+        if (seg_pos >= segment_indices.size())
+            seg_pos = segment_indices.size() - 1;
+        const std::size_t pt_idx = segment_indices[seg_pos];
+        const double prev_duration = seg_pos > 0 ? cumulative_duration[seg_pos - 1] : 0.0;
+        const double dt = static_cast<double>(traj.t[pt_idx + 1] - traj.t[pt_idx]);
+        const double frac =
+            dt > 0.0 ? std::clamp((target_duration - prev_duration) / dt, 0.0, 1.0) : 0.0;
+        const double probe_t = static_cast<double>(traj.t[pt_idx]) + frac * dt;
+        probes.push_back({probe_t,
+                          traj.x[pt_idx] + frac * (traj.x[pt_idx + 1] - traj.x[pt_idx]),
+                          traj.y[pt_idx] + frac * (traj.y[pt_idx + 1] - traj.y[pt_idx])});
     }
     return probes;
 }
 
-struct CellModel {
-    // Each unique 333m x 3.5d cell within +-500m x +-3.5d of the pool gets a compact ID 0..C-1
-    std::vector<double> cell_weight;
+struct RangeCoverageModel {
+    // Each unique coverage unit (333m cell or sampled 1km x 7d box) gets a compact ID 0..C-1
+    std::vector<double> unit_weights;
     double total_weight = 1.0;
-    // For each candidate j in 0..M-1: list of unique cell IDs covered by placing a knot at pool[j]
-    // (a knot at p covers any visited cell whose center is within 500m in x & y and 3.5d in t,
-    //  approximating the 1km x 1km x 7d point-in-box footprint!)
-    std::vector<std::vector<std::uint16_t>> cand_covers;
+    // For each candidate j in 0..pool_size-1: list of unit IDs covered by placing a knot at pool[j]
+    std::vector<std::vector<std::uint16_t>> candidate_covers;
 };
 
-CellModel build_cell_model(const core::TrajectoryView &tr, std::span<const std::size_t> pool,
-                           const DbDensityIndex &density_idx) {
-    CellModel cm;
-    const std::size_t m = pool.size();
-    cm.cand_covers.resize(m);
-    if (m == 0)
-        return cm;
+RangeCoverageModel build_cell_model(const core::TrajectoryView &traj,
+                                    std::span<const std::size_t> pool,
+                                    const DbDensityIndex &density_idx) {
+    RangeCoverageModel model;
+    const std::size_t pool_size = pool.size();
+    model.candidate_covers.resize(pool_size);
+    if (pool_size == 0)
+        return model;
 
     constexpr double kHalfBox = 500.0;     // 1km box half-width
     constexpr double kHalfTime = 302400.0; // 7-day window half-width
@@ -113,13 +123,15 @@ CellModel build_cell_model(const core::TrajectoryView &tr, std::span<const std::
     const double time_bin = static_cast<double>(density_idx.time_bin_s());
     const double inv_time = 1.0 / time_bin;
 
-    std::unordered_map<std::uint64_t, std::uint16_t> key_to_id;
-    cm.cell_weight.reserve(128);
-    double wsum = 0.0;
+    std::unordered_map<std::uint64_t, std::uint16_t> key_to_unit_id;
+    model.unit_weights.reserve(128);
+    double weight_sum = 0.0;
 
-    for (std::size_t j = 0; j < m; ++j) {
-        const std::size_t k = pool[j];
-        const double px = tr.x[k], py = tr.y[k], pt = static_cast<double>(tr.t[k]);
+    for (std::size_t pool_pos = 0; pool_pos < pool_size; ++pool_pos) {
+        const std::size_t pt_idx = pool[pool_pos];
+        const double px = traj.x[pt_idx];
+        const double py = traj.y[pt_idx];
+        const double pt = static_cast<double>(traj.t[pt_idx]);
         // Exact integer cell bounds satisfying |p - (c + 0.5) * step| <= kHalf
         const auto cx_lo = static_cast<std::int32_t>(std::ceil((px - kHalfBox) * inv_cell - 0.5));
         const auto cx_hi = static_cast<std::int32_t>(std::floor((px + kHalfBox) * inv_cell - 0.5));
@@ -128,460 +140,500 @@ CellModel build_cell_model(const core::TrajectoryView &tr, std::span<const std::
         const auto ct_lo = static_cast<std::int32_t>(std::ceil((pt - kHalfTime) * inv_time - 0.5));
         const auto ct_hi = static_cast<std::int32_t>(std::floor((pt + kHalfTime) * inv_time - 0.5));
 
-        auto &cov = cm.cand_covers[j];
-        for (std::int32_t cx_i = cx_lo; cx_i <= cx_hi; ++cx_i) {
-            for (std::int32_t cy_i = cy_lo; cy_i <= cy_hi; ++cy_i) {
-                for (std::int32_t ct_i = ct_lo; ct_i <= ct_hi; ++ct_i) {
-                    const double cx = (static_cast<double>(cx_i) + 0.5) * cell_m;
-                    const double cy = (static_cast<double>(cy_i) + 0.5) * cell_m;
-                    const double ct = (static_cast<double>(ct_i) + 0.5) * time_bin;
-                    if (std::abs(px - cx) > kHalfBox || std::abs(py - cy) > kHalfBox ||
-                        std::abs(pt - ct) > kHalfTime)
+        auto &covers = model.candidate_covers[pool_pos];
+        for (std::int32_t cell_x = cx_lo; cell_x <= cx_hi; ++cell_x) {
+            for (std::int32_t cell_y = cy_lo; cell_y <= cy_hi; ++cell_y) {
+                for (std::int32_t cell_t = ct_lo; cell_t <= ct_hi; ++cell_t) {
+                    const double center_x = (static_cast<double>(cell_x) + 0.5) * cell_m;
+                    const double center_y = (static_cast<double>(cell_y) + 0.5) * cell_m;
+                    const double center_t = (static_cast<double>(cell_t) + 0.5) * time_bin;
+                    if (std::abs(px - center_x) > kHalfBox ||
+                        std::abs(py - center_y) > kHalfBox ||
+                        std::abs(pt - center_t) > kHalfTime)
                         continue;
 
-                    const std::uint64_t key = DbDensityIndex::pack_3d(cx_i, cy_i, ct_i);
-                    auto it = key_to_id.find(key);
-                    std::uint16_t id = 0;
-                    if (it == key_to_id.end()) {
-                        const auto st = density_idx.cell_stats(cx_i, cy_i, ct_i);
-                        if (st.point_count == 0 || cm.cell_weight.size() >= 2500)
+                    const std::uint64_t key = DbDensityIndex::pack_3d(cell_x, cell_y, cell_t);
+                    auto it = key_to_unit_id.find(key);
+                    std::uint16_t unit_id = 0;
+                    if (it == key_to_unit_id.end()) {
+                        const auto stats = density_idx.cell_stats(cell_x, cell_y, cell_t);
+                        if (stats.point_count == 0 || model.unit_weights.size() >= 2500)
                             continue;
-                        double tr_nbhd = static_cast<double>(st.traj_count);
-                        for (int nx = -1; nx <= 1; ++nx)
-                            for (int ny = -1; ny <= 1; ++ny)
-                                if (nx != 0 || ny != 0)
-                                    tr_nbhd += 0.35 * static_cast<double>(
-                                                          density_idx.cell_stats(cx_i + nx, cy_i + ny, ct_i).traj_count);
-                        const double acc = tr_nbhd < 3.0 ? 0.05 : std::min(1.0, tr_nbhd / 20.0);
-                        const double w = static_cast<double>(st.point_count) * acc / std::max(3.0, tr_nbhd);
-                        id = static_cast<std::uint16_t>(cm.cell_weight.size());
-                        key_to_id.emplace(key, id);
-                        cm.cell_weight.push_back(w);
-                        wsum += w;
+                        double neighbor_trajs = static_cast<double>(stats.traj_count);
+                        for (int dx = -1; dx <= 1; ++dx)
+                            for (int dy = -1; dy <= 1; ++dy)
+                                if (dx != 0 || dy != 0)
+                                    neighbor_trajs +=
+                                        0.35 *
+                                        static_cast<double>(
+                                            density_idx.cell_stats(cell_x + dx, cell_y + dy, cell_t)
+                                                .traj_count);
+                        const double accept_prob =
+                            neighbor_trajs < 3.0 ? 0.05 : std::min(1.0, neighbor_trajs / 20.0);
+                        const double cell_weight = static_cast<double>(stats.point_count) *
+                                                   accept_prob / std::max(3.0, neighbor_trajs);
+                        unit_id = static_cast<std::uint16_t>(model.unit_weights.size());
+                        key_to_unit_id.emplace(key, unit_id);
+                        model.unit_weights.push_back(cell_weight);
+                        weight_sum += cell_weight;
                     } else {
-                        id = it->second;
+                        unit_id = it->second;
                     }
-                    cov.push_back(id);
+                    covers.push_back(unit_id);
                 }
             }
         }
     }
 
-    cm.total_weight = std::max(1e-6, wsum);
-    return cm;
+    model.total_weight = std::max(1e-6, weight_sum);
+    return model;
 }
 
-CellModel build_blended_range_model(const core::TrajectoryView &tr, std::span<const std::size_t> pool,
-                                    const DbDensityIndex &density_idx,
-                                    std::span<const SampledRangeBox> boxes, double uncov_frac) {
-    CellModel cm;
-    const std::size_t m = pool.size();
-    cm.cand_covers.resize(m);
-    if (m == 0 || boxes.empty())
-        return cm; // Zero uncovered valid [5, 20] Range boxes -> spend budget on Geo & Where-At!
+RangeCoverageModel build_blended_range_model(const core::TrajectoryView &traj,
+                                             std::span<const std::size_t> pool,
+                                             const DbDensityIndex &density_idx,
+                                             std::span<const SampledRangeBox> boxes,
+                                             double uncovered_frac) {
+    RangeCoverageModel model;
+    const std::size_t pool_size = pool.size();
+    model.candidate_covers.resize(pool_size);
+    if (pool_size == 0 || boxes.empty())
+        return model; // Zero uncovered valid [5, 20] Range boxes -> spend budget on Geo & Where-At!
 
     // 1. 20% continuous 333m x 3.5d cell grid floor (never runs dry at 2% budget)
-    cm = build_cell_model(tr, pool, density_idx);
-    const double cell_scale = 0.20 / cm.total_weight;
-    for (double &w : cm.cell_weight)
-        w *= cell_scale;
+    model = build_cell_model(traj, pool, density_idx);
+    const double cell_scale = 0.20 / model.total_weight;
+    for (double &weight : model.unit_weights)
+        weight *= cell_scale;
 
     // 2. 80% exact sampled 1km x 7d uncovered Range boxes scaled by true uncovered fraction
     //    (so a trip already 90% covered by endpoints doesn't steal points from Where-At / Join!)
-    const std::size_t base_id = cm.cell_weight.size();
-    const std::size_t B = std::min<std::size_t>(boxes.size(), 65000 - base_id);
-    double box_wsum = 0.0;
-    for (std::size_t b = 0; b < B; ++b) {
-        const auto &sb = boxes[b];
-        const auto &bx = sb.box;
-        bool any = false;
-        const auto id = static_cast<std::uint16_t>(cm.cell_weight.size());
-        for (std::size_t j = 0; j < m; ++j) {
-            const std::size_t k = pool[j];
-            const std::int64_t tk = tr.t[k];
-            if (tk < bx.t_min)
+    const std::size_t first_box_unit_id = model.unit_weights.size();
+    const std::size_t num_boxes = std::min<std::size_t>(boxes.size(), 65000 - first_box_unit_id);
+    double box_weight_sum = 0.0;
+    for (std::size_t box_idx = 0; box_idx < num_boxes; ++box_idx) {
+        const auto &sampled_box = boxes[box_idx];
+        const auto &box = sampled_box.box;
+        bool is_covered = false;
+        const auto unit_id = static_cast<std::uint16_t>(model.unit_weights.size());
+        for (std::size_t pool_pos = 0; pool_pos < pool_size; ++pool_pos) {
+            const std::size_t pt_idx = pool[pool_pos];
+            const std::int64_t pt_t = traj.t[pt_idx];
+            if (pt_t < box.t_min)
                 continue;
-            if (tk > bx.t_max)
+            if (pt_t > box.t_max)
                 break;
-            const double xk = tr.x[k], yk = tr.y[k];
-            if (xk >= bx.x_min && xk <= bx.x_max && yk >= bx.y_min && yk <= bx.y_max) {
-                cm.cand_covers[j].push_back(id);
-                any = true;
+            const double pt_x = traj.x[pt_idx], pt_y = traj.y[pt_idx];
+            if (pt_x >= box.x_min && pt_x <= box.x_max && pt_y >= box.y_min && pt_y <= box.y_max) {
+                model.candidate_covers[pool_pos].push_back(unit_id);
+                is_covered = true;
             }
         }
-        if (any) {
-            cm.cell_weight.push_back(sb.weight);
-            box_wsum += sb.weight;
+        if (is_covered) {
+            model.unit_weights.push_back(sampled_box.weight);
+            box_weight_sum += sampled_box.weight;
         }
     }
-    if (box_wsum > 1e-9) {
-        const double box_scale = (0.80 * std::clamp(uncov_frac, 0.0, 1.0)) / box_wsum;
-        for (std::size_t idx = base_id; idx < cm.cell_weight.size(); ++idx)
-            cm.cell_weight[idx] *= box_scale;
+    if (box_weight_sum > 1e-9) {
+        const double box_scale = (0.80 * std::clamp(uncovered_frac, 0.0, 1.0)) / box_weight_sum;
+        for (std::size_t idx = first_box_unit_id; idx < model.unit_weights.size(); ++idx)
+            model.unit_weights[idx] *= box_scale;
     }
-    cm.total_weight = 1.0;
-    return cm;
+    model.total_weight = 1.0;
+    return model;
 }
 
-struct SegScores {
+struct SegmentScores {
     double shape_arc_sum = 0.0; // exact trapezoidal arc-weighted shape in [0, seg_arc]
     double ped_l1_sum = 0.0;    // exact trapezoidal arc-weighted L1 perpendicular error (m * m)
     double max_dev = 0.0;       // exact max perpendicular segment distance (m)
     double wa_sum = 0.0;        // sum of ramp_unit over probes in [t_a, t_b)
 };
 
-SegScores eval_seg_scores(const core::TrajectoryView &tr, std::span<const std::size_t> pool,
-                          std::span<const double> arc_pool, std::span<const Probe> probes,
-                          std::span<const std::size_t> probe_start_of_cand, std::size_t ia,
-                          std::size_t ib) {
-    SegScores sc;
-    const std::size_t a = pool[ia], b = pool[ib];
-    const double ax = tr.x[a], ay = tr.y[a], bx = tr.x[b], by = tr.y[b];
+SegmentScores eval_segment_scores(const core::TrajectoryView &traj,
+                                  std::span<const std::size_t> pool,
+                                  std::span<const double> arc_pool, std::span<const Probe> probes,
+                                  std::span<const std::size_t> probe_start_of_cand,
+                                  std::size_t start_pos, std::size_t end_pos) {
+    SegmentScores scores;
+    const std::size_t start_idx = pool[start_pos], end_idx = pool[end_pos];
+    const double ax = traj.x[start_idx], ay = traj.y[start_idx];
+    const double bx = traj.x[end_idx], by = traj.y[end_idx];
     const double seg_dx = bx - ax, seg_dy = by - ay;
 
     // 1. Exact perpendicular segment distance + trapezoidal arc-weighted shape & L1 error
-    double mx = 0.0;
+    double max_dev = 0.0;
     double arc_sum = 0.0;
     double l1_sum = 0.0;
-    double prev_r = 1.0;
-    double prev_d = 0.0;
-    for (std::size_t ik = ia + 1; ik <= ib; ++ik) {
-        const double w = arc_pool[ik] - arc_pool[ik - 1];
-        double r = 1.0;
-        double d = 0.0;
-        if (ik < ib) {
-            const std::size_t k = pool[ik];
-            d = std::sqrt(selection::distance::squared_segment_distance(tr.x[k], tr.y[k], ax, ay, bx, by));
-            if (d > mx)
-                mx = d;
-            r = ramp_unit(d);
+    double prev_ramp = 1.0;
+    double prev_dist = 0.0;
+    for (std::size_t pool_pos = start_pos + 1; pool_pos <= end_pos; ++pool_pos) {
+        const double arc_step = arc_pool[pool_pos] - arc_pool[pool_pos - 1];
+        double ramp = 1.0;
+        double dist = 0.0;
+        if (pool_pos < end_pos) {
+            const std::size_t pt_idx = pool[pool_pos];
+            dist = std::sqrt(selection::distance::squared_segment_distance(
+                traj.x[pt_idx], traj.y[pt_idx], ax, ay, bx, by));
+            if (dist > max_dev)
+                max_dev = dist;
+            ramp = ramp_unit(dist);
         }
-        if (w > 0.0) {
-            arc_sum += w * 0.5 * (prev_r + r);
-            l1_sum += w * 0.5 * (prev_d + d);
+        if (arc_step > 0.0) {
+            arc_sum += arc_step * 0.5 * (prev_ramp + ramp);
+            l1_sum += arc_step * 0.5 * (prev_dist + dist);
         }
-        prev_r = r;
-        prev_d = d;
+        prev_ramp = ramp;
+        prev_dist = dist;
     }
-    sc.shape_arc_sum = arc_sum;
-    sc.ped_l1_sum = l1_sum;
-    sc.max_dev = mx;
+    scores.shape_arc_sum = arc_sum;
+    scores.ped_l1_sum = l1_sum;
+    scores.max_dev = max_dev;
 
-    // 2. Where-At over probes in [probe_start_of_cand[ia], probe_start_of_cand[ib])
-    const std::size_t p0 = probe_start_of_cand[ia];
-    const std::size_t p1 = probe_start_of_cand[ib];
-    const double t0 = static_cast<double>(tr.t[a]);
-    const double dt = static_cast<double>(tr.t[b] - tr.t[a]);
+    // 2. Where-At over probes in [probe_start_of_cand[start_pos], probe_start_of_cand[end_pos])
+    const std::size_t probe_begin = probe_start_of_cand[start_pos];
+    const std::size_t probe_end = probe_start_of_cand[end_pos];
+    const double start_t = static_cast<double>(traj.t[start_idx]);
+    const double dt = static_cast<double>(traj.t[end_idx] - traj.t[start_idx]);
     const double inv_dt = dt > 0.0 ? 1.0 / dt : 0.0;
-    double wa = 0.0;
-    for (std::size_t p = p0; p < p1; ++p) {
-        const double u = std::clamp((probes[p].t - t0) * inv_dt, 0.0, 1.0);
-        const double ix = ax + u * seg_dx;
-        const double iy = ay + u * seg_dy;
-        const double d = std::hypot(ix - probes[p].x, iy - probes[p].y);
-        wa += ramp_unit(d);
+    double where_at_sum = 0.0;
+    for (std::size_t probe_idx = probe_begin; probe_idx < probe_end; ++probe_idx) {
+        const double frac = std::clamp((probes[probe_idx].t - start_t) * inv_dt, 0.0, 1.0);
+        const double interp_x = ax + frac * seg_dx;
+        const double interp_y = ay + frac * seg_dy;
+        const double dist =
+            std::hypot(interp_x - probes[probe_idx].x, interp_y - probes[probe_idx].y);
+        where_at_sum += ramp_unit(dist);
     }
-    sc.wa_sum = wa;
-    return sc;
+    scores.wa_sum = where_at_sum;
+    return scores;
 }
 
 } // namespace
 
 std::vector<std::size_t>
 submodular_simplify_on_pool(const core::TrajectoryView &traj, std::span<const std::size_t> pool,
-                            std::size_t budget, const SubmodularWeights &w,
+                            std::size_t budget, const SubmodularWeights &weights,
                             const DbDensityIndex &density_idx,
                             const std::vector<SampledRangeBox> *uncov_boxes, double uncov_frac) {
-    const std::size_t n = traj.size();
-    const std::size_t m = pool.size();
-    if (budget >= n) {
-        std::vector<std::size_t> all(n);
-        for (std::size_t k = 0; k < n; ++k)
-            all[k] = k;
-        return all;
+    const std::size_t traj_len = traj.size();
+    const std::size_t pool_size = pool.size();
+    if (budget >= traj_len) {
+        std::vector<std::size_t> all_indices(traj_len);
+        for (std::size_t idx = 0; idx < traj_len; ++idx)
+            all_indices[idx] = idx;
+        return all_indices;
     }
-    budget = std::clamp(budget, std::size_t{2}, n);
-    if (budget == 2 || m <= 2)
-        return {0, n - 1};
-    if (budget >= m) {
-        std::vector<std::size_t> out(pool.begin(), pool.end());
-        if (out.size() < budget) {
-            std::vector<std::uint8_t> used(n, 0);
-            for (std::size_t idx : out)
-                used[idx] = 1;
-            for (std::size_t k = 1; k + 1 < n && out.size() < budget; ++k) {
-                if (!used[k]) {
-                    used[k] = 1;
-                    out.push_back(k);
+    budget = std::clamp(budget, std::size_t{2}, traj_len);
+    if (budget == 2 || pool_size <= 2)
+        return {0, traj_len - 1};
+    if (budget >= pool_size) {
+        std::vector<std::size_t> kept_indices(pool.begin(), pool.end());
+        if (kept_indices.size() < budget) {
+            std::vector<std::uint8_t> is_used(traj_len, 0);
+            for (std::size_t idx : kept_indices)
+                is_used[idx] = 1;
+            for (std::size_t idx = 1; idx + 1 < traj_len && kept_indices.size() < budget; ++idx) {
+                if (!is_used[idx]) {
+                    is_used[idx] = 1;
+                    kept_indices.push_back(idx);
                 }
             }
-            std::ranges::sort(out);
+            std::ranges::sort(kept_indices);
         }
-        return out;
+        return kept_indices;
     }
 
     const auto full_arc = compute_arc_length(traj);
-    std::vector<double> arc_pool(m);
-    for (std::size_t j = 0; j < m; ++j)
-        arc_pool[j] = full_arc[pool[j]];
+    std::vector<double> arc_pool(pool_size);
+    for (std::size_t pool_pos = 0; pool_pos < pool_size; ++pool_pos)
+        arc_pool[pool_pos] = full_arc[pool[pool_pos]];
     const double inv_total_arc = 1.0 / std::max(1.0, arc_pool.back());
 
     const auto probes = build_probes(traj, 64);
     const double inv_probes = probes.empty() ? 0.0 : 1.0 / static_cast<double>(probes.size());
-    std::vector<std::size_t> probe_start(m, probes.size());
+    std::vector<std::size_t> probe_start(pool_size, probes.size());
     {
-        std::size_t p = 0;
-        for (std::size_t j = 0; j < m; ++j) {
-            const double tj = static_cast<double>(traj.t[pool[j]]);
-            while (p < probes.size() && probes[p].t < tj)
-                ++p;
-            probe_start[j] = p;
+        std::size_t probe_idx = 0;
+        for (std::size_t pool_pos = 0; pool_pos < pool_size; ++pool_pos) {
+            const double cand_t = static_cast<double>(traj.t[pool[pool_pos]]);
+            while (probe_idx < probes.size() && probes[probe_idx].t < cand_t)
+                ++probe_idx;
+            probe_start[pool_pos] = probe_idx;
         }
-        probe_start[m - 1] = probes.size();
+        probe_start[pool_size - 1] = probes.size();
     }
 
-    const auto cm = (uncov_boxes != nullptr)
-                        ? build_blended_range_model(traj, pool, density_idx, *uncov_boxes, uncov_frac)
-                        : build_cell_model(traj, pool, density_idx);
-    const std::size_t C = cm.cell_weight.size();
-    std::vector<std::uint16_t> cov_count(C, 0);
+    const auto range_model =
+        (uncov_boxes != nullptr)
+            ? build_blended_range_model(traj, pool, density_idx, *uncov_boxes, uncov_frac)
+            : build_cell_model(traj, pool, density_idx);
+    const std::size_t num_units = range_model.unit_weights.size();
+    std::vector<std::uint16_t> cover_counts(num_units, 0);
 
-    auto add_cover = [&](std::size_t j) {
-        for (std::uint16_t c : cm.cand_covers[j])
-            cov_count[c] += 1;
+    auto add_cover = [&](std::size_t pool_pos) {
+        for (std::uint16_t unit_id : range_model.candidate_covers[pool_pos])
+            cover_counts[unit_id] += 1;
     };
-    auto rem_cover = [&](std::size_t j) {
-        for (std::uint16_t c : cm.cand_covers[j])
-            cov_count[c] -= 1;
+    auto remove_cover = [&](std::size_t pool_pos) {
+        for (std::uint16_t unit_id : range_model.candidate_covers[pool_pos])
+            cover_counts[unit_id] -= 1;
     };
-    auto rng_gain_if_add = [&](std::size_t j) -> double {
-        double g = 0.0;
-        for (std::uint16_t c : cm.cand_covers[j])
-            if (cov_count[c] == 0)
-                g += cm.cell_weight[c];
-        return g / cm.total_weight;
+    auto range_gain_if_added = [&](std::size_t pool_pos) -> double {
+        double gain = 0.0;
+        for (std::uint16_t unit_id : range_model.candidate_covers[pool_pos])
+            if (cover_counts[unit_id] == 0)
+                gain += range_model.unit_weights[unit_id];
+        return gain / range_model.total_weight;
     };
 
-    // Active kept pool indices (kept sorted)
-    std::vector<std::size_t> kp;
-    kp.reserve(budget);
-    kp.push_back(0);
-    kp.push_back(m - 1);
+    // Active kept pool positions (kept sorted)
+    std::vector<std::size_t> kept_positions;
+    kept_positions.reserve(budget);
+    kept_positions.push_back(0);
+    kept_positions.push_back(pool_size - 1);
     add_cover(0);
-    add_cover(m - 1);
+    add_cover(pool_size - 1);
 
-    // Track current segment scores for each interval (kp[s], kp[s+1])
-    std::vector<SegScores> segs;
-    segs.reserve(budget);
-    segs.push_back(eval_seg_scores(traj, pool, arc_pool, probes, probe_start, 0, m - 1));
+    // Track current segment scores for each interval (kept_positions[seg], kept_positions[seg + 1])
+    std::vector<SegmentScores> segment_scores;
+    segment_scores.reserve(budget);
+    segment_scores.push_back(
+        eval_segment_scores(traj, pool, arc_pool, probes, probe_start, 0, pool_size - 1));
 
     // Greedy submodular insertion: at each step pick the candidate maximizing
-    //   w_geo * delta_shape + w_wa * delta_wa + w_rng * delta_rng_cells
-    // To keep runtime O(budget * sqrt(m)), scan up to 16 evenly spaced + local peak candidates
-    // inside each active segment (always including the max-PED, max-SED, and highest-uncovered-rho
-    // points of the segment!).
-    while (kp.size() < budget) {
+    //   w_geo * geo_gain + w_wa * where_at_gain + w_rng * range_gain
+    // Scan up to 8 candidates inside each active segment: max-PED, max-SED, highest uncovered-Range,
+    // plus 5 uniformly spaced interior positions.
+    while (kept_positions.size() < budget) {
         double best_gain = -1e18;
         std::size_t best_seg = 0;
-        std::size_t best_ik = 0;
+        std::size_t best_pos = 0;
 
-        // Current whole-trajectory max arc-Frechet deviation (for L_inf Shape term)
+        // Current whole-trajectory max perpendicular deviation (for L_inf Shape term)
         double global_max_dev = 0.0;
         std::size_t max_dev_seg = 0;
-        for (std::size_t s = 0; s < segs.size(); ++s) {
-            if (segs[s].max_dev > global_max_dev) {
-                global_max_dev = segs[s].max_dev;
-                max_dev_seg = s;
+        for (std::size_t seg = 0; seg < segment_scores.size(); ++seg) {
+            if (segment_scores[seg].max_dev > global_max_dev) {
+                global_max_dev = segment_scores[seg].max_dev;
+                max_dev_seg = seg;
             }
         }
         double second_max_dev = 0.0;
-        for (std::size_t s = 0; s < segs.size(); ++s)
-            if (s != max_dev_seg && segs[s].max_dev > second_max_dev)
-                second_max_dev = segs[s].max_dev;
+        for (std::size_t seg = 0; seg < segment_scores.size(); ++seg)
+            if (seg != max_dev_seg && segment_scores[seg].max_dev > second_max_dev)
+                second_max_dev = segment_scores[seg].max_dev;
 
-        for (std::size_t s = 0; s < segs.size(); ++s) {
-            const std::size_t ia = kp[s], ib = kp[s + 1];
-            if (ib <= ia + 1)
+        for (std::size_t seg = 0; seg < segment_scores.size(); ++seg) {
+            const std::size_t start_pos = kept_positions[seg];
+            const std::size_t end_pos = kept_positions[seg + 1];
+            if (end_pos <= start_pos + 1)
                 continue;
-            const auto &base = segs[s];
-            const bool is_worst_seg = (s == max_dev_seg);
+            const auto &base_scores = segment_scores[seg];
+            const bool is_worst_seg = (seg == max_dev_seg);
 
-            // Pick a compact candidate set inside (ia, ib):
-            // (a) max-arc-dev point, (b) max-SED point, (c) highest uncovered-range point, (d) uniform points
-            std::size_t a = pool[ia], b = pool[ib];
-            const double ax = traj.x[a], ay = traj.y[a], bx = traj.x[b], by = traj.y[b];
-            const double t0 = static_cast<double>(traj.t[a]);
-            const double dt = static_cast<double>(traj.t[b] - traj.t[a]);
+            // Pick a compact candidate set inside (start_pos, end_pos):
+            // (a) max-PED point, (b) max-SED point, (c) highest uncovered-Range point, (d) 5 uniform points
+            const std::size_t start_idx = pool[start_pos], end_idx = pool[end_pos];
+            const double ax = traj.x[start_idx], ay = traj.y[start_idx];
+            const double bx = traj.x[end_idx], by = traj.y[end_idx];
+            const double start_t = static_cast<double>(traj.t[start_idx]);
+            const double dt = static_cast<double>(traj.t[end_idx] - traj.t[start_idx]);
             const double inv_dt = dt > 0.0 ? 1.0 / dt : 0.0;
-            std::size_t arg_dev = ia + 1, arg_sed = ia + 1, arg_rng = ia + 1;
+            std::size_t arg_dev = start_pos + 1;
+            std::size_t arg_sed = start_pos + 1;
+            std::size_t arg_rng = start_pos + 1;
             double max_dev_sq = -1.0, max_sed_sq = -1.0, max_rng = -1.0;
 
-            const std::size_t span = ib - ia - 1;
-            for (std::size_t ik = ia + 1; ik < ib; ++ik) {
-                const std::size_t k = pool[ik];
-                const double dev2 =
-                    selection::distance::squared_segment_distance(traj.x[k], traj.y[k], ax, ay, bx, by);
-                if (dev2 > max_dev_sq) {
-                    max_dev_sq = dev2;
-                    arg_dev = ik;
+            const std::size_t span = end_pos - start_pos - 1;
+            for (std::size_t cand_pos = start_pos + 1; cand_pos < end_pos; ++cand_pos) {
+                const std::size_t pt_idx = pool[cand_pos];
+                const double perp_dist_sq = selection::distance::squared_segment_distance(
+                    traj.x[pt_idx], traj.y[pt_idx], ax, ay, bx, by);
+                if (perp_dist_sq > max_dev_sq) {
+                    max_dev_sq = perp_dist_sq;
+                    arg_dev = cand_pos;
                 }
-                const double u = (static_cast<double>(traj.t[k]) - t0) * inv_dt;
-                const double sdx = ax + u * (bx - ax) - traj.x[k];
-                const double sdy = ay + u * (by - ay) - traj.y[k];
-                const double sed2 = sdx * sdx + sdy * sdy;
-                if (sed2 > max_sed_sq) {
-                    max_sed_sq = sed2;
-                    arg_sed = ik;
+                const double frac = (static_cast<double>(traj.t[pt_idx]) - start_t) * inv_dt;
+                const double sed_dx = ax + frac * (bx - ax) - traj.x[pt_idx];
+                const double sed_dy = ay + frac * (by - ay) - traj.y[pt_idx];
+                const double sed_dist_sq = sed_dx * sed_dx + sed_dy * sed_dy;
+                if (sed_dist_sq > max_sed_sq) {
+                    max_sed_sq = sed_dist_sq;
+                    arg_sed = cand_pos;
                 }
-                const double rg = rng_gain_if_add(ik);
-                if (rg > max_rng) {
-                    max_rng = rg;
-                    arg_rng = ik;
+                const double range_gain = range_gain_if_added(cand_pos);
+                if (range_gain > max_rng) {
+                    max_rng = range_gain;
+                    arg_rng = cand_pos;
                 }
             }
 
-            std::array<std::size_t, 8> cands{};
-            std::size_t n_cands = 0;
-            cands[n_cands++] = arg_dev;
-            cands[n_cands++] = arg_sed;
-            cands[n_cands++] = arg_rng;
-            const std::size_t n_uni = std::min<std::size_t>(5, span);
-            for (std::size_t q = 1; q <= n_uni; ++q)
-                cands[n_cands++] = ia + (q * (ib - ia)) / (n_uni + 1);
-            std::sort(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n_cands));
-            n_cands = static_cast<std::size_t>(
-                std::unique(cands.begin(), cands.begin() + static_cast<std::ptrdiff_t>(n_cands)) -
-                cands.begin());
+            std::array<std::size_t, 8> candidates{};
+            std::size_t num_candidates = 0;
+            candidates[num_candidates++] = arg_dev;
+            candidates[num_candidates++] = arg_sed;
+            candidates[num_candidates++] = arg_rng;
+            const std::size_t num_uniform = std::min<std::size_t>(5, span);
+            for (std::size_t step_idx = 1; step_idx <= num_uniform; ++step_idx)
+                candidates[num_candidates++] =
+                    start_pos + (step_idx * (end_pos - start_pos)) / (num_uniform + 1);
+            std::sort(candidates.begin(),
+                      candidates.begin() + static_cast<std::ptrdiff_t>(num_candidates));
+            num_candidates = static_cast<std::size_t>(
+                std::unique(candidates.begin(),
+                            candidates.begin() + static_cast<std::ptrdiff_t>(num_candidates)) -
+                candidates.begin());
 
-            for (std::size_t ci = 0; ci < n_cands; ++ci) {
-                const std::size_t ik = cands[ci];
-                if (ik <= ia || ik >= ib)
+            for (std::size_t cand_idx = 0; cand_idx < num_candidates; ++cand_idx) {
+                const std::size_t cand_pos = candidates[cand_idx];
+                if (cand_pos <= start_pos || cand_pos >= end_pos)
                     continue;
-                const auto left_sc =
-                    eval_seg_scores(traj, pool, arc_pool, probes, probe_start, ia, ik);
-                const auto right_sc =
-                    eval_seg_scores(traj, pool, arc_pool, probes, probe_start, ik, ib);
+                const auto left_scores =
+                    eval_segment_scores(traj, pool, arc_pool, probes, probe_start, start_pos, cand_pos);
+                const auto right_scores =
+                    eval_segment_scores(traj, pool, arc_pool, probes, probe_start, cand_pos, end_pos);
 
                 // Exact RDP point deviation (never vanishes on S-curves!) + L1 area drop + arc shape
-                const std::size_t k = pool[ik];
-                const double d_pt = std::sqrt(selection::distance::squared_segment_distance(
-                    traj.x[k], traj.y[k], ax, ay, bx, by));
-                const double d_l1_drop =
-                    std::max(0.0, base.ped_l1_sum - (left_sc.ped_l1_sum + right_sc.ped_l1_sum)) *
+                const std::size_t pt_idx = pool[cand_pos];
+                const double perp_dist = std::sqrt(selection::distance::squared_segment_distance(
+                    traj.x[pt_idx], traj.y[pt_idx], ax, ay, bx, by));
+                const double l1_drop =
+                    std::max(0.0,
+                             base_scores.ped_l1_sum -
+                                 (left_scores.ped_l1_sum + right_scores.ped_l1_sum)) *
                     inv_total_arc;
-                const double d_arc =
-                    (left_sc.shape_arc_sum + right_sc.shape_arc_sum - base.shape_arc_sum) *
+                const double arc_gain =
+                    (left_scores.shape_arc_sum + right_scores.shape_arc_sum -
+                     base_scores.shape_arc_sum) *
                     inv_total_arc;
-                const double new_seg_max = std::max(left_sc.max_dev, right_sc.max_dev);
-                double d_global_drop = 0.0;
+                const double new_seg_max = std::max(left_scores.max_dev, right_scores.max_dev);
+                double global_max_drop = 0.0;
                 if (is_worst_seg) {
                     const double new_global_max = std::max(second_max_dev, new_seg_max);
-                    d_global_drop = std::max(0.0, global_max_dev - new_global_max) / 150.0;
+                    global_max_drop = std::max(0.0, global_max_dev - new_global_max) / 150.0;
                 }
-                const double d_geo =
-                    0.50 * (d_pt / 150.0) + 0.30 * (d_l1_drop / 35.0) + 0.20 * d_global_drop + 0.40 * d_arc;
+                const double geo_gain = 0.50 * (perp_dist / 150.0) + 0.30 * (l1_drop / 35.0) +
+                                        0.20 * global_max_drop + 0.40 * arc_gain;
 
-                const double d_wa =
-                    (left_sc.wa_sum + right_sc.wa_sum - base.wa_sum) * inv_probes;
-                const double d_rng = rng_gain_if_add(ik);
+                const double where_at_gain =
+                    (left_scores.wa_sum + right_scores.wa_sum - base_scores.wa_sum) * inv_probes;
+                const double range_gain = range_gain_if_added(cand_pos);
 
-                const double gain = w.w_geo * d_geo + w.w_wa * d_wa + w.w_rng * d_rng;
+                const double gain = weights.w_geo * geo_gain + weights.w_wa * where_at_gain +
+                                    weights.w_rng * range_gain;
                 if (gain > best_gain) {
                     best_gain = gain;
-                    best_seg = s;
-                    best_ik = ik;
+                    best_seg = seg;
+                    best_pos = cand_pos;
                 }
             }
         }
 
-        if (best_ik == 0)
+        if (best_pos == 0)
             break;
 
-        const std::size_t ia = kp[best_seg], ib = kp[best_seg + 1];
-        kp.insert(kp.begin() + static_cast<std::ptrdiff_t>(best_seg + 1), best_ik);
-        add_cover(best_ik);
-        segs[best_seg] = eval_seg_scores(traj, pool, arc_pool, probes, probe_start, ia, best_ik);
-        segs.insert(segs.begin() + static_cast<std::ptrdiff_t>(best_seg + 1),
-                    eval_seg_scores(traj, pool, arc_pool, probes, probe_start, best_ik, ib));
+        const std::size_t start_pos = kept_positions[best_seg];
+        const std::size_t end_pos = kept_positions[best_seg + 1];
+        kept_positions.insert(kept_positions.begin() + static_cast<std::ptrdiff_t>(best_seg + 1),
+                              best_pos);
+        add_cover(best_pos);
+        segment_scores[best_seg] =
+            eval_segment_scores(traj, pool, arc_pool, probes, probe_start, start_pos, best_pos);
+        segment_scores.insert(
+            segment_scores.begin() + static_cast<std::ptrdiff_t>(best_seg + 1),
+            eval_segment_scores(traj, pool, arc_pool, probes, probe_start, best_pos, end_pos));
     }
 
-    // Fast Red-Black Free-Knot Polish optimizing the EXACT same 3-term objective!
-    for (int pass = 0; pass < w.rb_passes; ++pass) {
+    // Fast Red-Black Free-Knot Polish optimizing the EXACT same 3-term objective
+    for (int pass = 0; pass < weights.rb_passes; ++pass) {
         bool changed = false;
         for (int parity = 1; parity <= 2; ++parity) {
-            for (std::size_t j = static_cast<std::size_t>(parity); j + 1 < kp.size(); j += 2) {
-                const std::size_t il = kp[j - 1];
-                const std::size_t ir = kp[j + 1];
-                if (ir <= il + 2)
+            for (std::size_t knot_idx = static_cast<std::size_t>(parity);
+                 knot_idx + 1 < kept_positions.size(); knot_idx += 2) {
+                const std::size_t left_pos = kept_positions[knot_idx - 1];
+                const std::size_t right_pos = kept_positions[knot_idx + 1];
+                if (right_pos <= left_pos + 2)
                     continue;
-                const std::size_t orig_c = kp[j];
+                const std::size_t original_pos = kept_positions[knot_idx];
 
                 // Compute max_dev across all OTHER segments for exact L_inf
                 double other_max_dev = 0.0;
-                for (std::size_t s = 0; s < segs.size(); ++s)
-                    if (s != j - 1 && s != j && segs[s].max_dev > other_max_dev)
-                        other_max_dev = segs[s].max_dev;
+                for (std::size_t seg = 0; seg < segment_scores.size(); ++seg)
+                    if (seg != knot_idx - 1 && seg != knot_idx &&
+                        segment_scores[seg].max_dev > other_max_dev)
+                        other_max_dev = segment_scores[seg].max_dev;
 
-                rem_cover(orig_c);
+                remove_cover(original_pos);
 
-                auto eval_c = [&](std::size_t c) -> double {
-                    const auto sl = eval_seg_scores(traj, pool, arc_pool, probes, probe_start, il, c);
-                    const auto sr = eval_seg_scores(traj, pool, arc_pool, probes, probe_start, c, ir);
-                    const double geo_arc = (sl.shape_arc_sum + sr.shape_arc_sum) * inv_total_arc;
-                    const double geo_l1 = (sl.ped_l1_sum + sr.ped_l1_sum) * inv_total_arc;
-                    const double new_seg_max = std::max(sl.max_dev, sr.max_dev);
-                    const double new_glob_max = std::max(other_max_dev, new_seg_max);
-                    const double geo = 0.40 * geo_arc - 0.35 * (geo_l1 / 35.0) -
-                                       0.35 * (new_seg_max / 150.0) - 0.25 * (new_glob_max / 150.0);
-                    const double wa = (sl.wa_sum + sr.wa_sum) * inv_probes;
-                    const double rng = rng_gain_if_add(c);
-                    return w.w_geo * geo + w.w_wa * wa + w.w_rng * rng;
+                auto eval_knot_position = [&](std::size_t cand_pos) -> double {
+                    const auto left_scores = eval_segment_scores(
+                        traj, pool, arc_pool, probes, probe_start, left_pos, cand_pos);
+                    const auto right_scores = eval_segment_scores(
+                        traj, pool, arc_pool, probes, probe_start, cand_pos, right_pos);
+                    const double geo_arc =
+                        (left_scores.shape_arc_sum + right_scores.shape_arc_sum) * inv_total_arc;
+                    const double geo_l1 =
+                        (left_scores.ped_l1_sum + right_scores.ped_l1_sum) * inv_total_arc;
+                    const double new_seg_max = std::max(left_scores.max_dev, right_scores.max_dev);
+                    const double new_global_max = std::max(other_max_dev, new_seg_max);
+                    const double geo_score = 0.40 * geo_arc - 0.35 * (geo_l1 / 35.0) -
+                                             0.35 * (new_seg_max / 150.0) -
+                                             0.25 * (new_global_max / 150.0);
+                    const double where_at_score =
+                        (left_scores.wa_sum + right_scores.wa_sum) * inv_probes;
+                    const double range_score = range_gain_if_added(cand_pos);
+                    return weights.w_geo * geo_score + weights.w_wa * where_at_score +
+                           weights.w_rng * range_score;
                 };
 
-                std::size_t best_c = orig_c;
-                double best_val = eval_c(orig_c);
+                std::size_t best_pos = original_pos;
+                double best_score = eval_knot_position(original_pos);
 
-                // Coarse scan across (il, ir) + local halving
-                const std::size_t span = ir - il - 1;
-                const std::size_t n_coarse = std::min<std::size_t>(10, span);
-                for (std::size_t q = 1; q <= n_coarse; ++q) {
-                    const std::size_t c = il + (q * (ir - il)) / (n_coarse + 1);
-                    if (c <= il || c >= ir || c == best_c)
+                // Coarse scan across (left_pos, right_pos) + local halving
+                const std::size_t span = right_pos - left_pos - 1;
+                const std::size_t num_coarse = std::min<std::size_t>(10, span);
+                for (std::size_t step_idx = 1; step_idx <= num_coarse; ++step_idx) {
+                    const std::size_t cand_pos =
+                        left_pos + (step_idx * (right_pos - left_pos)) / (num_coarse + 1);
+                    if (cand_pos <= left_pos || cand_pos >= right_pos || cand_pos == best_pos)
                         continue;
-                    const double v = eval_c(c);
-                    if (v > best_val + 1e-9) {
-                        best_val = v;
-                        best_c = c;
+                    const double score = eval_knot_position(cand_pos);
+                    if (score > best_score + 1e-9) {
+                        best_score = score;
+                        best_pos = cand_pos;
                     }
                 }
-                std::size_t step = std::max<std::size_t>(1, span / (n_coarse + 1));
+                std::size_t step = std::max<std::size_t>(1, span / (num_coarse + 1));
                 while (step >= 1) {
-                    bool imp = false;
-                    if (best_c > il + step) {
-                        const double v = eval_c(best_c - step);
-                        if (v > best_val + 1e-9) {
-                            best_val = v;
-                            best_c -= step;
-                            imp = true;
+                    bool improved = false;
+                    if (best_pos > left_pos + step) {
+                        const double score = eval_knot_position(best_pos - step);
+                        if (score > best_score + 1e-9) {
+                            best_score = score;
+                            best_pos -= step;
+                            improved = true;
                         }
                     }
-                    if (best_c + step < ir) {
-                        const double v = eval_c(best_c + step);
-                        if (v > best_val + 1e-9) {
-                            best_val = v;
-                            best_c += step;
-                            imp = true;
+                    if (best_pos + step < right_pos) {
+                        const double score = eval_knot_position(best_pos + step);
+                        if (score > best_score + 1e-9) {
+                            best_score = score;
+                            best_pos += step;
+                            improved = true;
                         }
                     }
-                    if (!imp)
+                    if (!improved)
                         step /= 2;
                 }
 
-                kp[j] = best_c;
-                add_cover(best_c);
-                if (best_c != orig_c) {
-                    segs[j - 1] = eval_seg_scores(traj, pool, arc_pool, probes, probe_start, il, best_c);
-                    segs[j] = eval_seg_scores(traj, pool, arc_pool, probes, probe_start, best_c, ir);
+                kept_positions[knot_idx] = best_pos;
+                add_cover(best_pos);
+                if (best_pos != original_pos) {
+                    segment_scores[knot_idx - 1] = eval_segment_scores(
+                        traj, pool, arc_pool, probes, probe_start, left_pos, best_pos);
+                    segment_scores[knot_idx] = eval_segment_scores(
+                        traj, pool, arc_pool, probes, probe_start, best_pos, right_pos);
                     changed = true;
                 }
             }
@@ -590,10 +642,10 @@ submodular_simplify_on_pool(const core::TrajectoryView &traj, std::span<const st
             break;
     }
 
-    std::vector<std::size_t> out(kp.size());
-    for (std::size_t j = 0; j < kp.size(); ++j)
-        out[j] = pool[kp[j]];
-    return out;
+    std::vector<std::size_t> kept_indices(kept_positions.size());
+    for (std::size_t idx = 0; idx < kept_positions.size(); ++idx)
+        kept_indices[idx] = pool[kept_positions[idx]];
+    return kept_indices;
 }
 
 } // namespace student

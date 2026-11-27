@@ -2,7 +2,7 @@
 """
 Offline Student Trainer (Stage 1 DWF-Alloc + Stage 2 Param-Submod).
 Reads a C++ `student_tool export` + `fit-simplex` directory, trains both tiny MLPs,
-and exports a single self-contained ~48 KB binary (`student_model.bin`) for pure-C++ inference.
+and exports a single self-contained ~49 KB binary (`student_model.bin`) for pure-C++ inference.
 """
 
 from __future__ import annotations
@@ -26,33 +26,33 @@ MODEL_VERSION = 1
 
 def load_export(export_dir: Path):
     meta = json.loads((export_dir / "meta.json").read_text())
-    n_trajs, n_feats = int(meta["num_trajs"]), int(meta["num_features"])
-    X = np.fromfile(export_dir / "features.bin", dtype=np.float32).reshape(n_trajs, n_feats)
+    num_trajs, num_features = int(meta["num_trajs"]), int(meta["num_features"])
+    features = np.fromfile(export_dir / "features.bin", dtype=np.float32).reshape(num_trajs, num_features)
     lengths = np.fromfile(export_dir / "lengths.bin", dtype=np.uint32).astype(np.int64)
-    shares = [float(s) for s in meta.get("shares", [0.0025, 0.01, 0.02])]
+    shares = [float(share) for share in meta.get("shares", [0.0025, 0.01, 0.02])]
     simplex = np.array(json.loads((export_dir / "presets.json").read_text()), dtype=np.float32)
-    return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0), lengths, shares, np.log(simplex)
+    return np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0), lengths, shares, np.log(simplex)
 
 
-def standardize(X: np.ndarray):
-    mean = X.mean(axis=0).astype(np.float32)
-    std = np.where(X.std(axis=0) < 1e-6, 1.0, X.std(axis=0)).astype(np.float32)
-    return (X - mean) / std, mean, std
+def standardize(features: np.ndarray):
+    mean = features.mean(axis=0).astype(np.float32)
+    std = np.where(features.std(axis=0) < 1e-6, 1.0, features.std(axis=0)).astype(np.float32)
+    return (features - mean) / std, mean, std
 
 
 def build_mlp(dims: list[int], dropout_layers: int) -> nn.Sequential:
     layers: list[nn.Module] = []
-    for i in range(len(dims) - 1):
-        layers.append(nn.Linear(dims[i], dims[i + 1]))
-        if i + 1 < len(dims) - 1:
-            layers += [nn.LayerNorm(dims[i + 1]), nn.SiLU()]
-            if i < dropout_layers:
+    for layer_idx in range(len(dims) - 1):
+        layers.append(nn.Linear(dims[layer_idx], dims[layer_idx + 1]))
+        if layer_idx + 1 < len(dims) - 1:
+            layers += [nn.LayerNorm(dims[layer_idx + 1]), nn.SiLU()]
+            if layer_idx < dropout_layers:
                 layers.append(nn.Dropout(0.05))
     return nn.Sequential(*layers)
 
 
 class MonotoneMarginalCurveNet(nn.Module):
-    """Predicts strictly decreasing log-marginal-utility curves ell_i(a_m) across log anchors."""
+    """Predicts strictly decreasing log-marginal-utility curves across log budget anchors."""
 
     def __init__(self, in_dim: int, hidden: int = 64, num_anchors: int = len(ANCHORS)):
         super().__init__()
@@ -66,70 +66,88 @@ class MonotoneMarginalCurveNet(nn.Module):
         return torch.cat([start, start - torch.cumsum(drops, dim=1)], dim=1)
 
 
-def eval_continuous_budget(ell: torch.Tensor, eta: torch.Tensor, lengths: torch.Tensor, log_anc: torch.Tensor):
-    frac = torch.clamp((ell[:, :-1] - eta) / (ell[:, :-1] - ell[:, 1:]), 0.0, 1.0)
-    log_b = log_anc[0] + (frac * (log_anc[1:] - log_anc[:-1]).unsqueeze(0)).sum(dim=1)
-    last_slope = (ell[:, -2] - ell[:, -1]) / (log_anc[-1] - log_anc[-2])
-    tail = torch.clamp((ell[:, -1] - eta) / (last_slope + 1e-3), min=0.0, max=4.0)
-    return torch.minimum(torch.clamp(torch.exp(log_b + tail), min=2.0), lengths.float())
+def eval_continuous_budget(
+    marginal_curves: torch.Tensor, eta: torch.Tensor, lengths: torch.Tensor, log_anchors: torch.Tensor
+):
+    frac = torch.clamp(
+        (marginal_curves[:, :-1] - eta) / (marginal_curves[:, :-1] - marginal_curves[:, 1:]), 0.0, 1.0
+    )
+    log_budget = log_anchors[0] + (frac * (log_anchors[1:] - log_anchors[:-1]).unsqueeze(0)).sum(dim=1)
+    last_slope = (marginal_curves[:, -2] - marginal_curves[:, -1]) / (log_anchors[-1] - log_anchors[-2])
+    tail = torch.clamp((marginal_curves[:, -1] - eta) / (last_slope + 1e-3), min=0.0, max=4.0)
+    return torch.minimum(torch.clamp(torch.exp(log_budget + tail), min=2.0), lengths.float())
 
 
-def differentiable_water_filling(ell: torch.Tensor, lengths: torch.Tensor, B: float, log_anc: torch.Tensor):
+def differentiable_water_filling(
+    marginal_curves: torch.Tensor, lengths: torch.Tensor, total_budget: float, log_anchors: torch.Tensor
+):
     """1D Lagrangian water-filling with exact Implicit Function Theorem (IFT) backward pass."""
     with torch.no_grad():
-        lo, hi = ell.min() - 15.0, ell.max() + 2.0
+        low_eta, high_eta = marginal_curves.min() - 15.0, marginal_curves.max() + 2.0
         for _ in range(36):
-            mid = 0.5 * (lo + hi)
-            if eval_continuous_budget(ell, mid, lengths, log_anc).sum() > B:
-                lo = mid
+            mid_eta = 0.5 * (low_eta + high_eta)
+            if eval_continuous_budget(marginal_curves, mid_eta, lengths, log_anchors).sum() > total_budget:
+                low_eta = mid_eta
             else:
-                hi = mid
-        eta_star = 0.5 * (lo + hi)
+                high_eta = mid_eta
+        eta_star = 0.5 * (low_eta + high_eta)
 
-    # IFT: since F(ell, eta*) = sum(b_i) - B = 0, d(eta*)/d(ell) = -(dF/d(ell)) / (dF/d(eta))
+    # IFT: since F(curves, eta*) = sum(b_i) - B = 0, d(eta*)/d(curves) = -(dF/d(curves)) / (dF/d(eta))
     eta_var = eta_star.detach().requires_grad_(True)
     dF_deta = torch.autograd.grad(
-        eval_continuous_budget(ell.detach(), eta_var, lengths, log_anc).sum(), eta_var
+        eval_continuous_budget(marginal_curves.detach(), eta_var, lengths, log_anchors).sum(), eta_var
     )[0].detach().clamp(max=-1e-3)
-    F_val = eval_continuous_budget(ell, eta_star.detach(), lengths, log_anc).sum() - B
-    eta_ift = eta_star.detach() - F_val / dF_deta
-    return eval_continuous_budget(ell, eta_ift, lengths, log_anc)
+    constraint_residual = (
+        eval_continuous_budget(marginal_curves, eta_star.detach(), lengths, log_anchors).sum() - total_budget
+    )
+    eta_ift = eta_star.detach() - constraint_residual / dF_deta
+    return eval_continuous_budget(marginal_curves, eta_ift, lengths, log_anchors)
 
 
-def train_stage1(X: np.ndarray, lengths: np.ndarray, budgets: dict[float, np.ndarray], epochs: int, seed: int, device: str):
+def train_stage1(
+    features: np.ndarray,
+    lengths: np.ndarray,
+    budgets: dict[float, np.ndarray],
+    epochs: int,
+    seed: int,
+    device: str,
+):
     torch.manual_seed(seed)
     np.random.seed(seed)
-    Xn, mean, std = standardize(X)
-    x_t = torch.from_numpy(Xn).to(device)
-    len_t = torch.from_numpy(lengths).to(device)
-    log_anc = torch.from_numpy(LOG_ANCHORS).to(device)
-    targets = {s: (torch.from_numpy(b.astype(np.float32)).to(device), float(b.sum())) for s, b in budgets.items()}
+    norm_features, mean, std = standardize(features)
+    features_t = torch.from_numpy(norm_features).to(device)
+    lengths_t = torch.from_numpy(lengths).to(device)
+    log_anchors_t = torch.from_numpy(LOG_ANCHORS).to(device)
+    targets = {
+        share: (torch.from_numpy(budget.astype(np.float32)).to(device), float(budget.sum()))
+        for share, budget in budgets.items()
+    }
 
-    model = MonotoneMarginalCurveNet(X.shape[1]).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=1e-4)
+    model = MonotoneMarginalCurveNet(features.shape[1]).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
 
     model.train()
     for _ in range(epochs):
-        opt.zero_grad()
-        ell = model(x_t)
+        optimizer.zero_grad()
+        marginal_curves = model(features_t)
         loss = torch.tensor(0.0, device=device)
-        for b_star, B in targets.values():
-            b_hat = differentiable_water_filling(ell, len_t, B, log_anc)
-            loss = loss + F.huber_loss(torch.log(b_hat), torch.log(b_star), delta=0.25)
-            loss = loss + 0.15 * F.l1_loss(b_hat, b_star) / (b_star.mean() + 1e-6)
-        loss = loss / len(targets) + 1e-4 * ((ell[:, :-1] - ell[:, 1:]) ** 2).mean()
+        for target_budgets, total_budget in targets.values():
+            pred_budgets = differentiable_water_filling(marginal_curves, lengths_t, total_budget, log_anchors_t)
+            loss = loss + F.huber_loss(torch.log(pred_budgets), torch.log(target_budgets), delta=0.25)
+            loss = loss + 0.15 * F.l1_loss(pred_budgets, target_budgets) / (target_budgets.mean() + 1e-6)
+        loss = loss / len(targets) + 1e-4 * ((marginal_curves[:, :-1] - marginal_curves[:, 1:]) ** 2).mean()
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-        opt.step()
-        sched.step()
+        optimizer.step()
+        scheduler.step()
     model.eval()
     return model, mean, std
 
 
 def train_stage2(
     train_dir: Path,
-    X: np.ndarray,
+    features: np.ndarray,
     lengths: np.ndarray,
     budgets: dict[float, np.ndarray],
     num_presets: int,
@@ -139,91 +157,109 @@ def train_stage2(
 ):
     torch.manual_seed(seed)
     np.random.seed(seed)
-    Xs, Ps, Ws = [], [], []
-    for s, b_gt in budgets.items():
-        losses = np.fromfile(train_dir / f"preset_losses_{s:g}.bin", dtype=np.float32).reshape(
+    feature_blocks, target_probs, sample_weights = [], [], []
+    for share, teacher_budgets in budgets.items():
+        preset_losses = np.fromfile(train_dir / f"preset_losses_{share:g}.bin", dtype=np.float32).reshape(
             len(lengths), num_presets
         )
-        active = b_gt > 2
-        b = np.maximum(2.0, b_gt[active].astype(np.float32))
-        n = np.maximum(2.0, lengths[active].astype(np.float32))
-        Xs.append(np.hstack([X[active], np.stack([np.log(b), b / n, np.log(n / b)], axis=1)]))
+        active = teacher_budgets > 2
+        budget_f = np.maximum(2.0, teacher_budgets[active].astype(np.float32))
+        length_f = np.maximum(2.0, lengths[active].astype(np.float32))
+        feature_blocks.append(
+            np.hstack([features[active], np.stack([np.log(budget_f), budget_f / length_f, np.log(length_f / budget_f)], axis=1)])
+        )
         # Boltzmann soft target over simplex presets (tau=0.25 focuses mass on best-matching presets)
-        L_shift = losses[active] - losses[active].min(axis=1, keepdims=True)
-        exp_t = np.exp(np.clip(-L_shift / 0.25, -30.0, 0.0))
-        Ps.append(exp_t / exp_t.sum(axis=1, keepdims=True))
-        Ws.append(np.log(b))
+        shifted_losses = preset_losses[active] - preset_losses[active].min(axis=1, keepdims=True)
+        boltzmann_weights = np.exp(np.clip(-shifted_losses / 0.25, -30.0, 0.0))
+        target_probs.append(boltzmann_weights / boltzmann_weights.sum(axis=1, keepdims=True))
+        sample_weights.append(np.log(budget_f))
 
-    Xn, mean, std = standardize(np.vstack(Xs))
-    x_t = torch.from_numpy(Xn).to(device)
-    p_t = torch.from_numpy(np.vstack(Ps).astype(np.float32)).to(device)
-    w_t = torch.from_numpy(np.concatenate(Ws).astype(np.float32)).to(device)
-    w_t = w_t / w_t.mean()
+    norm_features, mean, std = standardize(np.vstack(feature_blocks))
+    features_t = torch.from_numpy(norm_features).to(device)
+    probs_t = torch.from_numpy(np.vstack(target_probs).astype(np.float32)).to(device)
+    weights_t = torch.from_numpy(np.concatenate(sample_weights).astype(np.float32)).to(device)
+    weights_t = weights_t / weights_t.mean()
 
-    model = build_mlp([Xn.shape[1], 64, 64, num_presets], dropout_layers=2).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=1e-4)
+    model = build_mlp([norm_features.shape[1], 64, 64, num_presets], dropout_layers=2).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
 
-    N = len(Xn)
+    num_samples = len(norm_features)
     for _ in range(epochs):
         model.train()
-        perm = torch.randperm(N, device=device)
-        for st in range(0, N, 1024):
-            idx = perm[st : st + 1024]
-            loss = (-(p_t[idx] * F.log_softmax(model(x_t[idx]), dim=1)).sum(dim=1) * w_t[idx]).mean()
-            opt.zero_grad()
+        perm = torch.randperm(num_samples, device=device)
+        for batch_start in range(0, num_samples, 1024):
+            batch_idx = perm[batch_start : batch_start + 1024]
+            loss = (
+                -(probs_t[batch_idx] * F.log_softmax(model(features_t[batch_idx]), dim=1)).sum(dim=1)
+                * weights_t[batch_idx]
+            ).mean()
+            optimizer.zero_grad()
             loss.backward()
-            opt.step()
-        sched.step()
+            optimizer.step()
+        scheduler.step()
     model.eval()
     return model, mean, std
 
 
-def save_model(out_path: Path, s1, s1_mean, s1_std, s2, s2_mean, s2_std, log_simplex: np.ndarray):
-    def write_u32(f, val: int) -> None:
-        f.write(struct.pack("<I", int(val)))
+def save_model(
+    out_path: Path,
+    budget_net,
+    s1_mean,
+    s1_std,
+    weight_net,
+    s2_mean,
+    s2_std,
+    log_simplex: np.ndarray,
+):
+    def write_u32(out_file, val: int) -> None:
+        out_file.write(struct.pack("<I", int(val)))
 
-    def write_f32(f, arr: np.ndarray) -> None:
-        f.write(np.ascontiguousarray(arr, dtype="<f4").tobytes())
+    def write_f32(out_file, arr: np.ndarray) -> None:
+        out_file.write(np.ascontiguousarray(arr, dtype="<f4").tobytes())
 
-    def write_seq(f, seq: nn.Sequential) -> None:
-        mods, layers, i = list(seq), [], 0
-        while i < len(mods):
-            if isinstance(mods[i], nn.Linear):
-                ln = mods[i + 1] if (i + 1 < len(mods) and isinstance(mods[i + 1], nn.LayerNorm)) else None
-                layers.append((mods[i], ln))
-                i += 2 if ln is not None else 1
+    def write_seq(out_file, seq: nn.Sequential) -> None:
+        modules, layers, idx = list(seq), [], 0
+        while idx < len(modules):
+            if isinstance(modules[idx], nn.Linear):
+                layernorm = (
+                    modules[idx + 1]
+                    if (idx + 1 < len(modules) and isinstance(modules[idx + 1], nn.LayerNorm))
+                    else None
+                )
+                layers.append((modules[idx], layernorm))
+                idx += 2 if layernorm is not None else 1
             else:
-                i += 1
-        write_u32(f, len(layers))
-        for lin, ln in layers:
-            write_u32(f, lin.in_features)
-            write_u32(f, lin.out_features)
-            write_u32(f, 1 if ln is not None else 0)
-            write_f32(f, lin.weight.detach().cpu().numpy())
-            write_f32(f, lin.bias.detach().cpu().numpy())
-            if ln is not None:
-                write_f32(f, ln.weight.detach().cpu().numpy())
-                write_f32(f, ln.bias.detach().cpu().numpy())
+                idx += 1
+        write_u32(out_file, len(layers))
+        for linear, layernorm in layers:
+            write_u32(out_file, linear.in_features)
+            write_u32(out_file, linear.out_features)
+            write_u32(out_file, 1 if layernorm is not None else 0)
+            write_f32(out_file, linear.weight.detach().cpu().numpy())
+            write_f32(out_file, linear.bias.detach().cpu().numpy())
+            if layernorm is not None:
+                write_f32(out_file, layernorm.weight.detach().cpu().numpy())
+                write_f32(out_file, layernorm.bias.detach().cpu().numpy())
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "wb") as f:
-        write_u32(f, MODEL_MAGIC)
-        write_u32(f, MODEL_VERSION)
+    with open(out_path, "wb") as out_file:
+        write_u32(out_file, MODEL_MAGIC)
+        write_u32(out_file, MODEL_VERSION)
 
-        write_u32(f, len(s1_mean))
-        write_u32(f, len(LOG_ANCHORS))
-        write_f32(f, s1_mean)
-        write_f32(f, s1_std)
-        write_f32(f, LOG_ANCHORS)
-        write_seq(f, s1.net)
+        write_u32(out_file, len(s1_mean))
+        write_u32(out_file, len(LOG_ANCHORS))
+        write_f32(out_file, s1_mean)
+        write_f32(out_file, s1_std)
+        write_f32(out_file, LOG_ANCHORS)
+        write_seq(out_file, budget_net.net)
 
-        write_u32(f, len(s2_mean))
-        write_u32(f, len(log_simplex))
-        write_f32(f, s2_mean)
-        write_f32(f, s2_std)
-        write_f32(f, log_simplex)
-        write_seq(f, s2)
+        write_u32(out_file, len(s2_mean))
+        write_u32(out_file, len(log_simplex))
+        write_f32(out_file, s2_mean)
+        write_f32(out_file, s2_std)
+        write_f32(out_file, log_simplex)
+        write_seq(out_file, weight_net)
 
 
 def train_and_export(
@@ -234,27 +270,32 @@ def train_and_export(
     seed: int = 42,
 ) -> Path:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    X, lengths, shares, log_simplex = load_export(train_dir)
+    features, lengths, shares, log_simplex = load_export(train_dir)
     budgets = {
-        s: np.fromfile(train_dir / f"teacher_budgets_{s:g}.bin", dtype=np.uint32).astype(np.int64)
-        for s in shares
+        share: np.fromfile(train_dir / f"teacher_budgets_{share:g}.bin", dtype=np.uint32).astype(np.int64)
+        for share in shares
     }
-    t0 = time.perf_counter()
-    s1, s1_mean, s1_std = train_stage1(X, lengths, budgets, epochs_s1, seed, device)
-    t1 = time.perf_counter()
-    s2, s2_mean, s2_std = train_stage2(train_dir, X, lengths, budgets, len(log_simplex), epochs_s2, seed, device)
-    t2 = time.perf_counter()
-    save_model(out_model, s1, s1_mean, s1_std, s2, s2_mean, s2_std, log_simplex)
-    print(f"Saved {out_model} ({out_model.stat().st_size / 1024:.1f} KB) | S1 {t1-t0:.1f}s, S2 {t2-t1:.1f}s")
+    t_start = time.perf_counter()
+    budget_net, s1_mean, s1_std = train_stage1(features, lengths, budgets, epochs_s1, seed, device)
+    t_stage1 = time.perf_counter()
+    weight_net, s2_mean, s2_std = train_stage2(
+        train_dir, features, lengths, budgets, len(log_simplex), epochs_s2, seed, device
+    )
+    t_stage2 = time.perf_counter()
+    save_model(out_model, budget_net, s1_mean, s1_std, weight_net, s2_mean, s2_std, log_simplex)
+    print(
+        f"Saved {out_model} ({out_model.stat().st_size / 1024:.1f} KB) | "
+        f"S1 {t_stage1 - t_start:.1f}s, S2 {t_stage2 - t_stage1:.1f}s"
+    )
     return out_model
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--train-dir", type=Path, required=True)
-    ap.add_argument("--out-model", type=Path, required=True)
-    ap.add_argument("--seed", type=int, default=42)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-dir", type=Path, required=True)
+    parser.add_argument("--out-model", type=Path, required=True)
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
     train_and_export(args.train_dir, args.out_model, seed=args.seed)
 
 

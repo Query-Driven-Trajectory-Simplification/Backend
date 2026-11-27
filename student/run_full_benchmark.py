@@ -21,7 +21,9 @@ def run_cpp(*args: str) -> None:
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
-def prepare_and_train(split: str, seed: int, data_dir: Path, model_path: Path, train_seed: int, skip_export: bool) -> None:
+def prepare_and_train(
+    split: str, seed: int, data_dir: Path, model_path: Path, train_seed: int, skip_export: bool
+) -> None:
     if not skip_export:
         step(1, f"C++ export features + Teacher ({split}) -> {data_dir.name}")
         if not (data_dir / "teacher_kept_0.02.bin").exists():
@@ -43,37 +45,53 @@ def prepare_and_train(split: str, seed: int, data_dir: Path, model_path: Path, t
 
 
 def run_seed(seed: int, csv_path: Path, skip_export: bool) -> None:
-    base = RESULTS_ROOT / f"seed_{seed}"
-    if (base / "DONE").exists():
+    seed_dir = RESULTS_ROOT / f"seed_{seed}"
+    if (seed_dir / "DONE").exists():
         print(f"[Seed {seed}] already complete, skipping.")
         return
 
     print(f"\n=== Seed {seed}: 2-Fold Teacher-Isolated OOF (full 85/15 GeoLife) ===")
-    h0, h1, full = base / "half0", base / "half1", base / "full"
-    m_for_fold0, m_for_fold1 = base / "model_from_half1.bin", base / "model_from_half0.bin"
+    half0_dir, half1_dir, full_dir = seed_dir / "half0", seed_dir / "half1", seed_dir / "full"
+    model_for_fold0 = seed_dir / "model_from_half1.bin"
+    model_for_fold1 = seed_dir / "model_from_half0.bin"
 
-    prepare_and_train("half0", seed, h0, m_for_fold1, seed, skip_export)
-    prepare_and_train("half1", seed, h1, m_for_fold0, seed + 1, skip_export)
+    prepare_and_train("half0", seed, half0_dir, model_for_fold1, seed, skip_export)
+    prepare_and_train("half1", seed, half1_dir, model_for_fold0, seed + 1, skip_export)
 
-    if not skip_export and not (full / "teacher_kept_0.02.bin").exists():
-        run_cpp("export", "--split", "full", "--seed", str(seed), "--out-dir", str(full))
+    if not skip_export and not (full_dir / "teacher_kept_0.02.bin").exists():
+        run_cpp("export", "--split", "full", "--seed", str(seed), "--out-dir", str(full_dir))
 
     step(4, f"Pure-C++ 2-Fold OOF inference & evaluation (seed {seed})")
-    run_cpp("eval", "--split", "full", "--seed", str(seed),
-            "--model", f"{m_for_fold0},{m_for_fold1}",
-            "--teacher-dir", str(full), "--baselines", "--csv", str(csv_path))
-    (base / "DONE").write_text("ok\n")
+    run_cpp(
+        "eval",
+        "--split",
+        "full",
+        "--seed",
+        str(seed),
+        "--model",
+        f"{model_for_fold0},{model_for_fold1}",
+        "--teacher-dir",
+        str(full_dir),
+        "--baselines",
+        "--csv",
+        str(csv_path),
+    )
+    (seed_dir / "DONE").write_text("ok\n")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--seeds", type=str, default="7,99,123,2024,777")
-    ap.add_argument("--skip-export", action="store_true", help="Skip Steps 1-2 (assume features/Teacher already exported)")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seeds", type=str, default="7,99,123,2024,777")
+    parser.add_argument(
+        "--skip-export",
+        action="store_true",
+        help="Skip Steps 1-2 (assume features/Teacher already exported)",
+    )
+    args = parser.parse_args()
 
     csv_path = RESULTS_ROOT / "benchmark_results.csv"
-    for s in [int(x) for x in args.seeds.split(",")]:
-        run_seed(s, csv_path, args.skip_export)
+    for seed in [int(value) for value in args.seeds.split(",")]:
+        run_seed(seed, csv_path, args.skip_export)
 
 
 if __name__ == "__main__":
